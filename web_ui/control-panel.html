@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Image Magic — панель допечатной проверки</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #697386;
+      --line: #dce2eb;
+      --paper: #ffffff;
+      --canvas: #eef2f7;
+      --brand: #3156d3;
+      --brand-dark: #2442ad;
+      --green: #198754;
+      --amber: #b66b00;
+      --red: #c63a45;
+      --shadow: 0 12px 32px rgba(28, 39, 60, .08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--canvas);
+      color: var(--ink);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button, input, select { font: inherit; }
+    .topbar {
+      height: 66px;
+      padding: 0 30px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #202a44;
+      color: white;
+      box-shadow: 0 2px 12px rgba(0,0,0,.15);
+    }
+    .brand { display: flex; align-items: center; gap: 13px; font-weight: 800; letter-spacing: -.02em; }
+    .brand-mark {
+      width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
+      background: linear-gradient(135deg, #6d87ff, #3156d3); font-size: 18px;
+    }
+    .top-status { display: flex; align-items: center; gap: 8px; color: #d9e1f3; font-size: 13px; }
+    .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #44d38a; box-shadow: 0 0 0 4px rgba(68,211,138,.12); }
+    main { width: min(1500px, calc(100% - 40px)); margin: 28px auto 80px; }
+    .hero { display: grid; grid-template-columns: 1fr auto; gap: 20px; align-items: end; margin-bottom: 22px; }
+    h1 { margin: 0; font-size: clamp(25px, 3vw, 38px); letter-spacing: -.04em; }
+    .subtitle { color: var(--muted); margin: 7px 0 0; }
+    .layout { display: grid; grid-template-columns: minmax(360px, 470px) 1fr; gap: 22px; align-items: start; }
+    .panel { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
+    .panel-head { padding: 18px 20px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; }
+    .panel-title { font-size: 15px; font-weight: 800; }
+    .panel-body { padding: 20px; }
+    label { display: block; font-size: 12px; font-weight: 750; color: #44506a; margin-bottom: 7px; }
+    .field { margin-bottom: 17px; }
+    .path-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    input[type=text], select {
+      width: 100%; min-height: 42px; padding: 9px 11px; border: 1px solid #cbd3df;
+      border-radius: 8px; background: white; color: var(--ink); outline: none;
+    }
+    input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(49,86,211,.12); }
+    .secondary, .primary {
+      border: 0; border-radius: 8px; min-height: 42px; padding: 0 15px; cursor: pointer; font-weight: 750;
+    }
+    .secondary { background: #edf1f7; color: #34425b; }
+    .secondary:hover { background: #e3e8f1; }
+    .primary { width: 100%; background: var(--brand); color: white; margin-top: 4px; }
+    .primary:hover { background: var(--brand-dark); }
+    .primary:disabled { opacity: .55; cursor: wait; }
+    .checks { display: grid; gap: 11px; margin: 2px 0 18px; }
+    .check { display: flex; align-items: flex-start; gap: 9px; font-size: 13px; color: #3d4960; }
+    .check input { margin-top: 2px; accent-color: var(--brand); }
+    .hint { border-radius: 9px; background: #f4f7fb; padding: 12px; color: var(--muted); font-size: 12px; line-height: 1.5; margin-bottom: 17px; }
+    .runs { min-height: 470px; }
+    .empty { min-height: 410px; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 30px; }
+    .empty-icon { width: 64px; height: 64px; margin: 0 auto 14px; display: grid; place-items: center; border-radius: 18px; background: #eef2ff; font-size: 27px; }
+    .run-list { display: grid; gap: 13px; }
+    .run { border: 1px solid var(--line); border-radius: 11px; overflow: hidden; background: #fff; }
+    .run-main { padding: 16px; display: grid; grid-template-columns: 1fr auto; gap: 16px; }
+    .run-path { font-weight: 750; font-size: 14px; word-break: break-all; }
+    .run-stage { color: var(--muted); font-size: 12px; margin-top: 5px; }
+    .badge { align-self: start; padding: 5px 8px; border-radius: 99px; font-size: 11px; font-weight: 800; }
+    .badge-running, .badge-queued { color: #3156d3; background: #edf1ff; }
+    .badge-completed { color: var(--green); background: #eaf8f1; }
+    .badge-failed { color: var(--red); background: #fff0f1; }
+    .progress { height: 5px; background: #edf0f5; }
+    .progress > i { display: block; height: 100%; background: var(--brand); transition: width .35s; }
+    .metrics { display: grid; grid-template-columns: repeat(4, minmax(70px, 1fr)); border-top: 1px solid var(--line); }
+    .metric { padding: 11px 14px; border-right: 1px solid var(--line); }
+    .metric:last-child { border: 0; }
+    .metric b { display: block; font-size: 17px; }
+    .metric span { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+    .run-actions { padding: 12px 15px; border-top: 1px solid var(--line); display: flex; gap: 8px; align-items: center; }
+    .report-link { color: white; background: var(--green); text-decoration: none; padding: 8px 12px; border-radius: 7px; font-size: 12px; font-weight: 750; }
+    .log-toggle { border: 0; background: none; color: var(--brand); cursor: pointer; font-size: 12px; font-weight: 700; }
+    .log { display: none; margin: 0; padding: 12px 16px 15px 33px; border-top: 1px solid var(--line); background: #f8fafc; color: #58647a; font: 11px/1.65 ui-monospace, monospace; }
+    .log.open { display: block; }
+    .error { color: var(--red); font-size: 12px; padding: 0 15px 13px; }
+    dialog { border: 0; border-radius: 14px; width: min(560px, calc(100% - 32px)); padding: 0; box-shadow: 0 30px 80px rgba(0,0,0,.24); }
+    dialog::backdrop { background: rgba(20,28,43,.55); }
+    .browser-list { max-height: 340px; overflow: auto; padding: 9px; }
+    .folder { width: 100%; text-align: left; padding: 11px; border: 0; border-radius: 7px; background: white; cursor: pointer; color: #34425b; }
+    .folder:hover { background: #f0f3f8; }
+    .browser-footer { padding: 13px 16px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 8px; }
+    .current-folder { padding: 13px 16px; color: var(--muted); font-size: 11px; word-break: break-all; border-bottom: 1px solid var(--line); }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+      .hero { grid-template-columns: 1fr; }
+      .topbar { padding: 0 18px; }
+      main { width: min(100% - 24px, 1500px); margin-top: 18px; }
+    }
+    @media (max-width: 560px) {
+      .metrics { grid-template-columns: repeat(2, 1fr); }
+      .metric:nth-child(2) { border-right: 0; }
+      .metric:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+      .top-status { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">✦</span> Image Magic</div>
+    <div class="top-status"><span class="live-dot"></span> Модуль проверки готов</div>
+  </header>
+  <main>
+    <div class="hero">
+      <div>
+        <h1>Допечатная проверка заказов</h1>
+        <p class="subtitle">Выберите папку с макетами, запустите обработку и откройте визуальный отчёт.</p>
+      </div>
+    </div>
+    <div class="layout">
+      <section class="panel">
+        <div class="panel-head"><span class="panel-title">Новая проверка</span></div>
+        <div class="panel-body">
+          <div class="field">
+            <label for="inputPath">Папка с заказами</label>
+            <div class="path-row">
+              <input id="inputPath" type="text" autocomplete="off">
+              <button class="secondary" type="button" onclick="openBrowser()">Выбрать</button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="direction">Направление</label>
+            <select id="direction"></select>
+          </div>
+          <div class="checks">
+            <label class="check"><input id="approveCorrections" type="checkbox"> Подтвердить предложенные небольшие коррекции размера до 2 мм</label>
+            <label class="check"><input id="createPdfs" type="checkbox" checked> Создать итоговые PDF для заказов, прошедших проверку</label>
+            <label class="check"><input id="generatePreviews" type="checkbox" checked> Создать превью с линиями реза и безопасной зоны</label>
+            <label class="check"><input id="copyFailures" type="checkbox" checked> Скопировать проблемные файлы в папку Troubles</label>
+          </div>
+          <div class="hint">Исходные макеты не изменяются. Результаты сохраняются рядом: <b>PDF</b>, <b>Previews</b>, <b>Troubles</b> и <b>output_report</b>.</div>
+          <button id="startButton" class="primary" type="button" onclick="startCheck()">Запустить проверку заказов</button>
+        </div>
+      </section>
+      <section class="panel runs">
+        <div class="panel-head">
+          <span class="panel-title">Запуски и результаты</span>
+          <button class="secondary" type="button" onclick="loadJobs()">Обновить</button>
+        </div>
+        <div id="jobs" class="panel-body"></div>
+      </section>
+    </div>
+  </main>
+  <dialog id="folderDialog">
+    <div class="panel-head"><span class="panel-title">Выбор рабочей папки</span><button class="secondary" onclick="folderDialog.close()">Закрыть</button></div>
+    <div id="currentFolder" class="current-folder"></div>
+    <div id="folderList" class="browser-list"></div>
+    <div class="browser-footer">
+      <button id="parentButton" class="secondary" onclick="browseParent()">На уровень выше</button>
+      <button class="primary" style="width:auto;margin:0" onclick="chooseFolder()">Выбрать эту папку</button>
+    </div>
+  </dialog>
+  <script>
+    let browserPath = "";
+    let browserParent = null;
+    let pollTimer = null;
+
+    const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, char => ({
+      "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
+    })[char]);
+
+    async function api(url, options) {
+      const response = await fetch(url, options);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || "Запрос не выполнен");
+      return payload;
+    }
+
+    async function init() {
+      try {
+        const config = await api("/api/config");
+        inputPath.value = config.default_input_path;
+        direction.innerHTML = config.profiles.map(item =>
+          `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`
+        ).join("");
+        await loadJobs();
+      } catch (error) {
+        jobs.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
+      }
+    }
+
+    async function startCheck() {
+      startButton.disabled = true;
+      startButton.textContent = "Запускаю…";
+      try {
+        await api("/api/checks", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            input_path: inputPath.value.trim(),
+            direction: direction.value,
+            approve_corrections: approveCorrections.checked,
+            create_pdfs: createPdfs.checked,
+            generate_previews: generatePreviews.checked,
+            copy_failures: copyFailures.checked
+          })
+        });
+        await loadJobs();
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        startButton.disabled = false;
+        startButton.textContent = "Запустить проверку заказов";
+      }
+    }
+
+    const statusLabel = status => ({
+      queued: "В очереди", running: "Выполняется", completed: "Готово", failed: "Ошибка"
+    })[status] || status;
+
+    async function loadJobs() {
+      const data = await api("/api/checks");
+      if (!data.items.length) {
+        jobs.innerHTML = `<div class="empty"><div><div class="empty-icon">⌁</div><b>Проверок ещё не было</b><p>Первый запуск появится здесь вместе с ходом обработки.</p></div></div>`;
+        return;
+      }
+      jobs.innerHTML = `<div class="run-list">${data.items.map(job => `
+        <article class="run">
+          <div class="run-main">
+            <div>
+              <div class="run-path">${escapeHtml(job.input_path)}</div>
+              <div class="run-stage">${escapeHtml(job.stage)}</div>
+            </div>
+            <span class="badge badge-${job.status}">${statusLabel(job.status)}</span>
+          </div>
+          <div class="progress"><i style="width:${Number(job.progress) || 0}%"></i></div>
+          <div class="metrics">
+            <div class="metric"><b>${job.total_orders}</b><span>Заказов</span></div>
+            <div class="metric"><b>${job.passed_orders}</b><span>Прошли</span></div>
+            <div class="metric"><b>${job.failed_orders}</b><span>Ошибки</span></div>
+            <div class="metric"><b>${job.created_pdfs}</b><span>PDF</span></div>
+          </div>
+          ${job.error ? `<div class="error">${escapeHtml(job.error)}</div>` : ""}
+          <div class="run-actions">
+            ${job.report_ready ? `<a class="report-link" href="/runs/${job.id}/report" target="_blank">Открыть визуальный отчёт</a>` : ""}
+            <button class="log-toggle" onclick="toggleLog(this)">Журнал</button>
+          </div>
+          <ol class="log">${job.log.map(line => `<li>${escapeHtml(line)}</li>`).join("")}</ol>
+        </article>`).join("")}</div>`;
+      const active = data.items.some(item => item.status === "queued" || item.status === "running");
+      clearTimeout(pollTimer);
+      if (active) pollTimer = setTimeout(loadJobs, 1200);
+    }
+
+    function toggleLog(button) {
+      button.closest(".run").querySelector(".log").classList.toggle("open");
+    }
+
+    async function openBrowser() {
+      folderDialog.showModal();
+      await browse(inputPath.value.trim());
+    }
+
+    async function browse(path) {
+      try {
+        const data = await api(`/api/folders?path=${encodeURIComponent(path)}`);
+        browserPath = data.path;
+        browserParent = data.parent;
+        currentFolder.textContent = data.path;
+        parentButton.disabled = !data.parent;
+        folderList.innerHTML = data.items.length
+          ? data.items.map(item => `<button class="folder" onclick='browse(${JSON.stringify(item.path)})'>📁 ${escapeHtml(item.name)}</button>`).join("")
+          : `<div class="empty" style="min-height:180px">Вложенных папок нет</div>`;
+      } catch (error) {
+        folderList.innerHTML = `<div class="error">${escapeHtml(error.message)}</div>`;
+      }
+    }
+
+    function browseParent() { if (browserParent) browse(browserParent); }
+    function chooseFolder() { inputPath.value = browserPath; folderDialog.close(); }
+    init();
+  </script>
+</body>
+</html>
