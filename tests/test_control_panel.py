@@ -1,92 +1,267 @@
 import tempfile
-import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
+from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
 
 import control_panel
+from processing.models import FileCheck, OrderCheck, ParsedFilename
+from server.settings import Settings
+from services.batch_adapter import OrderArtifacts
+
+
+class EmptyAdapter:
+    def __init__(self, options):
+        self.options = options
+
+    def scan_and_inspect(self):
+        return []
+
+    def pending_files(self, _order):
+        return []
+
+    def decide(self, _order, _approved):
+        return None
+
+    def process_order(self, _order):
+        raise AssertionError("empty adapter has no orders")
+
+
+class OneOrderAdapter(EmptyAdapter):
+    def __init__(self, options):
+        super().__init__(options)
+        self.input_dir = Path(options.input_path)
+        self.source = self.input_dir / "sample-face.jpg"
+        self.source.write_bytes(b"source-image")
+        parsed = ParsedFilename(
+            customer_id="42",
+            order_id="1001",
+            width_mm=90,
+            height_mm=50,
+            front_colors=4,
+            back_colors=0,
+            side="face",
+        )
+        self.order = OrderCheck(
+            order_id="1001",
+            customer_id="42",
+            files=[
+                FileCheck(
+                    path=self.source,
+                    parsed=parsed,
+                    actual_width_mm=94,
+                    actual_height_mm=54,
+                    dpi=300,
+                    dpi_x=300,
+                    dpi_y=300,
+                    actual_format="JPEG",
+                    colorspace="CMYK",
+                )
+            ],
+        )
+
+    def scan_and_inspect(self):
+        return [self.order]
+
+    def process_order(self, _order):
+        pdf = self.input_dir / "PDF" / "sample.pdf"
+        preview = self.input_dir / "Previews" / "sample-face.png"
+        pdf.parent.mkdir()
+        preview.parent.mkdir()
+        pdf.write_bytes(b"%PDF-test")
+        preview.write_bytes(b"preview-image")
+        return OrderArtifacts(pdf_path=pdf, preview_paths=[preview])
 
 
 class ControlPanelTests(unittest.TestCase):
-    client = TestClient(control_panel.app)
-
     def setUp(self):
-        with control_panel.JOBS_LOCK:
-            control_panel.JOBS.clear()
+        self.temporary_directory = tempfile.TemporaryDirectory(
+            dir=control_panel.PROJECT_DIR
+        )
+        self.root = Path(self.temporary_directory.name)
+        settings = Settings(
+            database_url=f"sqlite:///{self.root / 'state.sqlite3'}",
+            password_hash=PasswordHasher().hash("correct horse"),
+            login_failure_delay_seconds=0,
+            log_dir=self.root / "logs",
+            log_heartbeat_seconds=10,
+        )
+        self.adapter_type = EmptyAdapter
+        app = control_panel.create_app(
+            settings=settings,
+            allowed_roots=(self.root,),
+            default_input_dir=self.root,
+            adapter_factory=lambda options: self.adapter_type(options),
+            initialize_schema=True,
+        )
+        self.client_context = TestClient(app)
+        self.client = self.client_context.__enter__()
 
-    def test_home_and_config_are_available(self):
+    def tearDown(self):
+        self.client_context.__exit__(None, None, None)
+        self.temporary_directory.cleanup()
+
+    def login(self):
+        response = self.client.post(
+            "/api/auth/login", json={"password": "correct horse"}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["authenticated"])
+
+    def test_spa_is_public_but_api_and_files_require_authentication(self):
         home = self.client.get("/")
         self.assertEqual(home.status_code, 200)
-        self.assertIn("Допечатная проверка заказов", home.text)
+        self.assertIn("Image Magic", home.text)
 
+        for path in ("/api/config", "/api/checks", "/api/files/missing/source"):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 401, path)
+            self.assertEqual(
+                response.json()["error"]["code"], "authentication_required"
+            )
+
+    def test_login_logout_and_config(self):
+        wrong = self.client.post("/api/auth/login", json={"password": "wrong"})
+        self.assertEqual(wrong.status_code, 401)
+        self.assertNotIn("wrong", wrong.text)
+
+        self.login()
         config = self.client.get("/api/config")
         self.assertEqual(config.status_code, 200)
         self.assertTrue(config.json()["profiles"])
+        self.assertTrue(config.json()["return_reasons"])
+
+        logout = self.client.post("/api/auth/logout")
+        self.assertEqual(logout.status_code, 204)
+        self.assertEqual(self.client.get("/api/config").status_code, 401)
+
+    def test_http_journal_does_not_store_passwords(self):
+        secret = "do-not-write-this-password"
+        response = self.client.post(
+            "/api/auth/login", json={"password": secret}
+        )
+        self.assertEqual(response.status_code, 401)
+
+        log_path = self.client.app.state.log_path
+        journal = log_path.read_text(encoding="utf-8")
+        self.assertIn("path=/api/auth/login", journal)
+        self.assertIn("status=401", journal)
+        self.assertNotIn(secret, journal)
+        self.assertTrue((log_path.parent / "image-magic-fault.log").is_file())
 
     def test_path_outside_allowed_root_is_rejected(self):
+        self.login()
         with tempfile.TemporaryDirectory() as outside:
-            with patch.object(
-                control_panel, "ALLOWED_ROOTS", (control_panel.PROJECT_DIR.resolve(),)
-            ):
-                response = self.client.get("/api/folders", params={"path": outside})
+            response = self.client.get("/api/folders", params={"path": outside})
         self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"]["code"], "folder_not_allowed")
 
-    def test_check_runs_and_builds_report_for_empty_folder(self):
-        with tempfile.TemporaryDirectory(dir=control_panel.PROJECT_DIR) as folder:
-            response = self.client.post(
-                "/api/checks",
-                json={
-                    "input_path": folder,
-                    "direction": "digital",
-                    "create_pdfs": False,
-                    "generate_previews": False,
-                    "copy_failures": False,
-                },
-            )
-            self.assertEqual(response.status_code, 202)
-            job_id = response.json()["id"]
+    def test_empty_run_persists_and_exports_report(self):
+        self.login()
+        response = self.client.post(
+            "/api/checks",
+            json={
+                "input_path": str(self.root),
+                "direction": "digital",
+                "create_pdfs": False,
+                "generate_previews": False,
+                "copy_failures": False,
+            },
+        )
+        self.assertEqual(response.status_code, 202)
+        run_id = response.json()["id"]
+        result = self.client.app.state.coordinator.wait_for(run_id, timeout=2)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["total_orders"], 0)
 
-            result = None
-            for _ in range(100):
-                result = self.client.get(f"/api/checks/{job_id}").json()
-                if result["status"] in {"completed", "failed"}:
-                    break
-                time.sleep(0.01)
+        detail = self.client.get(f"/api/checks/{run_id}")
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.json()["status"], "completed")
+        self.assertEqual(
+            self.client.get(f"/api/checks/{run_id}/orders").json()["items"], []
+        )
 
-            self.assertEqual(result["status"], "completed")
-            self.assertEqual(result["total_orders"], 0)
-            self.assertTrue(result["report_ready"])
-            report = self.client.get(f"/runs/{job_id}/report")
-            self.assertEqual(report.status_code, 200)
+        report = self.client.get(f"/runs/{run_id}/report")
+        self.assertEqual(report.status_code, 200)
+        self.assertIn("Отчёт Image Magic", report.text)
+        exported = self.client.get(f"/api/checks/{run_id}/export.json")
+        self.assertEqual(exported.status_code, 200)
+        self.assertEqual(exported.json()["id"], run_id)
 
-    def test_report_rewrites_preview_urls_for_http_route(self):
-        with tempfile.TemporaryDirectory(dir=control_panel.PROJECT_DIR) as folder:
-            input_dir = Path(folder)
-            report_dir = input_dir / "output_report"
-            preview_dir = input_dir / "Previews"
-            report_dir.mkdir()
-            preview_dir.mkdir()
-            (preview_dir / "sample_preview.png").write_bytes(b"preview")
-            report_path = report_dir / "report.html"
-            report_path.write_text(
-                '<img src="../Previews/sample_preview.png">', encoding="utf-8"
-            )
+    def test_sse_replays_persisted_events(self):
+        self.login()
+        response = self.client.post(
+            "/api/checks",
+            json={
+                "input_path": str(self.root),
+                "direction": "digital",
+                "create_pdfs": False,
+                "generate_previews": False,
+                "copy_failures": False,
+            },
+        )
+        run_id = response.json()["id"]
+        self.client.app.state.coordinator.wait_for(run_id, timeout=2)
+        with self.client.stream(
+            "GET",
+            f"/api/checks/{run_id}/events",
+            headers={"Last-Event-ID": "0"},
+        ) as stream:
+            body = "".join(stream.iter_text())
+        self.assertIn("event: run.started", body)
+        self.assertIn("event: run.completed", body)
 
-            options = control_panel.CheckOptions(input_path=folder)
-            job = control_panel.CheckJob(options, input_dir)
-            job.report_path = report_path
-            job.status = "completed"
-            with control_panel.JOBS_LOCK:
-                control_panel.JOBS[job.id] = job
+    def test_order_files_and_prepared_actions_round_trip_through_api(self):
+        self.adapter_type = OneOrderAdapter
+        self.login()
+        response = self.client.post(
+            "/api/checks",
+            json={
+                "input_path": str(self.root),
+                "direction": "digital",
+                "create_pdfs": True,
+                "generate_previews": True,
+                "copy_failures": False,
+            },
+        )
+        run_id = response.json()["id"]
+        self.client.app.state.coordinator.wait_for(run_id, timeout=2)
 
-            report = self.client.get(f"/runs/{job.id}/report")
-            self.assertEqual(report.status_code, 200)
-            self.assertIn(
-                f'/runs/{job.id}/Previews/sample_preview.png', report.text
-            )
-            preview = self.client.get(
-                f"/runs/{job.id}/Previews/sample_preview.png"
-            )
-            self.assertEqual(preview.status_code, 200)
+        orders = self.client.get(f"/api/checks/{run_id}/orders").json()["items"]
+        self.assertEqual(len(orders), 1)
+        order = orders[0]
+        self.assertEqual(order["order_id"], "1001")
+        self.assertTrue(order["pdf_url"])
+        file_result = order["files"][0]
+        self.assertEqual(file_result["side"], "face")
+        self.assertEqual(file_result["format"], "JPEG")
+        self.assertEqual(
+            self.client.get(file_result["source_url"]).content, b"source-image"
+        )
+        self.assertEqual(
+            self.client.get(file_result["preview_url"]).content, b"preview-image"
+        )
+        self.assertEqual(self.client.get(order["pdf_url"]).content, b"%PDF-test")
+
+        prepared = self.client.post(
+            "/api/orders/prepare-print",
+            json={"run_id": run_id, "order_ids": ["1001"]},
+        )
+        self.assertEqual(
+            prepared.json()["items"], [{"order_id": "1001", "status": "prepared"}]
+        )
+        refreshed = self.client.get(
+            f"/api/checks/{run_id}/orders"
+        ).json()["items"][0]
+        self.assertEqual(refreshed["action_result"]["status"], "prepared")
+
+        missing_comment = self.client.post(
+            "/api/orders/prepare-reject",
+            json={"run_id": run_id, "order_ids": ["1001"]},
+        )
+        self.assertEqual(missing_comment.status_code, 422)
+
+
+if __name__ == "__main__":
+    unittest.main()

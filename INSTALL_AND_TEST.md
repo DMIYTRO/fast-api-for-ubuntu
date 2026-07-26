@@ -33,7 +33,9 @@ Image Magic/
 - Python 3.10 или новее;
 - ImageMagick с доступной командой `magick`;
 - Ghostscript с доступной командой `gs`;
-- Python-библиотеки из `requirements.txt` (`SQLAlchemy` и `typing_extensions`).
+- Python-библиотеки из `requirements.txt` (`FastAPI`, `SQLAlchemy`, `Alembic`,
+  `argon2-cffi` и остальные зависимости).
+- Node.js 20+ для сборки Vue-интерфейса.
 
 ### Для чего нужны зависимости
 
@@ -56,7 +58,12 @@ https://brew.sh
 
 ```bash
 brew install python imagemagick ghostscript
-python3 -m pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+cd frontend
+npm install
+npm run build
+cd ..
 ```
 
 Проверка:
@@ -66,6 +73,28 @@ python3 --version
 magick -version
 gs --version
 ```
+
+### Подготовка веб-сервиса
+
+Создайте пароль и сохраните выведенный Argon2-хеш только в переменной окружения:
+
+```bash
+.venv/bin/python manage.py set-password
+export IMAGE_MAGIC_PASSWORD_HASH='$argon2id$...'
+.venv/bin/alembic upgrade head
+.venv/bin/python control_panel.py
+```
+
+Откройте `http://127.0.0.1:8006/login`. По умолчанию сессия действует 12 часов.
+
+Журнал работы сервера находится в `logs/image-magic.log`, а низкоуровневые
+аварии Python — в `logs/image-magic-fault.log`. Для наблюдения в реальном
+времени используйте:
+
+```bash
+tail -f logs/image-magic.log
+```
+Доступные рабочие каталоги ограничиваются `IMAGE_MAGIC_ALLOWED_ROOTS`.
 
 ## 4. Установка на Ubuntu/Debian
 

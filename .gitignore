@@ -6,3 +6,7 @@ output_report/previews/
 __pycache__/
 .DS_Store
 audit_history.db
+image_magic.db
+logs/
+frontend/node_modules/
+frontend/.vite/

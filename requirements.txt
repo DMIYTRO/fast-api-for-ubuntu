@@ -3,3 +3,5 @@ typing_extensions==4.16.0
 fastapi>=0.115
 uvicorn[standard]>=0.30
 httpx>=0.27
+alembic>=1.14
+argon2-cffi>=23.1

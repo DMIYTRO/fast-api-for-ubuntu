@@ -100,17 +100,65 @@ python3 process_orders.py --input "/путь/к/папке/с/макетами"
 ### Веб-интерфейс и API
 
 ```bash
-python3 control_panel.py
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+cd frontend && npm install && npm run build && cd ..
+
+# Команда выведет Argon2-хеш. Сохраните его в переменной окружения,
+# сам пароль в проект и базу не записывается.
+.venv/bin/python manage.py set-password
+export IMAGE_MAGIC_PASSWORD_HASH='$argon2id$...'
+
+.venv/bin/alembic upgrade head
+.venv/bin/python control_panel.py
 ```
 
 После запуска доступны:
 
-- `http://127.0.0.1:8006/` — панель запуска проверки;
+- `http://127.0.0.1:8006/login` — вход по паролю;
+- `http://127.0.0.1:8006/` — единый рабочий пульт;
 - `POST /api/checks` — запустить фоновую проверку папки;
 - `GET /api/checks` — список запусков;
 - `GET /api/checks/{id}` — состояние и результаты запуска;
+- `GET /api/checks/{id}/events` — поток событий SSE;
+- `POST /api/checks/{id}/cancel` — отменить проверку;
 - `GET /runs/{id}/report` — интерактивный отчёт;
 - `http://127.0.0.1:8006/docs` — интерактивная документация API.
+
+Все API-маршруты, исходники, PDF и превью защищены серверной сессией.
+Сессии и результаты сохраняются в `image_magic.db`; незавершённый запуск
+после перезапуска помечается прерванным, а завершённая история остаётся доступна.
+
+### Журнал диагностики
+
+Сервер постоянно пишет журнал в `logs/image-magic.log`. В нём сохраняются:
+
+- запуск, heartbeat и штатная остановка приложения;
+- HTTP-метод, путь, статус, длительность и идентификатор запроса;
+- стадии фоновых проверок, заказы, PDF и превью;
+- ошибки Python, ImageMagick, Ghostscript и восстановление после перезапуска;
+- свободное место на диске и пиковое потребление памяти.
+
+Тела HTTP-запросов, пароли, cookie и query-параметры не записываются. Журнал
+автоматически ротируется: по умолчанию хранится до 10 архивов по 10 МБ. Для
+низкоуровневого сбоя Python используется `logs/image-magic-fault.log`.
+
+Быстрый просмотр:
+
+```bash
+tail -f logs/image-magic.log
+rg 'ERROR|CRITICAL' logs/
+```
+
+Настройки можно изменить переменными окружения:
+
+```bash
+export IMAGE_MAGIC_LOG_DIR="/путь/к/журналам"
+export IMAGE_MAGIC_LOG_LEVEL="INFO"
+export IMAGE_MAGIC_LOG_MAX_BYTES="10485760"
+export IMAGE_MAGIC_LOG_BACKUP_COUNT="10"
+export IMAGE_MAGIC_LOG_HEARTBEAT_SECONDS="60"
+```
 
 По умолчанию панель работает с папками внутри проекта. Рабочие пути можно
 настроить переменными окружения:
@@ -118,7 +166,7 @@ python3 control_panel.py
 ```bash
 export IMAGE_MAGIC_ALLOWED_ROOTS="/папка/с/заказами"
 export IMAGE_MAGIC_INPUT_DIR="/папка/с/заказами/входящие"
-python3 control_panel.py
+.venv/bin/python control_panel.py
 ```
 
 Несколько разрешённых корней разделяются системным разделителем путей
@@ -155,7 +203,8 @@ output_report/       интерактивный report.html
 ## Тесты
 
 ```bash
-python3 -m unittest discover -s tests -v
+.venv/bin/python -m unittest discover -s tests -v
+cd frontend && npm test && npm run build
 ```
 
 Тесты покрывают пороги размеров, эффективный DPI, подтверждения, сохранение пропорций, RGB-предупреждения, команды ImageMagick/Ghostscript и HTML-контроль ориентации.

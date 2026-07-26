@@ -4,14 +4,11 @@
 
 import os
 import json
-import html
 from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple, Union, Optional
 from core.inspector import ImageMetadata
 from validators.rules import ValidationResult
-from core.return_reasons import load_return_reasons
-from config.profiles import DEFAULT_PROFILE, PrePressProfile
 
 def build_reports(results: List[Tuple[ImageMetadata, ValidationResult, str]], output_dir: str):
     """Служит для сборки HTML и JSON отчётов."""
@@ -261,13 +258,10 @@ def build_orders_html_report(
     orders: list,
     output_html_path: Union[str, Path],
     preview_dir: Optional[Path] = None,
-    profile: PrePressProfile = DEFAULT_PROFILE,
 ) -> str:
     """Генерирует современный интерактивный HTML-отчёт для списка заказов."""
     out_path = Path(output_html_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    return_reasons = load_return_reasons()
-    reasons_json = json.dumps(return_reasons, ensure_ascii=False).replace("</", "<\\/")
 
     order_cards_html = ""
     pass_count = 0
@@ -296,8 +290,8 @@ def build_orders_html_report(
             if first_parsed
             else "4-4"
         )
-        expected_w = (first_parsed.width_mm + profile.size_extra_mm) if first_parsed else 0.0
-        expected_h = (first_parsed.height_mm + profile.size_extra_mm) if first_parsed else 0.0
+        expected_w = (first_parsed.width_mm + 4.0) if first_parsed else 0.0
+        expected_h = (first_parsed.height_mm + 4.0) if first_parsed else 0.0
 
         face_file = next((f for f in order.files if f.parsed and f.parsed.side == "face"), None)
         back_file = next((f for f in order.files if f.parsed and f.parsed.side == "back"), None)
@@ -323,30 +317,13 @@ def build_orders_html_report(
                         img_src = str(p_candidate)
 
             if img_src:
-                rotation_note = (
-                    f'<div class="rotation-note">↻ Автоповорот: {f_item.rotation_degrees}°</div>'
-                    if getattr(f_item, "rotation_degrees", 0) else ""
-                )
-                rotation_controls = ""
-                if getattr(f_item, "rotation_degrees", 0):
-                    control_id = f"preview-{idx}-{f_item.parsed.side}"
-                    rotation_controls = f'''
-                    <div class="rotation-controls">
-                        <button type="button" onclick="rotatePreview('{control_id}', -90, event)">↶ 90°</button>
-                        <button type="button" onclick="rotatePreview('{control_id}', 90, event)">↷ 90°</button>
-                        <button type="button" onclick="resetPreview('{control_id}', event)">Сбросить</button>
-                    </div>'''
-                else:
-                    control_id = f"preview-{idx}-{f_item.parsed.side}"
                 preview_box = f"""
                 <div class="preview-thumb-card" onclick="openModal('{img_src}', 'Заказ #{order.order_id} — {label}')">
                     <div class="side-label">{label}</div>
                     <div class="img-wrapper">
-                        <img id="{control_id}" src="{img_src}" alt="{label}" class="preview-image" loading="lazy" data-angle="0">
+                        <img src="{img_src}" alt="{label}" class="preview-image" loading="lazy">
                         <div class="zoom-overlay">🔍 Нажмите для увеличения</div>
                     </div>
-                    {rotation_note}
-                    {rotation_controls}
                     <div class="thumb-filename" title="{f_item.path.name}">{f_item.path.name}</div>
                 </div>
                 """
@@ -387,14 +364,10 @@ def build_orders_html_report(
         back_sz = f"{back_file.actual_width_mm:.1f} × {back_file.actual_height_mm:.1f} мм" if back_file and back_file.actual_width_mm else "—"
         rows_code += render_param_row("Размер с вылетами", face_sz, back_sz, f"{expected_w:.1f} × {expected_h:.1f} мм", is_ok=order.passed)
 
-        face_rotation = f"{face_file.rotation_degrees}°" if face_file else "—"
-        back_rotation = f"{back_file.rotation_degrees}°" if back_file else "—"
-        rows_code += render_param_row("Автоматический поворот", face_rotation, back_rotation, "минимально необходимый")
-
         # 2. Разрешение DPI
         face_dpi = f"{face_file.dpi_x:.0f}×{face_file.dpi_y:.0f} DPI" if face_file and face_file.dpi_x else "—"
         back_dpi = f"{back_file.dpi_x:.0f}×{back_file.dpi_y:.0f} DPI" if back_file and back_file.dpi_x else "—"
-        rows_code += render_param_row("Разрешение (DPI)", face_dpi, back_dpi, f"≥ {profile.min_dpi:.0f} DPI")
+        rows_code += render_param_row("Разрешение (DPI)", face_dpi, back_dpi, "≥ 300 DPI")
 
         # 3. Цветность
         face_col = face_file.colorspace if face_file else "—"
@@ -418,22 +391,11 @@ def build_orders_html_report(
             warn_items = "".join(f"<li>{w}</li>" for w in all_warnings)
             messages_html += f'<div class="msg-box box-warning"><strong>⚠️ Попередження / Авто-ресемплинг:</strong><ul>{warn_items}</ul></div>'
 
-        rotated_files = [f for f in order.files if getattr(f, "rotation_degrees", 0)]
-        if rotated_files:
-            rotation_items = ", ".join(
-                f"{f.parsed.side}: {f.rotation_degrees}°" for f in rotated_files
-            )
-            messages_html += (
-                '<div class="msg-box box-orientation"><strong>⚠️ Требуется визуальная проверка.</strong> '
-                f'Автоматически повёрнуто: {rotation_items}. Проверьте ориентацию и совмещение лица и оборота.'
-                '<label class="verify-label"><input type="checkbox"> Совмещение проверено пользователем</label></div>'
-            )
-
         if order.passed and not all_warnings:
             messages_html += '<div class="msg-box box-pass"><strong>✅ Заказ полностью соответствует стандартам допечатной подготовки.</strong></div>'
 
         order_cards_html += f"""
-        <article class="order-card" data-status="{status_code}" data-order-id="{html.escape(str(order.order_id))}">
+        <article class="order-card" data-status="{status_code}">
             <div class="card-header-bar">
                 <div class="order-checkbox-group">
                     <input type="checkbox" class="order-checkbox" onchange="updateSelectedCount()">
@@ -445,10 +407,6 @@ def build_orders_html_report(
                     <span class="meta-item">Размер макета: <strong>{first_parsed.width_mm:.0f}×{first_parsed.height_mm:.0f} мм</strong></span>
                 </div>
                 <div>
-                    <button type="button" class="return-comment-trigger" onclick="openReturnComments(this, event)" title="Причины возврата">
-                        <span class="return-comment-icon">💬</span>
-                        <span class="return-comment-badge">0</span>
-                    </button>
                     {status_badge}
                 </div>
             </div>
@@ -462,7 +420,7 @@ def build_orders_html_report(
                     </div>
                     <div class="frame-legend">
                         <span><span class="legend-dot green"></span> Зелёный контур (1 мм) — Край реза</span>
-                        <span><span class="legend-dot red"></span> Красный контур ({profile.safe_zone_mm:g} мм) — Безопасная зона</span>
+                        <span><span class="legend-dot red"></span> Красный контур (4 мм) — Безопасная зона</span>
                     </div>
                 </div>
 
@@ -478,37 +436,8 @@ def build_orders_html_report(
                     </table>
 
                     {messages_html}
-
                 </div>
             </div>
-
-            <section class="return-reasons">
-                <div class="return-reasons-heading">
-                    <div>
-                        <strong>Причины возврата — заказ #{order.order_id}</strong>
-                        <span>Выберите готовые формулировки или добавьте свою</span>
-                    </div>
-                    <div class="return-reasons-heading-actions">
-                        <span class="reason-count">0 выбрано</span>
-                        <button type="button" class="return-comments-close" onclick="closeReturnComments(this, event)" aria-label="Закрыть">×</button>
-                    </div>
-                </div>
-                <div class="return-reasons-controls">
-                    <div class="reason-picker">
-                        <button type="button" class="reason-picker-toggle" onclick="toggleReasonPicker(this, event)">
-                            Выбрать параметры возврата
-                            <span>▾</span>
-                        </button>
-                        <div class="reason-picker-menu" onclick="event.stopPropagation()">
-                            <input class="reason-search" type="search" placeholder="Поиск по причинам…" oninput="filterReasons(this)">
-                            <div class="reason-options"></div>
-                        </div>
-                    </div>
-                    <textarea class="custom-return-comment" rows="1" placeholder="Дополнительный комментарий" oninput="updateReturnBadge(this.closest('.return-reasons'))"></textarea>
-                    <button type="button" class="copy-order-comment" onclick="copyOrderComment(this)">Копировать</button>
-                </div>
-                <div class="selected-reasons"></div>
-            </section>
         </article>
         """
 
@@ -693,18 +622,8 @@ def build_orders_html_report(
             border-radius: 14px;
             border: 1px solid var(--border-color);
             overflow: hidden;
-            position: relative;
             box-shadow: 0 4px 14px rgba(0, 0, 0, 0.03);
             transition: border-color 0.2s ease, box-shadow 0.2s ease;
-        }}
-
-        .order-card:has(.reason-picker.open) {{
-            overflow: visible;
-            z-index: 2000;
-        }}
-        .order-card.comments-open {{
-            overflow: visible;
-            z-index: 5500;
         }}
 
         .order-card.selected {{
@@ -766,23 +685,17 @@ def build_orders_html_report(
         }}
         .badge-pass {{ background: #d1fae5; color: #065f46; }}
         .badge-warning {{ background: #fef3c7; color: #92400e; }}
-        .box-orientation {{ background: #fff7ed; border: 2px solid #fb923c; color: #9a3412; }}
-        .verify-label {{ display: block; margin-top: 10px; font-weight: 700; }}
-        .rotation-note {{ margin-top: 8px; color: #9a3412; font-weight: 700; font-size: 12px; }}
-        .rotation-controls {{ display: flex; gap: 6px; justify-content: center; margin-top: 8px; }}
-        .rotation-controls button {{ border: 1px solid var(--border-color); background: white; border-radius: 6px; padding: 5px 8px; cursor: pointer; }}
         .badge-fail {{ background: #fee2e2; color: #991b1b; }}
 
         /* Card Main Grid: Previews Left, Table Right */
         .card-body-grid {{
             display: grid;
-            grid-template-columns: minmax(300px, 45%) 1fr;
-            gap: 24px;
+            grid-template-columns: minmax(520px, 720px) 1fr;
+            gap: 28px;
             padding: 20px 24px;
-            align-items: start;
         }}
 
-        @media (max-width: 980px) {{
+        @media (max-width: 1100px) {{
             .card-body-grid {{
                 grid-template-columns: 1fr;
             }}
@@ -790,11 +703,9 @@ def build_orders_html_report(
 
         /* Previews Column */
         .previews-column {{
-            min-width: 0;
             display: flex;
             flex-direction: column;
             gap: 10px;
-            overflow: hidden;
         }}
 
         .previews-box-title {{
@@ -806,23 +717,18 @@ def build_orders_html_report(
         }}
 
         .previews-row {{
-            min-width: 0;
             display: grid;
-            gap: 12px;
+            gap: 14px;
             background: #f8fafc;
-            padding: 12px;
+            padding: 14px;
             border-radius: 10px;
             border: 1px dashed var(--border-color);
-            max-width: 100%;
         }}
 
         .previews-row.double {{ grid-template-columns: 1fr 1fr; }}
         .previews-row.single {{ grid-template-columns: 1fr; }}
 
         .preview-thumb-card {{
-            min-width: 0;
-            max-width: 100%;
-            overflow: hidden;
             background: #ffffff;
             border-radius: 8px;
             border: 1px solid var(--border-color);
@@ -849,24 +755,17 @@ def build_orders_html_report(
 
         .img-wrapper {{
             position: relative;
-            width: 100%;
-            height: 230px;
-            background: #ffffff;
+            background: #e2e8f0;
             border-radius: 4px;
             overflow: hidden;
-            display: flex;
-            align-items: center;
-            justify-content: center;
         }}
 
         .preview-image {{
-            max-width: 100%;
-            max-height: 100%;
-            width: auto;
-            height: auto;
+            width: 100%;
+            height: 280px;
             object-fit: contain;
             display: block;
-            margin: 0 auto;
+            background: #ffffff;
         }}
 
         .zoom-overlay {{
@@ -1099,213 +998,6 @@ def build_orders_html_report(
             font-weight: 700;
             cursor: pointer;
         }}
-
-        .return-reasons {{
-            display: none;
-            position: fixed;
-            z-index: 6000;
-            left: 50%;
-            top: 50%;
-            transform: translate(-50%, -50%);
-            width: min(900px, calc(100vw - 32px));
-            max-height: calc(100vh - 48px);
-            overflow: visible;
-            padding: 20px;
-            border: 1px solid var(--border-color);
-            border-radius: 14px;
-            background: #f8fafc;
-            box-shadow: 0 0 0 100vmax rgba(15, 23, 42, .55), 0 24px 60px rgba(15, 23, 42, .28);
-        }}
-        .return-reasons.active {{
-            display: block;
-        }}
-        .return-reasons-heading {{
-            display: flex;
-            justify-content: space-between;
-            gap: 12px;
-            align-items: center;
-            margin-bottom: 8px;
-        }}
-        .return-reasons-heading strong {{ font-size: 13px; margin-right: 8px; }}
-        .return-reasons-heading span {{ color: var(--text-secondary); font-size: 11px; }}
-        .return-reasons-heading-actions {{
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }}
-        .return-comments-close {{
-            width: 30px;
-            height: 30px;
-            border: 0;
-            border-radius: 50%;
-            background: #e2e8f0;
-            color: var(--text-primary);
-            font-size: 21px;
-            line-height: 1;
-            cursor: pointer;
-        }}
-        .return-comment-trigger {{
-            position: relative;
-            width: 34px;
-            height: 34px;
-            margin-right: 8px;
-            border: 1px solid #cbd5e1;
-            border-radius: 9px;
-            background: #fff;
-            cursor: pointer;
-            vertical-align: middle;
-        }}
-        .return-comment-trigger:hover {{
-            border-color: var(--brand-primary);
-            background: #eff6ff;
-        }}
-        .return-comment-icon {{ font-size: 16px; }}
-        .return-comment-badge {{
-            display: none;
-            position: absolute;
-            top: -7px;
-            right: -7px;
-            min-width: 18px;
-            height: 18px;
-            padding: 0 4px;
-            border-radius: 9px;
-            background: var(--fail-color);
-            color: #fff;
-            font-size: 10px;
-            font-weight: 800;
-            line-height: 18px;
-        }}
-        .return-comment-trigger.has-comments .return-comment-badge {{ display: block; }}
-        .reason-count {{
-            white-space: nowrap;
-            background: #e2e8f0;
-            border-radius: 12px;
-            padding: 3px 9px;
-            font-weight: 700;
-        }}
-        .return-reasons-controls {{
-            display: grid;
-            grid-template-columns: minmax(300px, 1.25fr) minmax(240px, 1fr) auto;
-            gap: 8px;
-            align-items: stretch;
-        }}
-        .reason-picker {{ position: relative; }}
-        .reason-picker-toggle {{
-            width: 100%;
-            height: 40px;
-            border: 1px solid #cbd5e1;
-            border-radius: 8px;
-            background: #fff;
-            padding: 8px 12px;
-            display: flex;
-            justify-content: space-between;
-            cursor: pointer;
-            color: var(--text-primary);
-            font-weight: 600;
-        }}
-        .reason-picker-menu {{
-            display: none;
-            position: absolute;
-            z-index: 5000;
-            top: calc(100% + 5px);
-            left: 0;
-            right: 0;
-            background: #fff;
-            border: 1px solid #cbd5e1;
-            border-radius: 10px;
-            box-shadow: 0 12px 30px rgba(15, 23, 42, .16);
-            padding: 10px;
-            min-height: 320px;
-            max-height: min(62vh, 600px);
-        }}
-        .reason-picker.open .reason-picker-menu {{ display: block; }}
-        .reason-search {{
-            width: 100%;
-            border: 1px solid var(--border-color);
-            border-radius: 7px;
-            padding: 9px 10px;
-            margin-bottom: 8px;
-        }}
-        .reason-options {{
-            height: min(50vh, 490px);
-            min-height: 250px;
-            overflow: auto;
-            overscroll-behavior: contain;
-        }}
-        .reason-group-title {{
-            position: sticky;
-            top: 0;
-            padding: 7px 6px 4px;
-            background: #fff;
-            color: var(--brand-primary);
-            font-size: 11px;
-            font-weight: 800;
-            text-transform: uppercase;
-        }}
-        .reason-option {{
-            display: flex;
-            gap: 8px;
-            padding: 7px 6px;
-            border-radius: 6px;
-            font-size: 12px;
-            cursor: pointer;
-        }}
-        .reason-option:hover {{ background: #f1f5f9; }}
-        .reason-option input {{ flex: 0 0 auto; margin-top: 2px; }}
-        .selected-reasons {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-            margin-top: 8px;
-        }}
-        .selected-reasons:empty {{ display: none; }}
-        .reason-chip {{
-            max-width: 100%;
-            border: 1px solid #bfdbfe;
-            border-radius: 7px;
-            background: #eff6ff;
-            color: #1e3a8a;
-            padding: 5px 8px;
-            font-size: 11px;
-        }}
-        .reason-chip button {{
-            border: 0;
-            background: transparent;
-            color: #1d4ed8;
-            cursor: pointer;
-            font-weight: 800;
-            margin-left: 5px;
-        }}
-        .custom-return-comment {{
-            width: 100%;
-            height: 40px;
-            min-height: 40px;
-            resize: none;
-            padding: 9px 10px;
-            border: 1px solid #cbd5e1;
-            border-radius: 8px;
-            font: inherit;
-            font-size: 12px;
-        }}
-        .copy-order-comment {{
-            height: 40px;
-            border: 1px solid var(--brand-primary);
-            border-radius: 7px;
-            background: #fff;
-            color: var(--brand-primary);
-            padding: 7px 11px;
-            cursor: pointer;
-            font-weight: 700;
-            font-size: 12px;
-        }}
-        @media (max-width: 820px) {{
-            .return-reasons-controls {{
-                grid-template-columns: 1fr;
-            }}
-            .return-reasons-heading div span {{ display: none; }}
-            .copy-order-comment {{ width: 100%; }}
-            .return-reasons {{ max-height: calc(100vh - 24px); }}
-        }}
     </style>
 </head>
 <body>
@@ -1315,7 +1007,7 @@ def build_orders_html_report(
             <div class="header-top">
                 <div class="header-title">
                     <h1>✨ Image-Magic Audit • Отчёт допечатного контроля</h1>
-                    <p>{profile.name} • Пакетный анализ и автоматическая подготовка • Дата: {now_str}</p>
+                    <p>Пакетный анализ и автоматическая подготовка печатных файлов к производству • Дата: {now_str}</p>
                 </div>
             </div>
 
@@ -1388,167 +1080,6 @@ def build_orders_html_report(
     </div>
 
     <script>
-        const RETURN_REASONS = {reasons_json};
-
-        function openReturnComments(button, event) {{
-            event.stopPropagation();
-            const card = button.closest('.order-card');
-            document.querySelectorAll('.return-reasons.active').forEach(section => {{
-                section.classList.remove('active');
-                section.closest('.order-card').classList.remove('comments-open');
-            }});
-            card.classList.add('comments-open');
-            card.querySelector('.return-reasons').classList.add('active');
-        }}
-
-        function closeReturnComments(button, event) {{
-            event.stopPropagation();
-            const section = button.closest('.return-reasons');
-            section.classList.remove('active');
-            section.closest('.order-card').classList.remove('comments-open');
-            section.querySelector('.reason-picker').classList.remove('open');
-        }}
-
-        function updateReturnBadge(section) {{
-            const selectedCount = section.querySelectorAll('.reason-option input:checked').length;
-            const hasCustom = Boolean(section.querySelector('.custom-return-comment').value.trim());
-            const count = selectedCount + (hasCustom ? 1 : 0);
-            const trigger = section.closest('.order-card').querySelector('.return-comment-trigger');
-            trigger.querySelector('.return-comment-badge').textContent = count;
-            trigger.classList.toggle('has-comments', count > 0);
-        }}
-
-        function reasonId(text) {{
-            let hash = 0;
-            for (let i = 0; i < text.length; i++) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
-            return 'reason-' + Math.abs(hash);
-        }}
-
-        function buildReasonOptions(container) {{
-            const selected = new Set(
-                [...container.closest('.return-reasons').querySelectorAll('.reason-option input:checked')]
-                    .map(input => input.value)
-            );
-            let currentCategory = '';
-            container.innerHTML = '';
-            RETURN_REASONS.forEach(reason => {{
-                if (reason.category !== currentCategory) {{
-                    currentCategory = reason.category;
-                    const heading = document.createElement('div');
-                    heading.className = 'reason-group-title';
-                    heading.textContent = currentCategory;
-                    container.appendChild(heading);
-                }}
-                const label = document.createElement('label');
-                label.className = 'reason-option';
-                label.dataset.search = (reason.category + ' ' + reason.text).toLowerCase();
-                const input = document.createElement('input');
-                input.type = 'checkbox';
-                input.value = reason.text;
-                input.checked = selected.has(reason.text);
-                input.onchange = () => updateReasonSelection(input.closest('.return-reasons'));
-                const text = document.createElement('span');
-                text.textContent = reason.text;
-                label.append(input, text);
-                container.appendChild(label);
-            }});
-        }}
-
-        function toggleReasonPicker(button, event) {{
-            event.stopPropagation();
-            const picker = button.closest('.reason-picker');
-            const options = picker.querySelector('.reason-options');
-            if (!options.dataset.ready) {{
-                buildReasonOptions(options);
-                options.dataset.ready = 'true';
-            }}
-            document.querySelectorAll('.reason-picker.open').forEach(item => {{
-                if (item !== picker) item.classList.remove('open');
-            }});
-            picker.classList.toggle('open');
-            if (picker.classList.contains('open')) picker.querySelector('.reason-search').focus();
-        }}
-
-        function filterReasons(input) {{
-            const query = input.value.trim().toLowerCase();
-            const options = input.parentElement.querySelectorAll('.reason-option');
-            options.forEach(option => option.style.display = option.dataset.search.includes(query) ? 'flex' : 'none');
-            input.parentElement.querySelectorAll('.reason-group-title').forEach(title => {{
-                let next = title.nextElementSibling;
-                let visible = false;
-                while (next && !next.classList.contains('reason-group-title')) {{
-                    if (next.style.display !== 'none') visible = true;
-                    next = next.nextElementSibling;
-                }}
-                title.style.display = visible ? 'block' : 'none';
-            }});
-        }}
-
-        function updateReasonSelection(section) {{
-            const selected = [...section.querySelectorAll('.reason-option input:checked')];
-            section.querySelector('.reason-count').textContent = `${{selected.length}} выбрано`;
-            updateReturnBadge(section);
-            const chips = section.querySelector('.selected-reasons');
-            chips.innerHTML = '';
-            selected.forEach(input => {{
-                const chip = document.createElement('span');
-                chip.className = 'reason-chip';
-                chip.textContent = input.value;
-                const remove = document.createElement('button');
-                remove.type = 'button';
-                remove.textContent = '×';
-                remove.title = 'Удалить';
-                remove.onclick = () => {{
-                    input.checked = false;
-                    updateReasonSelection(section);
-                }};
-                chip.appendChild(remove);
-                chips.appendChild(chip);
-            }});
-        }}
-
-        function getOrderComment(card) {{
-            const reasons = [...card.querySelectorAll('.reason-option input:checked')].map(input => input.value);
-            const custom = card.querySelector('.custom-return-comment').value.trim();
-            if (custom) reasons.push(custom);
-            if (!reasons.length) return '';
-            const body = reasons.length === 1
-                ? reasons[0].replace(/[.;\\s]+$/, '') + '.'
-                : reasons.map((reason, index) => `${{index + 1}}) ${{reason.replace(/[.;\\s]+$/, '')}};`).join('\\n').replace(/;$/, '.');
-            return `Заказ #${{card.dataset.orderId}}:\\n${{body}}`;
-        }}
-
-        async function copyText(text) {{
-            if (navigator.clipboard && window.isSecureContext) {{
-                await navigator.clipboard.writeText(text);
-                return;
-            }}
-            const area = document.createElement('textarea');
-            area.value = text;
-            area.style.position = 'fixed';
-            area.style.opacity = '0';
-            document.body.appendChild(area);
-            area.select();
-            document.execCommand('copy');
-            area.remove();
-        }}
-
-        async function copyOrderComment(button) {{
-            const text = getOrderComment(button.closest('.order-card'));
-            if (!text) {{
-                alert('Сначала выберите хотя бы одну причину или добавьте свой комментарий.');
-                return;
-            }}
-            await copyText(text);
-            const original = button.textContent;
-            button.textContent = 'Скопировано';
-            setTimeout(() => button.textContent = original, 1200);
-        }}
-
-        document.addEventListener('click', () => {{
-            document.querySelectorAll('.reason-picker.open').forEach(item => item.classList.remove('open'));
-        }});
-
         // Modal Lightbox functions
         function openModal(src, title) {{
             const modal = document.getElementById('lightboxModal');
@@ -1563,28 +1094,9 @@ def build_orders_html_report(
             }}
         }}
 
-        function rotatePreview(id, delta, event) {{
-            event.stopPropagation();
-            const image = document.getElementById(id);
-            const angle = Number(image.dataset.angle || 0) + delta;
-            image.dataset.angle = angle;
-            image.style.transform = `rotate(${{angle}}deg)`;
-        }}
-
-        function resetPreview(id, event) {{
-            event.stopPropagation();
-            const image = document.getElementById(id);
-            image.dataset.angle = 0;
-            image.style.transform = 'rotate(0deg)';
-        }}
-
         document.addEventListener('keydown', (e) => {{
             if (e.key === 'Escape') {{
                 document.getElementById('lightboxModal').classList.remove('active');
-                document.querySelectorAll('.return-reasons.active').forEach(section => {{
-                    section.classList.remove('active');
-                    section.closest('.order-card').classList.remove('comments-open');
-                }});
             }}
         }});
 
@@ -1655,16 +1167,7 @@ def build_orders_html_report(
             if (type === 'print') {{
                 alert(`✅ ${{selected.length}} зак.(а/ов) отправлено в печать!\\n\\nСписок:\\n` + selected.join('\\n'));
             }} else if (type === 'reject') {{
-                const cards = [...document.querySelectorAll('.order-checkbox:checked')].map(cb => cb.closest('.order-card'));
-                const missing = cards.filter(card => !getOrderComment(card));
-                if (missing.length) {{
-                    alert('Добавьте причину возврата для каждого выбранного заказа. Без комментария: ' + missing.map(card => '#' + card.dataset.orderId).join(', '));
-                    return;
-                }}
-                const comments = cards.map(getOrderComment).join('\\n\\n');
-                copyText(comments).then(() => {{
-                    alert(`↩️ Подготовлены комментарии для ${{selected.length}} зак.(а/ов).\\nТекст скопирован в буфер обмена.\\n\\n` + comments);
-                }});
+                alert(`↩️ ${{selected.length}} зак.(а/ов) возвращено на доработку менеджеру!\\n\\nСписок:\\n` + selected.join('\\n'));
             }}
         }}
     </script>

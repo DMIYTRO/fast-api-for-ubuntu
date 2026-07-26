@@ -1,0 +1,97 @@
+"""JSON-safe DTO conversion for processing models.
+
+The service layer deliberately returns plain dictionaries.  They can be passed
+directly to FastAPI/Pydantic without leaking ``Path`` objects or mutable
+``OrderCheck`` instances into the HTTP layer.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from processing.models import FileCheck, OrderCheck, ParsedFilename
+
+
+def parsed_filename_to_dto(value: ParsedFilename | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    return {
+        "customer_id": value.customer_id,
+        "order_id": value.order_id,
+        "width_mm": value.width_mm,
+        "height_mm": value.height_mm,
+        "front_colors": value.front_colors,
+        "back_colors": value.back_colors,
+        "side": value.side,
+    }
+
+
+def file_check_to_dto(value: FileCheck) -> dict[str, Any]:
+    return {
+        "path": str(value.path),
+        "name": value.path.name,
+        "parsed": parsed_filename_to_dto(value.parsed),
+        "actual_width_mm": value.actual_width_mm,
+        "actual_height_mm": value.actual_height_mm,
+        "dpi": value.dpi,
+        "dpi_x": value.dpi_x,
+        "dpi_y": value.dpi_y,
+        "width_px": value.width_px,
+        "height_px": value.height_px,
+        "actual_format": value.actual_format,
+        "colorspace": value.colorspace,
+        "errors": list(value.errors),
+        "warnings": list(value.warnings),
+        "needs_resample": value.needs_resample,
+        "resample_target_mm": (
+            list(value.resample_target_mm) if value.resample_target_mm else None
+        ),
+        "resample_decision": value.resample_decision,
+        "resample_reason": value.resample_reason,
+        "resample_scale": value.resample_scale,
+        "resample_crop_mm": list(value.resample_crop_mm),
+        "resample_effective_dpi": (
+            list(value.resample_effective_dpi)
+            if value.resample_effective_dpi
+            else None
+        ),
+        "resample_confirmed": value.resample_confirmed,
+        "rotation_degrees": value.rotation_degrees,
+        "orientation_verified": value.orientation_verified,
+        "passed": value.passed,
+    }
+
+
+def order_check_to_dto(
+    value: OrderCheck,
+    *,
+    status: str | None = None,
+    pdf_path: str | None = None,
+    preview_paths: list[str] | None = None,
+    processing_errors: list[str] | None = None,
+) -> dict[str, Any]:
+    pending = sum(
+        item.resample_decision == "ask_confirmation" for item in value.files
+    )
+    if status is None:
+        if pending:
+            status = "waiting_confirmation"
+        elif not value.passed:
+            status = "error"
+        elif value.warnings or any(item.warnings for item in value.files):
+            status = "warning"
+        else:
+            status = "passed"
+    return {
+        "order_id": value.order_id,
+        "customer_id": value.customer_id,
+        "status": status,
+        "passed": value.passed,
+        "pending_confirmations": pending,
+        "errors": list(value.errors),
+        "warnings": list(value.warnings),
+        "files": [file_check_to_dto(item) for item in value.files],
+        "pdf_path": pdf_path,
+        "preview_paths": list(preview_paths or []),
+        "processing_errors": list(processing_errors or []),
+    }

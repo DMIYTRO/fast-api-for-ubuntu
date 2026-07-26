@@ -39,6 +39,7 @@ class BatchProcessor:
         self.min_dpi = profile.min_dpi if min_dpi is None else min_dpi
         self.unparsed: list[FileCheck] = []
         self.unsupported: list[FileCheck] = []
+        self.scanned_order_count = 0
 
     def scan(self) -> list[Path]:
         if not self.input_dir.is_dir():
@@ -49,9 +50,22 @@ class BatchProcessor:
         )
 
     def inspect_orders(self) -> list[OrderCheck]:
+        """Inspect all orders, preserving the legacy list-returning API."""
+        return list(self.iter_inspect_orders())
+
+    def iter_inspect_orders(self):
+        """Yield validated orders as soon as each order has been inspected.
+
+        Folder discovery and filename parsing are intentionally completed
+        first: this preserves deterministic grouping, sorting, and the legacy
+        ``unparsed``/``unsupported`` collections.  Expensive image inspection
+        then happens one order at a time, so callers can publish partial
+        results without waiting for the entire folder.
+        """
         grouped: dict[str, list[FileCheck]] = defaultdict(list)
         self.unparsed = []
         self.unsupported = []
+        self.scanned_order_count = 0
 
         for path in self.scan():
             check = FileCheck(path=path)
@@ -67,41 +81,41 @@ class BatchProcessor:
                 check.errors.append(str(exc))
                 self.unparsed.append(check)
                 continue
-
-            try:
-                frame_count = count_frames(str(path))
-                if frame_count != 1:
-                    check.errors.append(
-                        f"файл содержит {frame_count} страниц/изображений; разрешён только одностраничный файл"
-                    )
-                    grouped[check.parsed.order_id].append(check)
-                    continue
-                meta = inspect_file(str(path))
-                check.actual_width_mm = meta.width_mm
-                check.actual_height_mm = meta.height_mm
-                check.width_px = meta.width_px
-                check.height_px = meta.height_px
-                check.dpi = meta.dpi
-                check.dpi_x = meta.dpi_x
-                check.dpi_y = meta.dpi_y
-                check.actual_format = meta.format.upper()
-                check.colorspace = meta.colorspace
-                self._validate_file(check)
-            except Exception as exc:
-                check.errors.append(f"не удалось прочитать файл: {exc}")
-
             grouped[check.parsed.order_id].append(check)
 
-        orders = []
-        for order_id, files in sorted(grouped.items()):
+        sorted_groups = sorted(grouped.items())
+        self.scanned_order_count = len(sorted_groups)
+        for order_id, files in sorted_groups:
+            for check in files:
+                try:
+                    path = check.path
+                    frame_count = count_frames(str(path))
+                    if frame_count != 1:
+                        check.errors.append(
+                            f"файл содержит {frame_count} страниц/изображений; разрешён только одностраничный файл"
+                        )
+                        continue
+                    meta = inspect_file(str(path))
+                    check.actual_width_mm = meta.width_mm
+                    check.actual_height_mm = meta.height_mm
+                    check.width_px = meta.width_px
+                    check.height_px = meta.height_px
+                    check.dpi = meta.dpi
+                    check.dpi_x = meta.dpi_x
+                    check.dpi_y = meta.dpi_y
+                    check.actual_format = meta.format.upper()
+                    check.colorspace = meta.colorspace
+                    self._validate_file(check)
+                except Exception as exc:
+                    check.errors.append(f"не удалось прочитать файл: {exc}")
+
             order = OrderCheck(
                 order_id=order_id,
                 customer_id=files[0].parsed.customer_id,
                 files=files,
             )
             self._validate_order(order)
-            orders.append(order)
-        return orders
+            yield order
 
     def _validate_file(self, check: FileCheck) -> None:
         parsed = check.parsed
