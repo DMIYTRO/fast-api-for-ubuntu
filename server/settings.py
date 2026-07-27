@@ -1,9 +1,4 @@
-"""Server settings.
-
-The local admin panel intentionally uses one installation-wide fixed password.
-Its Argon2 hash is stored here so that authentication does not depend on the
-shell environment used to start the application.
-"""
+"""Server settings."""
 
 from __future__ import annotations
 
@@ -13,14 +8,6 @@ from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-
-# Fixed admin-panel password: 1111
-FIXED_ADMIN_PASSWORD_HASH = (
-    "$argon2id$v=19$m=65536,t=3,p=4$"
-    "/ueIfGAyOIhIia1P2K32fA$"
-    "n/M+E3KMZBnEbBukYsTBH3YEH579V1UMUZhYLsmJIrc"
-)
-
 
 def _env_bool(name: str, default: bool) -> bool:
     value = os.environ.get(name)
@@ -49,13 +36,18 @@ class Settings:
     def from_env(cls) -> "Settings":
         default_db = PROJECT_DIR / "image_magic.db"
         secure_value = os.environ.get("IMAGE_MAGIC_COOKIE_SECURE")
+        password_hash = os.environ.get("IMAGE_MAGIC_PASSWORD_HASH", "").strip()
+        if not password_hash:
+            raise RuntimeError(
+                "Не задан IMAGE_MAGIC_PASSWORD_HASH. "
+                "Создайте хеш командой '.venv/bin/python manage.py set-password' "
+                "и передайте его через окружение."
+            )
         return cls(
             database_url=os.environ.get(
                 "IMAGE_MAGIC_DATABASE_URL", f"sqlite:///{default_db}"
             ),
-            # Do not read IMAGE_MAGIC_PASSWORD_HASH here: the admin password
-            # must remain stable regardless of how the server is launched.
-            password_hash=FIXED_ADMIN_PASSWORD_HASH,
+            password_hash=password_hash,
             session_hours=max(
                 1, int(os.environ.get("IMAGE_MAGIC_SESSION_HOURS", "12"))
             ),

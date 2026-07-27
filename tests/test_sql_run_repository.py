@@ -1,3 +1,5 @@
+from copy import deepcopy
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -5,7 +7,13 @@ import unittest
 from sqlalchemy import func, select
 
 from server.database import Database
-from server.models import CheckRun, CorrectionDecision, FileResult, OrderResult
+from server.models import (
+    CheckRun,
+    CorrectionDecision,
+    FileResult,
+    OrderAction,
+    OrderResult,
+)
 from server.models import RunEvent as SqlRunEvent
 from services.batch_adapter import ProcessingOptions
 from services.coordinator import RunCoordinator
@@ -109,6 +117,10 @@ class SqlRunRepositoryTests(unittest.TestCase):
         self.repository.create_run(expected)
 
         actual = self.repository.get_run("run-1")
+        file_result_id = actual["orders"]["25506185"]["files"][0].pop(
+            "file_result_id"
+        )
+        self.assertGreater(file_result_id, 0)
         self.assertEqual(actual, expected)
 
         # Verify the DTO was not merely stored as one opaque blob.
@@ -127,8 +139,8 @@ class SqlRunRepositoryTests(unittest.TestCase):
             self.assertEqual(file_record.status, "waiting_confirmation")
 
     def test_save_updates_rows_without_duplicating_orders_or_files(self):
-        run = sample_run()
-        self.repository.create_run(run)
+        self.repository.create_run(sample_run())
+        run = self.repository.get_run("run-1")
         run["status"] = "completed"
         run["stage"] = "completed"
         run["progress"] = 100
@@ -153,6 +165,237 @@ class SqlRunRepositoryTests(unittest.TestCase):
             )
             self.assertEqual(
                 session.scalar(select(func.count()).select_from(FileResult)), 1
+            )
+
+    def test_path_transition_keeps_file_row_and_correction_decision(self):
+        run = sample_run(status="completed")
+        run["orders"]["25506185"]["status"] = "passed"
+        self.repository.create_run(run)
+        stored = self.repository.get_run("run-1")
+        file_dto = stored["orders"]["25506185"]["files"][0]
+        original_id = file_dto["file_result_id"]
+        audit = {
+            "file_result_id": original_id,
+            "path": file_dto["path"],
+            "decision": "confirmed",
+            "original": {"resample_decision": "ask_confirmation"},
+            "proposed": {"target_mm": [92.0, 52.0]},
+        }
+        self.repository.save_run_with_event(
+            stored,
+            "order.correction_confirmed",
+            {"order_id": "25506185", "decisions": [audit]},
+        )
+        coordinator = RunCoordinator(self.repository, autostart=False)
+
+        transitioned = coordinator.apply_file_transition(
+            "run-1",
+            "25506185",
+            status="accepted_for_print",
+            source_paths={
+                "/orders/input/order-face.jpg":
+                    "/orders/Processed/order-face.jpg"
+            },
+            pdf_path=None,
+            preview_paths=[],
+        )
+
+        transitioned_file = transitioned["orders"]["25506185"]["files"][0]
+        self.assertEqual(transitioned_file["file_result_id"], original_id)
+        self.assertEqual(
+            transitioned_file["path"], "/orders/Processed/order-face.jpg"
+        )
+        with self.database.session_factory() as session:
+            self.assertEqual(
+                session.scalar(select(func.count()).select_from(FileResult)), 1
+            )
+            decision = session.scalar(select(CorrectionDecision))
+            self.assertIsNotNone(decision)
+            self.assertEqual(decision.file_result_id, original_id)
+
+    def test_file_result_id_from_another_order_is_rejected(self):
+        first = sample_run("run-1", "completed")
+        second = sample_run("run-2", "completed")
+        second["orders"]["25506185"]["files"][0]["path"] = (
+            "/orders/input/second-face.jpg"
+        )
+        self.repository.create_run(first)
+        self.repository.create_run(second)
+        first_stored = self.repository.get_run("run-1")
+        second_stored = self.repository.get_run("run-2")
+        foreign_id = second_stored["orders"]["25506185"]["files"][0][
+            "file_result_id"
+        ]
+        first_file = first_stored["orders"]["25506185"]["files"][0]
+        original_id = first_file["file_result_id"]
+        original_path = first_file["path"]
+        first_file["file_result_id"] = foreign_id
+        first_file["path"] = "/orders/Processed/order-face.jpg"
+
+        with self.assertRaisesRegex(ValueError, "does not belong"):
+            self.repository.save_run(first_stored)
+
+        unchanged = self.repository.get_run("run-1")
+        unchanged_file = unchanged["orders"]["25506185"]["files"][0]
+        self.assertEqual(unchanged_file["file_result_id"], original_id)
+        self.assertEqual(unchanged_file["path"], original_path)
+
+    def test_file_extras_follow_stable_ids_when_files_are_reordered(self):
+        run = sample_run()
+        order = run["orders"]["25506185"]
+        first = order["files"][0]
+        first["resample_reason"] = "first-reason"
+        first["parsed"]["side"] = "face"
+        second = deepcopy(first)
+        second.update(
+            {
+                "path": "/orders/input/order-back.jpg",
+                "name": "order-back.jpg",
+                "resample_reason": "second-reason",
+                "resample_scale": 2.0,
+            }
+        )
+        second["parsed"]["side"] = "back"
+        order["files"].append(second)
+        order["preview_paths"].append(
+            "/orders/input/Previews/order-back.png"
+        )
+        self.repository.create_run(run)
+        stored = self.repository.get_run("run-1")
+        stored_files = stored["orders"]["25506185"]["files"]
+        expected_extras = {
+            item["file_result_id"]: (
+                item["parsed"]["side"],
+                item["resample_reason"],
+                item["resample_scale"],
+            )
+            for item in stored_files
+        }
+        moved_paths = {
+            item["file_result_id"]: (
+                f"/orders/Processed/{Path(item['path']).name}"
+            )
+            for item in stored_files
+        }
+        stored_files.reverse()
+        for item in stored_files:
+            item["path"] = moved_paths[item["file_result_id"]]
+        stored["orders"]["25506185"]["preview_paths"].reverse()
+
+        self.repository.save_run(stored)
+
+        reloaded_files = self.repository.get_run("run-1")["orders"][
+            "25506185"
+        ]["files"]
+        self.assertEqual(
+            {item["file_result_id"] for item in reloaded_files},
+            set(expected_extras),
+        )
+        for item in reloaded_files:
+            file_id = item["file_result_id"]
+            self.assertEqual(item["path"], moved_paths[file_id])
+            self.assertEqual(
+                (
+                    item["parsed"]["side"],
+                    item["resample_reason"],
+                    item["resample_scale"],
+                ),
+                expected_extras[file_id],
+            )
+
+    def test_nonexistent_file_result_id_is_rejected(self):
+        self.repository.create_run(sample_run())
+        stored = self.repository.get_run("run-1")
+        stored["orders"]["25506185"]["files"][0][
+            "file_result_id"
+        ] = 999_999
+
+        with self.assertRaisesRegex(ValueError, "does not belong"):
+            self.repository.save_run(stored)
+
+    def test_duplicate_file_result_id_in_one_order_is_rejected(self):
+        self.repository.create_run(sample_run())
+        stored = self.repository.get_run("run-1")
+        duplicate = deepcopy(stored["orders"]["25506185"]["files"][0])
+        duplicate["path"] = "/orders/input/duplicate.jpg"
+        stored["orders"]["25506185"]["files"].append(duplicate)
+
+        with self.assertRaisesRegex(ValueError, "used more than once"):
+            self.repository.save_run(stored)
+
+    def test_legacy_file_dto_without_id_still_matches_by_path(self):
+        self.repository.create_run(sample_run())
+        stored = self.repository.get_run("run-1")
+        file_dto = stored["orders"]["25506185"]["files"][0]
+        original_id = file_dto.pop("file_result_id")
+        file_dto["resample_reason"] = "legacy-updated"
+
+        self.repository.save_run(stored)
+
+        reloaded = self.repository.get_run("run-1")["orders"]["25506185"][
+            "files"
+        ][0]
+        self.assertEqual(reloaded["file_result_id"], original_id)
+        self.assertEqual(reloaded["resample_reason"], "legacy-updated")
+
+    def test_legacy_list_file_extras_envelope_is_still_read(self):
+        self.repository.create_run(sample_run())
+        with self.database.session_factory() as session, session.begin():
+            record = session.get(CheckRun, "run-1")
+            envelope = json.loads(record.options_json)
+            file_extras = envelope["__run_repository__"]["file_extras"][
+                "25506185"
+            ]
+            record.options_json = json.dumps(
+                {
+                    **envelope,
+                    "__run_repository__": {
+                        **envelope["__run_repository__"],
+                        "file_extras": {
+                            "25506185": list(file_extras.values())
+                        },
+                    },
+                }
+            )
+
+        reloaded = self.repository.get_run("run-1")["orders"]["25506185"][
+            "files"
+        ][0]
+        self.assertEqual(reloaded["resample_reason"], "crop")
+        self.assertEqual(reloaded["parsed"]["side"], "face")
+
+    def test_correction_audit_uses_id_when_event_path_is_stale(self):
+        self.repository.create_run(sample_run(status="waiting_confirmation"))
+        changed = self.repository.get_run("run-1")
+        file_dto = changed["orders"]["25506185"]["files"][0]
+        file_id = file_dto["file_result_id"]
+        stale_path = file_dto["path"]
+        file_dto["path"] = "/orders/Processed/order-face.jpg"
+
+        self.repository.save_run_with_event(
+            changed,
+            "order.correction_confirmed",
+            {
+                "order_id": "25506185",
+                "decisions": [
+                    {
+                        "file_result_id": file_id,
+                        "path": stale_path,
+                        "decision": "confirmed",
+                        "original": {},
+                        "proposed": {},
+                    }
+                ],
+            },
+        )
+
+        with self.database.session_factory() as session:
+            decision = session.scalar(select(CorrectionDecision))
+            self.assertIsNotNone(decision)
+            self.assertEqual(decision.file_result_id, file_id)
+            self.assertEqual(
+                session.get(FileResult, file_id).source_path,
+                "/orders/Processed/order-face.jpg",
             )
 
     def test_two_customers_can_share_the_same_order_number(self):
@@ -285,6 +528,98 @@ class SqlRunRepositoryTests(unittest.TestCase):
                 ),
                 4,
             )
+
+    def test_restart_fails_pending_action_without_guessing_filesystem_state(self):
+        run = sample_run(status="completed")
+        run["orders"]["25506185"]["status"] = "passed"
+        self.repository.create_run(run)
+        with self.database.session_factory() as session, session.begin():
+            order = session.scalar(select(OrderResult))
+            session.add(
+                OrderAction(
+                    order_result_id=order.id,
+                    action="print",
+                    status="pending",
+                )
+            )
+
+        SqlRunRepository(self.database.session_factory)
+
+        with self.database.session_factory() as session:
+            action = session.scalar(select(OrderAction))
+            self.assertEqual(action.status, "failed")
+            recovery = action.cms_response_json
+            self.assertIn("application_restart", recovery)
+            self.assertIn('"filesystem_reconciled":false', recovery)
+
+    def test_restart_promotes_pending_action_if_order_transition_was_persisted(self):
+        run = sample_run(status="completed")
+        run["orders"]["25506185"]["status"] = "accepted_for_print"
+        input_dir = Path(self.temporary_directory.name) / "orders"
+        preview_dir = input_dir / "Previews"
+        preview_dir.mkdir(parents=True)
+        source_path = input_dir / "order-face.jpg"
+        pdf_path = input_dir / "order.pdf"
+        preview_path = preview_dir / "order-face.png"
+        source_path.write_text("source")
+        pdf_path.write_text("pdf")
+        preview_path.write_text("preview")
+        run["orders"]["25506185"]["files"][0]["path"] = str(source_path)
+        run["orders"]["25506185"]["pdf_path"] = str(pdf_path)
+        run["orders"]["25506185"]["preview_paths"] = [str(preview_path)]
+        self.repository.create_run(run)
+        with self.database.session_factory() as session, session.begin():
+            order = session.scalar(select(OrderResult))
+            session.add(
+                OrderAction(
+                    order_result_id=order.id,
+                    action="print",
+                    status="pending",
+                )
+            )
+
+        SqlRunRepository(self.database.session_factory)
+
+        with self.database.session_factory() as session:
+            action = session.scalar(select(OrderAction))
+            self.assertEqual(action.status, "prepared")
+            self.assertIn(
+                "persisted_transition_completed", action.cms_response_json
+            )
+
+    def test_restart_does_not_promote_pending_action_when_files_are_missing(self):
+        run = sample_run(status="completed")
+        run["orders"]["25506185"]["status"] = "accepted_for_print"
+        input_dir = Path(self.temporary_directory.name) / "orders"
+        preview_dir = input_dir / "Previews"
+        preview_dir.mkdir(parents=True)
+        source_path = input_dir / "order-face.jpg"
+        pdf_path = input_dir / "order.pdf"
+        source_path.write_text("source")
+        pdf_path.write_text("pdf")
+        run["orders"]["25506185"]["files"][0]["path"] = str(source_path)
+        run["orders"]["25506185"]["pdf_path"] = str(pdf_path)
+        run["orders"]["25506185"]["preview_paths"] = [
+            str(preview_dir / "missing-preview.png")
+        ]
+        self.repository.create_run(run)
+        with self.database.session_factory() as session, session.begin():
+            order = session.scalar(select(OrderResult))
+            session.add(
+                OrderAction(
+                    order_result_id=order.id,
+                    action="print",
+                    status="pending",
+                )
+            )
+
+        SqlRunRepository(self.database.session_factory)
+
+        with self.database.session_factory() as session:
+            action = session.scalar(select(OrderAction))
+            self.assertEqual(action.status, "failed")
+            recovery = action.cms_response_json
+            self.assertIn('"filesystem_reconciled":false', recovery)
 
     def test_malformed_legacy_json_is_read_safely(self):
         with self.database.session_factory() as session, session.begin():

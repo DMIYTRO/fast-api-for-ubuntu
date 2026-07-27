@@ -2,21 +2,23 @@ import os
 import unittest
 from unittest.mock import patch
 
-from argon2 import PasswordHasher
-
-from server.settings import FIXED_ADMIN_PASSWORD_HASH, Settings
+from server.settings import Settings
 
 
 class SettingsTests(unittest.TestCase):
-    def test_admin_password_is_fixed_even_when_environment_overrides_it(self):
+    def test_admin_password_hash_is_read_from_environment(self):
         with patch.dict(
             os.environ,
-            {"IMAGE_MAGIC_PASSWORD_HASH": "must-not-override-fixed-password"},
+            {"IMAGE_MAGIC_PASSWORD_HASH": "test-password-hash"},
         ):
             settings = Settings.from_env()
 
-        self.assertEqual(settings.password_hash, FIXED_ADMIN_PASSWORD_HASH)
-        self.assertTrue(PasswordHasher().verify(settings.password_hash, "1111"))
+        self.assertEqual(settings.password_hash, "test-password-hash")
+
+    def test_missing_admin_password_hash_stops_startup(self):
+        with patch.dict(os.environ, {"IMAGE_MAGIC_PASSWORD_HASH": ""}):
+            with self.assertRaisesRegex(RuntimeError, "IMAGE_MAGIC_PASSWORD_HASH"):
+                Settings.from_env()
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -179,6 +180,15 @@ class RunEvent(Base):
 
 class OrderAction(Base):
     __tablename__ = "order_actions"
+    __table_args__ = (
+        Index(
+            "uq_order_actions_one_pending_per_order",
+            "order_result_id",
+            unique=True,
+            sqlite_where=text("status = 'pending'"),
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     order_result_id: Mapped[int] = mapped_column(

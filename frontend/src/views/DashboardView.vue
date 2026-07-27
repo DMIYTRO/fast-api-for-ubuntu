@@ -21,6 +21,21 @@ async function act(action, comment) {
   catch (error) { toast.value = error.message; }
   finally { actionBusy.value = false; window.setTimeout(() => toast.value = "", 5000); }
 }
+async function resolveConflict(strategy) {
+  const prompt = checks.conflictPrompt;
+  if (!prompt) return;
+  actionBusy.value = true;
+  try {
+    await checks.act(prompt.action, prompt.comment, strategy);
+    checks.conflictPrompt = null;
+    toast.value = strategy === "replace" ? "Существующий файл заменён" : "Файл сохранён под новым именем";
+  } catch (error) {
+    toast.value = error.message;
+  } finally {
+    actionBusy.value = false;
+    window.setTimeout(() => toast.value = "", 5000);
+  }
+}
 function expired() { auth.authenticated = false; router.replace("/login"); }
 function updateBackToTop() { showBackToTop.value = window.scrollY > 600; }
 function backToTop() { window.scrollTo({ top: 0, behavior: "smooth" }); }
@@ -55,6 +70,19 @@ onBeforeUnmount(() => {
   </main>
   <StartCheckPanel :open="checks.drawerOpen" :config="checks.config" :busy="checks.loading" @close="checks.drawerOpen = false" @start="checks.start" />
   <ActionBar :count="checks.selected.length" :selected-ids="checks.selected" :comments="checks.returnComments" :can-print="checks.canPrint" :busy="actionBusy" :reasons="checks.config?.return_reasons || []" @clear="checks.clearSelection" @action="act" />
+  <div v-if="checks.conflictPrompt" class="confirm-backdrop">
+    <section class="confirm-card">
+      <h3>Файл уже существует</h3>
+      <p>Найден конфликт для <strong>{{ checks.conflictPrompt.conflict?.destination_path }}</strong>. Можно заменить существующий файл новым или сохранить новый под другим именем.</p>
+      <p v-if="checks.conflictPrompt.conflict?.source_path" class="muted">Источник: {{ checks.conflictPrompt.conflict.source_path }}</p>
+      <p v-if="checks.conflictPrompt.conflict?.suggested_name" class="muted">Новый вариант имени: {{ checks.conflictPrompt.conflict.suggested_name }}</p>
+      <div>
+        <button class="button secondary" :disabled="actionBusy" @click="checks.conflictPrompt = null">Отмена</button>
+        <button class="button danger" :disabled="actionBusy" @click="resolveConflict('replace')">Заменить существующий</button>
+        <button class="button primary" :disabled="actionBusy" @click="resolveConflict('rename')">Сохранить под новым именем</button>
+      </div>
+    </section>
+  </div>
   <button v-if="showBackToTop" type="button" class="back-to-top" title="В начало страницы" aria-label="В начало страницы" @click="backToTop">↑</button>
   <div v-if="toast" class="toast">{{ toast }}</div>
 </template>

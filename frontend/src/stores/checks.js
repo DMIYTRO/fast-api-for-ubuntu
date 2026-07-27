@@ -33,7 +33,7 @@ export const useChecksStore = defineStore("checks", {
   state: () => ({
     runs: [], activeRun: null, orders: [], config: null, loading: false, error: "",
     connection: "closed", selected: [], filter: localStorage.getItem("im-filter") || "all",
-    search: "", events: [], drawerOpen: false, stopEvents: null, actionResults: {}, returnComments: {},
+    search: "", events: [], drawerOpen: false, stopEvents: null, actionResults: {}, returnComments: {}, conflictPrompt: null,
   }),
   getters: {
     filteredOrders(state) {
@@ -162,15 +162,16 @@ export const useChecksStore = defineStore("checks", {
       await api.correction(this.activeRun.id, order.order_id ?? order.id, { decision });
       await this.resync();
     },
-    async act(action, comment) {
+    async act(action, comment, conflictStrategy = "fail") {
       const order_ids = [...this.selected];
       const run_id = this.activeRun?.id;
       const responses = action === "print"
-        ? [await api.preparePrint({ order_ids, run_id })]
+        ? [await api.preparePrint({ order_ids, run_id, conflict_strategy: conflictStrategy })]
         : await Promise.all(order_ids.map((orderId) => api.prepareReject({
           order_ids: [orderId],
           run_id,
           comment: [this.returnComments[orderId], comment].filter(Boolean).join("\n"),
+          conflict_strategy: conflictStrategy,
         })));
       const result = responses.flatMap((response) => list(response));
       for (const item of result) {
@@ -178,6 +179,17 @@ export const useChecksStore = defineStore("checks", {
         const order = this.orders.find((value) => String(value.order_id ?? value.id) === String(item.order_id));
         if (order) order.action_result = item;
       }
+      const conflict = result.find((item) => item.status === "conflict");
+      if (conflict) {
+        this.conflictPrompt = {
+          action,
+          comment,
+          orderId: String(conflict.order_id),
+          conflict: conflict.conflict,
+        };
+        return result;
+      }
+      this.conflictPrompt = null;
       if (action === "reject") order_ids.forEach((id) => delete this.returnComments[id]);
       this.clearSelection();
       // Print/reject preparation changes order actions only. Keep the active

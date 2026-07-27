@@ -5,7 +5,8 @@
 ```bash
 cd "/Users/admin/Documents/Image Magic"
 
-export IMAGE_MAGIC_PASSWORD_HASH='$argon2id$v=19$m=65536,t=3,p=4$CJpqfei7JqUSNm/C1hd91g$cplO/cr9B9BkTTUWrCH8xtoMx3QqQzdqoZNOKgcBT1U'
+.venv/bin/python manage.py set-password
+export IMAGE_MAGIC_PASSWORD_HASH='ХЕШ_ИЗ_ПРЕДЫДУЩЕЙ_КОМАНДЫ'
 
 .venv/bin/python control_panel.py
 ```
@@ -21,7 +22,7 @@ cd "/Users/admin/Documents/Image Magic/frontend"
 npm run build
 
 cd "/Users/admin/Documents/Image Magic"
-export IMAGE_MAGIC_PASSWORD_HASH='$argon2id$v=19$m=65536,t=3,p=4$CJpqfei7JqUSNm/C1hd91g$cplO/cr9B9BkTTUWrCH8xtoMx3QqQzdqoZNOKgcBT1U'
+export IMAGE_MAGIC_PASSWORD_HASH='ХЕШ_ИЗ_ПРЕДЫДУЩЕЙ_КОМАНДЫ'
 .venv/bin/python control_panel.py
 ```
 

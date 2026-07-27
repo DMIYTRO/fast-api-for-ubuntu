@@ -19,6 +19,13 @@ class FileLifecycleError(RuntimeError):
     """Raised when an order cannot safely be moved to its next state."""
 
 
+class FileConflictError(FileLifecycleError):
+    def __init__(self, source: Path, destination: Path) -> None:
+        super().__init__(f"Файл уже существует в целевой папке: {destination.name}")
+        self.source = Path(source)
+        self.destination = Path(destination)
+
+
 @dataclass(frozen=True)
 class FileTransition:
     source_paths: dict[str, str]
@@ -53,7 +60,9 @@ class FileLifecycle:
         for directory in (self.troubles_dir, self.processed_dir):
             directory.mkdir(parents=True, exist_ok=True)
 
-    def accept_for_print(self, order: dict[str, Any]) -> FileTransition:
+    def accept_for_print(
+        self, order: dict[str, Any], *, conflict_strategy: str = "fail"
+    ) -> FileTransition:
         """Move a complete successful order into the internal print staging."""
         self.initialize()
         sources = self._source_paths(order)
@@ -64,10 +73,12 @@ class FileLifecycle:
             (pdf, self.print_pdf_dir / pdf.name),
             *( (preview, self.processed_preview_dir / preview.name) for preview in previews ),
         ]
-        completed = self._move_all(moves)
+        completed = self._move_all(moves, conflict_strategy=conflict_strategy)
         return self._transition_from_moves(order, completed)
 
-    def return_for_rework(self, order: dict[str, Any]) -> FileTransition:
+    def return_for_rework(
+        self, order: dict[str, Any], *, conflict_strategy: str = "fail"
+    ) -> FileTransition:
         """Move every available artifact of an operator-returned order to Troubles."""
         self.initialize()
         target_dir = self.troubles_dir / str(order.get("order_id") or "UNPARSED")
@@ -83,6 +94,7 @@ class FileLifecycle:
         completed = self._move_all(
             ((path, target_dir / path.name) for path in candidates),
             reuse_identical=True,
+            conflict_strategy=conflict_strategy,
         )
         return self._transition_from_moves(order, completed)
 
@@ -149,34 +161,47 @@ class FileLifecycle:
 
     @staticmethod
     def _move_all(
-        moves: Any, *, reuse_identical: bool = False
+        moves: Any,
+        *,
+        reuse_identical: bool = False,
+        conflict_strategy: str = "fail",
     ) -> list[tuple[Path, Path, bool]]:
         planned = list(moves)
         destinations = [destination for _, destination in planned]
         if len(set(destinations)) != len(destinations):
             raise FileLifecycleError("В заказе есть файлы с одинаковым именем.")
+        resolved: list[tuple[Path, Path, bool]] = []
         for source, destination in planned:
-            if not destination.exists():
-                continue
-            if reuse_identical and filecmp.cmp(source, destination, shallow=False):
-                continue
-            raise FileLifecycleError(
-                f"Файл уже существует в целевой папке: {destination.name}"
-            )
+            target = destination
+            reused = False
+            if destination.exists():
+                if reuse_identical and filecmp.cmp(source, destination, shallow=False):
+                    reused = True
+                elif conflict_strategy == "replace":
+                    destination.unlink()
+                elif conflict_strategy == "rename":
+                    target = FileLifecycle._next_available_destination(destination)
+                else:
+                    raise FileConflictError(source, destination)
+            resolved.append((source, target, reused))
 
         completed: list[tuple[Path, Path, bool]] = []
         try:
-            for source, destination in planned:
+            for source, destination, reused in resolved:
                 if destination.exists():
-                    # An earlier check may already have copied this same
-                    # failed file to Troubles.  Remove the duplicate source
-                    # so the final state still contains one canonical copy.
-                    source.unlink()
-                    completed.append((source, destination, True))
+                    if reused:
+                        # An earlier check may already have copied this same
+                        # failed file to Troubles.  Remove the duplicate source
+                        # so the final state still contains one canonical copy.
+                        source.unlink()
+                        completed.append((source, destination, True))
+                    else:
+                        source.unlink()
+                        completed.append((source, destination, True))
                     continue
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(source), str(destination))
-                completed.append((source, destination, False))
+                completed.append((source, destination, reused))
         except Exception as exc:
             for source, destination, reused in reversed(completed):
                 if destination.exists() and not source.exists():
@@ -189,6 +214,17 @@ class FileLifecycle:
                         pass
             raise FileLifecycleError(f"Не удалось переместить файлы заказа: {exc}") from exc
         return completed
+
+    @staticmethod
+    def _next_available_destination(destination: Path) -> Path:
+        stem = destination.stem
+        suffix = destination.suffix
+        index = 1
+        candidate = destination
+        while candidate.exists():
+            candidate = destination.with_name(f"{stem} ({index}){suffix}")
+            index += 1
+        return candidate
 
     @staticmethod
     def _transition_from_moves(

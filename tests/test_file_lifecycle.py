@@ -41,6 +41,44 @@ class FileLifecycleTests(unittest.TestCase):
             transition.preview_paths, [str(self.root / "Previews" / "Processed" / "face.png")]
         )
 
+    def test_accept_for_print_can_replace_existing_conflicting_targets(self):
+        processed_source = self.root / "Processed" / "face.jpg"
+        processed_pdf = self.root / "PDF" / "Print" / "1001.pdf"
+        processed_preview = self.root / "Previews" / "Processed" / "face.png"
+        processed_source.parent.mkdir(parents=True)
+        processed_pdf.parent.mkdir(parents=True)
+        processed_preview.parent.mkdir(parents=True)
+        processed_source.write_bytes(b"old-source")
+        processed_pdf.write_bytes(b"old-pdf")
+        processed_preview.write_bytes(b"old-preview")
+
+        transition = FileLifecycle(self.root).accept_for_print(
+            self.order, conflict_strategy="replace"
+        )
+
+        self.assertFalse(self.source.exists())
+        self.assertFalse(self.pdf.exists())
+        self.assertFalse(self.preview.exists())
+        self.assertEqual(
+            transition.source_paths[str(self.source)], str(processed_source)
+        )
+
+    def test_accept_for_print_can_rename_conflicting_targets(self):
+        processed_source = self.root / "Processed" / "face.jpg"
+        processed_source.parent.mkdir(parents=True)
+        processed_source.write_bytes(b"old-source")
+
+        transition = FileLifecycle(self.root).accept_for_print(
+            self.order, conflict_strategy="rename"
+        )
+
+        self.assertFalse(self.source.exists())
+        self.assertTrue((self.root / "Processed" / "face (1).jpg").exists())
+        self.assertEqual(
+            transition.source_paths[str(self.source)],
+            str(self.root / "Processed" / "face (1).jpg"),
+        )
+
     def test_missing_pdf_does_not_partially_accept_order(self):
         self.pdf.unlink()
 

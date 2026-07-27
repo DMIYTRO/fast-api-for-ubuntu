@@ -597,6 +597,7 @@ def create_app(
                 order_ids=tuple(payload.order_ids),
                 run_id=payload.run_id,
                 comment=payload.comment,
+                conflict_strategy=payload.conflict_strategy,
             ),
             action,
         )

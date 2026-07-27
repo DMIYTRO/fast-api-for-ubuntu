@@ -6,12 +6,19 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import json
 import logging
+from pathlib import Path
 from typing import Any, Callable
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from server.models import CheckRun, CorrectionDecision, FileResult, OrderResult
+from server.models import (
+    CheckRun,
+    CorrectionDecision,
+    FileResult,
+    OrderAction,
+    OrderResult,
+)
 from server.models import RunEvent as SqlRunEvent
 
 from .repository import RunEvent
@@ -50,6 +57,7 @@ _ORDER_STANDARD_KEYS = {
     "files",
 }
 _FILE_MAPPED_KEYS = {
+    "file_result_id",
     "path",
     "name",
     "actual_width_mm",
@@ -136,16 +144,29 @@ class SqlRunRepository:
             "order.correction_rejected",
         }:
             return
+        order_id = str(data.get("order_id") or "")
         for value in data.get("decisions") or []:
-            file_record = session.scalar(
+            statement = (
                 select(FileResult)
                 .join(OrderResult)
-                .where(
-                    OrderResult.run_id == run_id,
-                    FileResult.source_path == str(value.get("path") or ""),
-                )
-                .order_by(FileResult.id)
+                .where(OrderResult.run_id == run_id)
             )
+            if order_id:
+                statement = statement.where(OrderResult.order_id == order_id)
+            file_result_id = value.get("file_result_id")
+            if file_result_id is not None:
+                statement = statement.where(
+                    FileResult.id == _required_record_id(
+                        file_result_id, "file_result_id"
+                    )
+                )
+            else:
+                # Backward compatibility for events produced before file IDs
+                # were carried by the service DTO.
+                statement = statement.where(
+                    FileResult.source_path == str(value.get("path") or "")
+                )
+            file_record = session.scalar(statement.order_by(FileResult.id))
             if file_record is None:
                 continue
             session.add(
@@ -249,9 +270,61 @@ class SqlRunRepository:
             ]
 
     def recover_interrupted_runs(self) -> int:
-        """Mark work lacking an in-memory processor context as interrupted."""
+        """Mark work lacking an in-memory processor context as interrupted.
+
+        A pending action whose persisted order already has the matching final
+        status completed its durable transition and can be promoted. Otherwise
+        it is failed so it cannot block the order forever. We deliberately do
+        not attempt filesystem rollback here: OrderAction does not contain a
+        source/destination manifest, so guessing after a crash could move or
+        delete the wrong files.
+        """
         recovered = 0
         with self._session_factory() as session, session.begin():
+            pending_actions = list(
+                session.scalars(
+                    select(OrderAction)
+                    .where(OrderAction.status == "pending")
+                    .order_by(OrderAction.id)
+                )
+            )
+            terminal_status = {
+                "print": "accepted_for_print",
+                "reject": "returned_for_rework",
+            }
+            for action_record in pending_actions:
+                expected_status = terminal_status.get(action_record.action)
+                persisted_status = action_record.order_result.status
+                filesystem_reconciled = self._order_files_reconciled(
+                    action_record.order_result
+                )
+                if (
+                    expected_status is not None
+                    and persisted_status == expected_status
+                    and filesystem_reconciled
+                ):
+                    action_record.status = "prepared"
+                    reason = "persisted_transition_completed"
+                else:
+                    action_record.status = "failed"
+                    reason = "application_restart"
+                action_record.cms_response_json = _json_dump(
+                    {
+                        "reason": reason,
+                        "previous_status": "pending",
+                        "order_status": persisted_status,
+                        "filesystem_reconciled": filesystem_reconciled,
+                    }
+                )
+                logger.warning(
+                    "order_action.recovered action_id=%s order_result_id=%s "
+                    "status=%s reason=%s",
+                    action_record.id,
+                    action_record.order_result_id,
+                    action_record.status,
+                    reason,
+                )
+
             records = list(
                 session.scalars(
                     select(CheckRun).where(
@@ -289,6 +362,20 @@ class SqlRunRepository:
                 recovered += 1
         return recovered
 
+    @staticmethod
+    def _order_files_reconciled(order_result: OrderResult) -> bool:
+        paths: list[str] = []
+        if order_result.pdf_path:
+            paths.append(order_result.pdf_path)
+        for file_record in order_result.files:
+            if file_record.source_path:
+                paths.append(file_record.source_path)
+            if file_record.preview_path:
+                paths.append(file_record.preview_path)
+        if not paths:
+            return False
+        return all(Path(path).exists() for path in paths)
+
     def _apply_run(
         self, session: Session, record: CheckRun, run: dict[str, Any]
     ) -> None:
@@ -304,33 +391,37 @@ class SqlRunRepository:
         record.started_at = _datetime(run.get("started_at"))
         record.finished_at = _datetime(run.get("finished_at"))
         record.error = _optional_str(run.get("error"))
-        record.options_json = _json_dump(self._options_envelope(run))
-
         existing_orders = {
             (item.customer_id or "", item.order_id): item for item in record.orders
         }
         incoming_orders = run.get("orders") or {}
         retained_order_ids: set[int] = set()
-        for _aggregate_key, order in incoming_orders.items():
-            order_id = str(order.get("order_id") or _aggregate_key)
+        file_ids_by_order: dict[str, list[int]] = {}
+        for aggregate_key, order in incoming_orders.items():
+            order_id = str(order.get("order_id") or aggregate_key)
             customer_id = str(order.get("customer_id") or "")
             order_record = existing_orders.get((customer_id, order_id))
             if order_record is None:
                 order_record = OrderResult(run=record, order_id=order_id)
                 session.add(order_record)
-            self._apply_order(session, order_record, order)
+            file_ids_by_order[str(aggregate_key)] = self._apply_order(
+                session, order_record, order
+            )
             session.flush()
             retained_order_ids.add(order_record.id)
         for order_record in existing_orders.values():
             if order_record.id not in retained_order_ids:
                 session.delete(order_record)
+        record.options_json = _json_dump(
+            self._options_envelope(run, file_ids_by_order)
+        )
 
     def _apply_order(
         self,
         session: Session,
         record: OrderResult,
         order: dict[str, Any],
-    ) -> None:
+    ) -> list[int]:
         record.customer_id = _optional_str(order.get("customer_id"))
         record.status = str(order.get("status", "pending"))
         record.passed = bool(order.get("passed", False))
@@ -338,18 +429,40 @@ class SqlRunRepository:
         record.warnings_json = _json_dump(list(order.get("warnings") or []))
         record.pdf_path = _optional_str(order.get("pdf_path"))
 
+        existing_files_by_id = {item.id: item for item in record.files}
         existing_files: dict[str, list[FileResult]] = {}
         for item in record.files:
             existing_files.setdefault(item.source_path, []).append(item)
         used_ids: set[int] = set()
+        ordered_file_ids: list[int] = []
         preview_paths = list(order.get("preview_paths") or [])
         for index, file_dto in enumerate(order.get("files") or []):
             source_path = str(file_dto.get("path", ""))
-            candidates = existing_files.get(source_path, [])
-            file_record = next(
-                (candidate for candidate in candidates if candidate.id not in used_ids),
-                None,
-            )
+            incoming_id = file_dto.get("file_result_id")
+            if incoming_id is not None:
+                file_id = _required_record_id(incoming_id, "file_result_id")
+                file_record = existing_files_by_id.get(file_id)
+                if file_record is None:
+                    raise ValueError(
+                        f"file_result_id {file_id} does not belong to "
+                        f"order_result_id {record.id}"
+                    )
+                if file_id in used_ids:
+                    raise ValueError(
+                        f"file_result_id {file_id} is used more than once"
+                    )
+            else:
+                # Legacy DTOs do not carry a database ID. Preserve their old
+                # path-based matching until they have made one read round-trip.
+                candidates = existing_files.get(source_path, [])
+                file_record = next(
+                    (
+                        candidate
+                        for candidate in candidates
+                        if candidate.id not in used_ids
+                    ),
+                    None,
+                )
             if file_record is None:
                 file_record = FileResult(
                     order_result=record,
@@ -359,6 +472,7 @@ class SqlRunRepository:
                 session.add(file_record)
                 session.flush()
             used_ids.add(file_record.id)
+            ordered_file_ids.append(file_record.id)
             self._apply_file(
                 file_record,
                 file_dto,
@@ -368,6 +482,7 @@ class SqlRunRepository:
             for file_record in candidates:
                 if file_record.id not in used_ids:
                     session.delete(file_record)
+        return ordered_file_ids
 
     @staticmethod
     def _apply_file(
@@ -391,14 +506,17 @@ class SqlRunRepository:
         record.preview_path = _optional_str(preview_path)
 
     @staticmethod
-    def _options_envelope(run: dict[str, Any]) -> dict[str, Any]:
+    def _options_envelope(
+        run: dict[str, Any],
+        file_ids_by_order: dict[str, list[int]],
+    ) -> dict[str, Any]:
         run_extras = {
             key: deepcopy(value)
             for key, value in run.items()
             if key not in _RUN_STANDARD_KEYS
         }
         order_extras: dict[str, dict[str, Any]] = {}
-        file_extras: dict[str, list[dict[str, Any]]] = {}
+        file_extras: dict[str, dict[str, dict[str, Any]]] = {}
         for order_id, order in (run.get("orders") or {}).items():
             order_extras[str(order_id)] = {
                 key: deepcopy(value)
@@ -406,14 +524,16 @@ class SqlRunRepository:
                 if key not in _ORDER_STANDARD_KEYS
             }
             order_extras[str(order_id)]["__storage_key__"] = str(order_id)
-            file_extras[str(order_id)] = [
-                {
+            ordered_file_ids = file_ids_by_order.get(str(order_id), [])
+            file_extras[str(order_id)] = {
+                str(ordered_file_ids[index]): {
                     key: deepcopy(value)
                     for key, value in item.items()
                     if key not in _FILE_MAPPED_KEYS
                 }
-                for item in order.get("files") or []
-            ]
+                for index, item in enumerate(order.get("files") or [])
+                if index < len(ordered_file_ids)
+            }
         return {
             "options": deepcopy(run.get("options") or {}),
             _OPTIONS_MARKER: {
@@ -480,13 +600,21 @@ class SqlRunRepository:
             for index, file_record in enumerate(
                 sorted(order_record.files, key=lambda item: item.id)
             ):
-                extra = (
-                    deepcopy(extras_for_files[index])
-                    if index < len(extras_for_files)
-                    else {}
-                )
+                if isinstance(extras_for_files, dict):
+                    extra = deepcopy(
+                        extras_for_files.get(str(file_record.id)) or {}
+                    )
+                else:
+                    # Backward compatibility for envelopes written before
+                    # file extras were keyed by the stable database ID.
+                    extra = (
+                        deepcopy(extras_for_files[index])
+                        if index < len(extras_for_files)
+                        else {}
+                    )
                 extra.update(
                     {
+                        "file_result_id": file_record.id,
                         "path": file_record.source_path,
                         "name": file_record.filename,
                         "actual_width_mm": file_record.width_mm,
@@ -561,6 +689,18 @@ def _optional_str(value: Any) -> str | None:
 
 def _optional_float(value: Any) -> float | None:
     return None if value is None else float(value)
+
+
+def _required_record_id(value: Any, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a positive integer")
+    try:
+        record_id = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a positive integer") from exc
+    if record_id <= 0 or str(value).strip() != str(record_id):
+        raise ValueError(f"{field_name} must be a positive integer")
+    return record_id
 
 
 def _json_dump(value: Any) -> str:

@@ -1,9 +1,16 @@
 import tempfile
 import unittest
+import os
 from pathlib import Path
 
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
+
+# ``control_panel`` exposes an application instance at import time.  Production
+# requires this setting; the suite supplies an isolated hash before importing it.
+os.environ.setdefault(
+    "IMAGE_MAGIC_PASSWORD_HASH", PasswordHasher().hash("test-only-password")
+)
 
 import control_panel
 from processing.models import FileCheck, OrderCheck, ParsedFilename

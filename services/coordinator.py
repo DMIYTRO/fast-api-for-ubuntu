@@ -341,8 +341,14 @@ class RunCoordinator:
             if stored_order["status"] != "waiting_confirmation":
                 raise InvalidRunStateError("order is not waiting for confirmation")
 
-            decision_audit = [
-                {
+            stored_files_by_path: dict[str, list[dict[str, Any]]] = {}
+            for stored_file in stored_order.get("files") or []:
+                stored_files_by_path.setdefault(
+                    str(stored_file.get("path") or ""), []
+                ).append(stored_file)
+            decision_audit = []
+            for item in context.adapter.pending_files(order):
+                audit = {
                     "path": str(item.path),
                     "decision": "confirmed" if approved else "rejected",
                     "original": {
@@ -361,8 +367,12 @@ class RunCoordinator:
                         "rotation_degrees": item.rotation_degrees,
                     },
                 }
-                for item in context.adapter.pending_files(order)
-            ]
+                matching_files = stored_files_by_path.get(str(item.path), [])
+                if matching_files:
+                    stored_file = matching_files.pop(0)
+                    if stored_file.get("file_result_id") is not None:
+                        audit["file_result_id"] = stored_file["file_result_id"]
+                decision_audit.append(audit)
             context.adapter.decide(order, approved)
             decision = "confirmed" if approved else "rejected"
             run["orders"][stored_key] = order_check_to_dto(
