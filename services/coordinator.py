@@ -204,6 +204,47 @@ class RunCoordinator:
     def reject_correction(self, run_id: str, order_id: str) -> dict[str, Any]:
         return self._decide(run_id, order_id, approved=False)
 
+    def apply_file_transition(
+        self,
+        run_id: str,
+        order_id: str,
+        *,
+        status: str,
+        source_paths: dict[str, str],
+        pdf_path: str | None,
+        preview_paths: list[str],
+        errors: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Persist paths/status after a deliberate operator file transition."""
+        with self._lock:
+            run = self.get_run(run_id)
+            order = run["orders"].get(order_id)
+            if order is None:
+                raise RunNotFoundError(f"{run_id}/{order_id}")
+            for item in order.get("files") or []:
+                old_path = str(item.get("path", ""))
+                if old_path in source_paths:
+                    item["path"] = source_paths[old_path]
+            if pdf_path:
+                order["pdf_path"] = pdf_path
+            if preview_paths:
+                order["preview_paths"] = preview_paths
+            if errors:
+                order["errors"] = [*order.get("errors", []), *errors]
+                order["processing_errors"] = [
+                    *order.get("processing_errors", []), *errors
+                ]
+                order["passed"] = False
+            order["status"] = status
+            self.repository.save_run(run)
+            self._emit_locked(
+                run_id,
+                "order.file_transition",
+                {"order_id": order_id, "status": status, "order": order},
+            )
+            self._changed.notify_all()
+            return self.get_run(run_id)
+
     def wait_for(
         self,
         run_id: str,

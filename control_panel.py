@@ -15,12 +15,12 @@ import time
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 
 from config.profiles import DEFAULT_DIRECTION, PROFILES
 from core.return_reasons import load_return_reasons
@@ -31,6 +31,8 @@ from server.logging_config import configure_logging
 from server.models import OrderAction, OrderResult
 from server.settings import Settings
 from services import (
+    FileLifecycle,
+    FileLifecycleError,
     InvalidRunStateError,
     ProcessingOptions,
     RunCoordinator,
@@ -436,6 +438,7 @@ def create_app(
             allowed_roots=_get_roots(request),
             default_input_dir=_get_default_input(request),
         )
+        FileLifecycle(input_dir).initialize()
         result = _get_coordinator(request).submit(
             ProcessingOptions(
                 input_path=str(input_dir),
@@ -590,10 +593,6 @@ def create_app(
     def prepare_action(
         request: Request, payload: OrderActionRequest, action: str
     ) -> dict[str, Any]:
-        if action == "reject" and not (payload.comment or "").strip():
-            raise APIError(
-                422, "comment_required", "Для возврата требуется комментарий."
-            )
         coordinator_value = _get_coordinator(request)
         results = []
         with request.app.state.database.session_factory() as session:
@@ -606,6 +605,39 @@ def create_app(
                         {"order_id": order_id, "status": "rejected", "message": "Заказ не прошёл проверку."}
                     )
                     continue
+                lifecycle = FileLifecycle(Path(run["options"]["input_path"]))
+                try:
+                    transition = (
+                        lifecycle.accept_for_print(order)
+                        if action == "print"
+                        else lifecycle.return_for_rework(order)
+                    )
+                except FileLifecycleError as exc:
+                    transition = lifecycle.route_to_errors(order)
+                    coordinator_value.apply_file_transition(
+                        run["id"],
+                        str(order_id),
+                        status="error",
+                        source_paths=transition.source_paths,
+                        pdf_path=transition.pdf_path,
+                        preview_paths=transition.preview_paths,
+                        errors=[str(exc)],
+                    )
+                    results.append(
+                        {"order_id": order_id, "status": "error", "message": str(exc)}
+                    )
+                    continue
+                next_status = (
+                    "accepted_for_print" if action == "print" else "returned_for_rework"
+                )
+                coordinator_value.apply_file_transition(
+                    run["id"],
+                    str(order_id),
+                    status=next_status,
+                    source_paths=transition.source_paths,
+                    pdf_path=transition.pdf_path,
+                    preview_paths=transition.preview_paths,
+                )
                 stored = session.scalar(
                     select(OrderResult)
                     .where(
@@ -615,9 +647,7 @@ def create_app(
                     .order_by(desc(OrderResult.updated_at))
                 )
                 if stored is None:
-                    results.append(
-                        {"order_id": order_id, "status": "not_found"}
-                    )
+                    results.append({"order_id": order_id, "status": "not_found"})
                     continue
                 session.add(
                     OrderAction(
@@ -646,6 +676,94 @@ def create_app(
         request: Request, payload: OrderActionRequest
     ) -> dict[str, Any]:
         return prepare_action(request, payload, "reject")
+
+    @application.get("/api/order-history", dependencies=[Depends(protected)])
+    def order_history(
+        request: Request,
+        action: Literal["all", "print", "reject"] = "all",
+        date_from: str | None = None,
+        date_to: str | None = None,
+        search: str = "",
+        page: int = Query(default=1, ge=1),
+        limit: int = Query(default=100, ge=1, le=100),
+    ) -> dict[str, Any]:
+        """Compact, preview-only history of orders handled by an operator."""
+        try:
+            start = datetime.fromisoformat(date_from) if date_from else None
+            end = datetime.fromisoformat(date_to) if date_to else None
+        except ValueError as exc:
+            raise APIError(422, "invalid_date", "Укажите дату в формате ГГГГ-ММ-ДД.") from exc
+        if start and end and start > end:
+            raise APIError(422, "invalid_date_range", "Начальная дата позже конечной.")
+
+        with request.app.state.database.session_factory() as session:
+            statement = select(OrderAction).join(OrderResult)
+            if action != "all":
+                statement = statement.where(OrderAction.action == action)
+            if start:
+                statement = statement.where(OrderAction.created_at >= start)
+            if end:
+                statement = statement.where(OrderAction.created_at < end.replace(hour=23, minute=59, second=59, microsecond=999999))
+            query = search.strip()
+            if query:
+                statement = statement.where(
+                    OrderResult.order_id.contains(query) | OrderResult.customer_id.contains(query)
+                )
+            total = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
+            actions = session.scalars(
+                statement.order_by(desc(OrderAction.created_at)).offset((page - 1) * limit).limit(limit)
+            ).unique().all()
+            items = []
+            for item in actions:
+                order = item.order_result
+                previews = [
+                    {
+                        "side": file.side,
+                        "url": f"/api/order-history/{item.id}/previews/{index}",
+                    }
+                    for index, file in enumerate(order.files)
+                    if file.preview_path
+                ]
+                items.append(
+                    {
+                        "id": item.id,
+                        "action": item.action,
+                        "status": item.status,
+                        "created_at": item.created_at.isoformat(),
+                        "order_id": order.order_id,
+                        "customer_id": order.customer_id,
+                        "comment": item.comment,
+                        "previews": previews,
+                    }
+                )
+        return {
+            "items": items,
+            "page": page,
+            "page_size": limit,
+            "total": total,
+            "total_pages": max(1, (total + limit - 1) // limit),
+        }
+
+    @application.get(
+        "/api/order-history/{action_id}/previews/{file_index}",
+        dependencies=[Depends(protected)],
+    )
+    def order_history_preview(
+        request: Request, action_id: int, file_index: int
+    ) -> FileResponse:
+        with request.app.state.database.session_factory() as session:
+            action = session.get(OrderAction, action_id)
+            if action is None:
+                raise APIError(404, "history_not_found", "Запись истории не найдена.")
+            files = list(action.order_result.files)
+            if file_index < 0 or file_index >= len(files):
+                raise APIError(404, "preview_not_found", "Превью не найдено.")
+            preview = files[file_index].preview_path
+            root = Path(action.order_result.run.input_path).resolve()
+            target = Path(preview).resolve() if preview else None
+            if target is None or not _is_inside(target, root) or not target.is_file():
+                raise APIError(404, "preview_not_found", "Превью не найдено.")
+            return FileResponse(target)
 
     @application.get(
         "/api/checks/{run_id}/export.json", dependencies=[Depends(protected)]

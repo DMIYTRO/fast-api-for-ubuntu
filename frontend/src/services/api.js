@@ -35,4 +35,5 @@ export const api = {
   correction: (runId, orderId, body) => request(`/api/checks/${encodeURIComponent(runId)}/orders/${encodeURIComponent(orderId)}/correction`, { method: "POST", body: JSON.stringify(body) }),
   preparePrint: (body) => request("/api/orders/prepare-print", { method: "POST", body: JSON.stringify(body) }),
   prepareReject: (body) => request("/api/orders/prepare-reject", { method: "POST", body: JSON.stringify(body) }),
+  history: (params = {}) => request(`/api/order-history?${new URLSearchParams(params)}`),
 };

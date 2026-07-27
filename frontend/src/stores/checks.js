@@ -40,8 +40,12 @@ export const useChecksStore = defineStore("checks", {
       const query = state.search.trim().toLowerCase();
       return state.orders.filter((order) => {
         const status = order.status || (order.passed ? "passed" : "error");
+        // This dashboard is an active work queue.  Orders already handed to
+        // print or returned for rework belong to their file folders/history,
+        // not to any of the active tabs (including "Все").
+        if (["accepted_for_print", "returned_for_rework"].includes(status)) return false;
         const filterOk = state.filter === "all" || status === state.filter ||
-          (state.filter === "passed" && order.passed) ||
+          (state.filter === "passed" && ["passed", "warning", "completed"].includes(status)) ||
           (state.filter === "warning" && (status === "warning" || order.warnings?.length)) ||
           (state.filter === "error" && (status === "error" || status === "failed" || order.errors?.length));
         const text = [order.order_id, order.id, order.customer_id, ...(order.files || []).map((file) => file.filename)].join(" ").toLowerCase();
@@ -49,7 +53,7 @@ export const useChecksStore = defineStore("checks", {
       });
     },
     selectedOrders: (state) => state.orders.filter((order) => state.selected.includes(String(order.order_id ?? order.id))),
-    canPrint() { return this.selectedOrders.length > 0 && this.selectedOrders.every((order) => order.passed || order.status === "passed" || order.status === "completed"); },
+    canPrint() { return this.selectedOrders.length > 0 && this.selectedOrders.every((order) => ["passed", "warning", "completed"].includes(order.status)); },
   },
   actions: {
     setFilter(value) { this.filter = value; localStorage.setItem("im-filter", value); },
@@ -59,8 +63,16 @@ export const useChecksStore = defineStore("checks", {
         const [config, runs] = await Promise.all([api.config(), api.runs()]);
         this.config = config;
         this.runs = list(runs);
-        const candidate = this.runs.find((item) => running(item.status)) || this.runs[0];
+        // A refresh starts a fresh operator session.  Restore only work that
+        // is genuinely still in progress; completed runs must not repopulate
+        // counters or the active queue until the operator starts a new check.
+        const candidate = this.runs.find((item) => running(item.status));
         if (candidate) await this.selectRun(candidate.id);
+        else {
+          this.activeRun = null;
+          this.orders = [];
+          this.selected = [];
+        }
       } catch (error) { this.error = error.message; }
       finally { this.loading = false; }
     },

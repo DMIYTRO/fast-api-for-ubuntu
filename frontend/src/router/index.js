@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from "vue-router";
 import LoginView from "../views/LoginView.vue";
 import DashboardView from "../views/DashboardView.vue";
+import HistoryView from "../views/HistoryView.vue";
 import { useAuthStore } from "../stores/auth.js";
 
 const router = createRouter({
@@ -8,6 +9,7 @@ const router = createRouter({
   routes: [
     { path: "/login", name: "login", component: LoginView, meta: { guest: true } },
     { path: "/", name: "dashboard", component: DashboardView },
+    { path: "/history", name: "history", component: HistoryView },
     { path: "/:pathMatch(.*)*", redirect: "/" },
   ],
 });

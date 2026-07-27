@@ -255,12 +255,42 @@ class ControlPanelTests(unittest.TestCase):
             f"/api/checks/{run_id}/orders"
         ).json()["items"][0]
         self.assertEqual(refreshed["action_result"]["status"], "prepared")
+        self.assertEqual(refreshed["status"], "accepted_for_print")
+        self.assertTrue((self.root / "Processed" / "sample-face.jpg").is_file())
+        self.assertTrue((self.root / "PDF" / "Print" / "sample.pdf").is_file())
+        self.assertTrue(
+            (self.root / "Previews" / "Processed" / "sample-face.png").is_file()
+        )
+        self.assertEqual(
+            self.client.get(refreshed["files"][0]["source_url"]).content,
+            b"source-image",
+        )
+        self.assertEqual(
+            self.client.get(refreshed["pdf_url"]).content,
+            b"%PDF-test",
+        )
 
-        missing_comment = self.client.post(
+        return_without_comment = self.client.post(
             "/api/orders/prepare-reject",
             json={"run_id": run_id, "order_ids": ["1001"]},
         )
-        self.assertEqual(missing_comment.status_code, 422)
+        self.assertEqual(return_without_comment.status_code, 200)
+        self.assertEqual(
+            return_without_comment.json()["items"],
+            [{"order_id": "1001", "status": "prepared"}],
+        )
+        history = self.client.get(
+            "/api/order-history", params={"action": "reject"}
+        )
+        self.assertEqual(history.status_code, 200)
+        item = history.json()["items"][0]
+        self.assertEqual(item["order_id"], "1001")
+        self.assertEqual(item["action"], "reject")
+        self.assertNotIn("pdf_url", item)
+        self.assertEqual(
+            self.client.get(item["previews"][0]["url"]).content,
+            b"preview-image",
+        )
 
 
 if __name__ == "__main__":

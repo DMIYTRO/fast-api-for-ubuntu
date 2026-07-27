@@ -15,6 +15,7 @@ const labels = { queued: "В очереди", running: "Проверка идё�
       <span v-if="connection === 'reconnecting'" class="connection">Восстанавливаем соединение…</span>
     </div>
     <div class="header-actions">
+      <RouterLink class="button ghost small" to="/history">История</RouterLink>
       <button class="button primary small" @click="$emit('new-check')">＋ Новая проверка</button>
       <button class="button ghost small" @click="$emit('logout')">Выйти</button>
     </div>

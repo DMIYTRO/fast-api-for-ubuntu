@@ -15,7 +15,6 @@ function prepare(action) { if (action === "print") emit("action", action, ""); e
 function submit() {
   const reasonText = selectedReasons.value.join("; ");
   const value = [reasonText, comment.value].filter(Boolean).join(". ");
-  if (!value && !allHavePreparedComments.value) return;
   emit("action", "reject", value);
   mode.value = ""; comment.value = ""; selectedReasons.value = [];
 }
@@ -36,5 +35,5 @@ function submit() {
         <input v-model="selectedReasons" type="checkbox" :value="item.text"><span><small>{{ item.category }}</small>{{ item.text }}</span>
       </label>
     </div>
-    <textarea v-model.trim="comment" rows="4" placeholder="Общий дополнительный комментарий"></textarea><div><button class="button secondary" type="button" @click="mode = ''">Отмена</button><button class="button danger" :disabled="busy || (!comment && !selectedReasons.length && !allHavePreparedComments)">Подтвердить возврат</button></div></form></div></Teleport>
+    <textarea v-model.trim="comment" rows="4" placeholder="Общий дополнительный комментарий (необязательно)"></textarea><div><button class="button secondary" type="button" @click="mode = ''">Отмена</button><button class="button danger" :disabled="busy">Подтвердить возврат</button></div></form></div></Teleport>
 </template>

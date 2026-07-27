@@ -22,6 +22,17 @@ describe("checks store", () => {
     expect(store.filteredOrders).toEqual([]);
   });
 
+  it("does not restore a completed run after a page refresh", async () => {
+    const store = useChecksStore();
+    vi.spyOn(api, "config").mockResolvedValue({});
+    vi.spyOn(api, "runs").mockResolvedValue({ items: [{ id: "done", status: "completed" }] });
+
+    await store.initialize();
+
+    expect(store.activeRun).toBeNull();
+    expect(store.orders).toEqual([]);
+  });
+
   it("updates only the order named by an SSE event", () => {
     const store = useChecksStore();
     store.activeRun = { id: "run-1", progress: 0 };
@@ -81,6 +92,28 @@ describe("checks store", () => {
     expect(store.canPrint).toBe(true);
     store.selected.push("200");
     expect(store.canPrint).toBe(false);
+  });
+
+  it("hides orders already accepted for print from the passed filter", () => {
+    const store = useChecksStore();
+    store.orders = [
+      { order_id: "100", status: "passed", passed: true },
+      { order_id: "200", status: "accepted_for_print", passed: true },
+    ];
+    store.setFilter("passed");
+
+    expect(store.filteredOrders.map((order) => order.order_id)).toEqual(["100"]);
+  });
+
+  it("hides completed workflow orders from the all-orders work queue", () => {
+    const store = useChecksStore();
+    store.orders = [
+      { order_id: "100", status: "passed", passed: true },
+      { order_id: "200", status: "accepted_for_print", passed: true },
+      { order_id: "300", status: "returned_for_rework" },
+    ];
+
+    expect(store.filteredOrders.map((order) => order.order_id)).toEqual(["100"]);
   });
 
   it("selects and clears all orders visible through the current filter", () => {
