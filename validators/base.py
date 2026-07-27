@@ -54,16 +54,7 @@ class BaseValidator:
             message="ICC профиль внедрен" if icc_ok else "Внимание: ICC профиль не найден в файле"
         ))
 
-        # 4. Проверка размера в мм
-        items.append(ValidationItem(
-            name="Размер, мм",
-            actual_value=f"{meta.width_mm} × {meta.height_mm}",
-            target_value=f"{meta.width_mm} × {meta.height_mm}",
-            passed=True,
-            message="соответствует"
-        ))
-
-        # 5. Проверка объема файла (МБ)
+        # 4. Проверка объема файла (МБ)
         size_ok = not any("размер файла " in value for value in shared.errors)
         items.append(ValidationItem(
             name="Размер файла, Mb",

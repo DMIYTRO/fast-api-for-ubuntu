@@ -194,7 +194,7 @@ class OrderWorkflowTests(unittest.TestCase):
             ["accepted_for_print", "returned_for_rework"],
         )
 
-    def test_print_is_not_idempotent_after_rework(self):
+    def test_print_is_rejected_after_rework_without_moving_files(self):
         BlockingLifecycle.release.set()
         self.service.prepare(self.command, "print")
         self.service.prepare(self.command, "reject")
@@ -202,9 +202,19 @@ class OrderWorkflowTests(unittest.TestCase):
 
         repeated = self.service.prepare(self.command, "print")
 
-        self.assertEqual(repeated["items"][0]["status"], "prepared")
-        self.assertNotIn("idempotent", repeated["items"][0])
-        self.assertEqual(BlockingLifecycle.calls, ["print", "reject", "print"])
+        self.assertEqual(repeated["items"][0]["status"], "rejected")
+        self.assertIn("недопустимый переход", repeated["items"][0]["message"])
+        self.assertEqual(BlockingLifecycle.calls, ["print", "reject"])
+
+    def test_reject_is_rejected_after_rework_without_moving_files(self):
+        self.order["status"] = "returned_for_rework"
+
+        rejected = self.service.prepare(self.command, "reject")
+
+        self.assertEqual(rejected["items"][0]["status"], "rejected")
+        self.assertIn("недопустимый переход", rejected["items"][0]["message"])
+        self.assertEqual(BlockingLifecycle.calls, [])
+        self.assertEqual(self.coordinator.transitions, [])
 
     def test_lifecycle_initialization_failure_marks_action_failed_and_retries(self):
         broken_service = OrderWorkflowService(

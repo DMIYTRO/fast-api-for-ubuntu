@@ -10,6 +10,23 @@ from server.settings import Settings
 
 
 class ServerDatabaseTests(unittest.TestCase):
+    def test_sqlite_connections_enable_wal_and_busy_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(f"sqlite:///{Path(directory) / 'settings.db'}")
+            try:
+                with database.engine.connect() as connection:
+                    self.assertEqual(
+                        connection.scalar(text("PRAGMA foreign_keys")), 1
+                    )
+                    self.assertEqual(
+                        connection.scalar(text("PRAGMA journal_mode")).lower(), "wal"
+                    )
+                    self.assertEqual(
+                        connection.scalar(text("PRAGMA busy_timeout")), 5000
+                    )
+            finally:
+                database.dispose()
+
     def test_complete_schema_is_created(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(f"sqlite:///{Path(directory) / 'test.db'}")

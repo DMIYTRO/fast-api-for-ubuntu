@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from server.models import OrderAction, OrderResult
 
 from .coordinator import RunCoordinator
+from .domain import validate_operator_transition
 from .file_lifecycle import FileConflictError, FileLifecycle, FileLifecycleError
 
 
@@ -180,6 +181,19 @@ class OrderWorkflowService:
                                 "order_id": order_id,
                                 "status": "prepared",
                                 "idempotent": True,
+                            }
+                        )
+                        continue
+                    try:
+                        validate_operator_transition(
+                            str(order.get("status", "")), expected_status
+                        )
+                    except ValueError as exc:
+                        results.append(
+                            {
+                                "order_id": order_id,
+                                "status": "rejected",
+                                "message": str(exc),
                             }
                         )
                         continue

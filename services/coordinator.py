@@ -267,6 +267,7 @@ class RunCoordinator:
             order = run["orders"].get(stored_key) if stored_key else None
             if order is None:
                 raise RunNotFoundError(f"{run_id}/{order_id}")
+            validate_operator_transition(str(order["status"]), status)
             for item in order.get("files") or []:
                 old_path = str(item.get("path", ""))
                 if old_path in source_paths:
@@ -281,7 +282,6 @@ class RunCoordinator:
                     *order.get("processing_errors", []), *errors
                 ]
                 order["passed"] = False
-            validate_operator_transition(str(order["status"]), status)
             order["status"] = status
             self._save_and_emit_locked(
                 run,

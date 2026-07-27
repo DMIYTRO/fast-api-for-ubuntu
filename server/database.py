@@ -22,15 +22,17 @@ class Database:
             database_url, connect_args=connect_args, pool_pre_ping=True
         )
         if database_url.startswith("sqlite"):
-            event.listen(self.engine, "connect", self._enable_sqlite_foreign_keys)
+            event.listen(self.engine, "connect", self._configure_sqlite_connection)
         self.session_factory = sessionmaker(
             bind=self.engine, autoflush=False, expire_on_commit=False
         )
 
     @staticmethod
-    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
+    def _configure_sqlite_connection(dbapi_connection, _connection_record) -> None:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
         cursor.close()
 
     def create_schema(self) -> None:
