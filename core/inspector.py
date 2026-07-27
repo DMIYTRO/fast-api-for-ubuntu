@@ -4,8 +4,8 @@
 
 import os
 import shutil
-import subprocess
 from dataclasses import dataclass
+from .tool_runner import run_command
 
 @dataclass
 class ImageMetadata:
@@ -39,7 +39,7 @@ def _identify_command() -> list[str]:
 def count_frames(image_path: str) -> int:
     """Return the number of images/pages stored in a raster file."""
     cmd = _identify_command() + ["-format", "%p\n", image_path]
-    result = subprocess.run(cmd, capture_output=True, text=True, errors="replace", check=True)
+    result = run_command(cmd, capture_output=True, text=True, errors="replace", check=True)
     return len([line for line in result.stdout.splitlines() if line.strip()])
 
 def inspect_file(image_path: str) -> ImageMetadata:
@@ -50,7 +50,7 @@ def inspect_file(image_path: str) -> ImageMetadata:
         "-format", "%f\n%m\n%w\n%h\n%x\n%y\n%[units]\n%[colorspace]\n%[type]\n%[depth]\n%[icc:description]",
         image_path
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, errors="replace", check=True)
+    result = run_command(cmd, capture_output=True, text=True, errors="replace", check=True)
     lines = [line.strip() for line in result.stdout.strip().split("\n")]
 
     file_name = lines[0] if len(lines) > 0 else os.path.basename(image_path)

@@ -14,12 +14,22 @@ from uuid import uuid4
 from processing.models import OrderCheck
 
 from .batch_adapter import BatchProcessorAdapter, OrderArtifacts, ProcessingOptions
+from .domain import OrderStatus, RunStatus, validate_operator_transition
 from .dto import order_check_to_dto
 from .repository import RunEvent, RunRepository
 
 
-TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
-TERMINAL_ORDER_STATUSES = {"passed", "warning", "error", "cancelled"}
+TERMINAL_RUN_STATUSES = {
+    RunStatus.COMPLETED,
+    RunStatus.FAILED,
+    RunStatus.CANCELLED,
+}
+TERMINAL_ORDER_STATUSES = {
+    OrderStatus.PASSED,
+    OrderStatus.WARNING,
+    OrderStatus.ERROR,
+    OrderStatus.CANCELLED,
+}
 logger = logging.getLogger("image_magic.worker")
 
 
@@ -51,7 +61,31 @@ class _RunContext:
     def __init__(self, adapter: ProcessorAdapter) -> None:
         self.adapter = adapter
         self.orders: dict[str, OrderCheck] = {}
+        self.order_keys: dict[int, str] = {}
         self.cancel_requested = threading.Event()
+
+    def add_order(self, order: OrderCheck) -> str:
+        key = order.order_id
+        if key in self.orders:
+            key = order.aggregate_id
+        self.orders[key] = order
+        self.order_keys[id(order)] = key
+        return key
+
+    def key_for(self, order: OrderCheck) -> str:
+        return self.order_keys[id(order)]
+
+
+def _stored_order_key(run: dict[str, Any], order_id: str) -> str | None:
+    if order_id in run.get("orders", {}):
+        return order_id
+    matches = [
+        key
+        for key, value in (run.get("orders") or {}).items()
+        if value.get("order_id") == order_id
+        or value.get("aggregate_id") == order_id
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 class RunCoordinator:
@@ -75,6 +109,7 @@ class RunCoordinator:
         self._adapter_factory = adapter_factory
         self._contexts: dict[str, _RunContext] = {}
         self._pending_runs: deque[str] = deque()
+        self._pending_resumes: deque[tuple[str, str]] = deque()
         self._commands: queue.Queue[tuple[str, str, str | None]] = queue.Queue()
         self._active_run_id: str | None = None
         self._lock = threading.RLock()
@@ -156,8 +191,19 @@ class RunCoordinator:
             raise RunNotFoundError(run_id)
         return value
 
-    def list_runs(self) -> list[dict[str, Any]]:
-        return self.repository.list_runs()
+    def list_runs(
+        self,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        include_orders: bool = True,
+    ) -> list[dict[str, Any]]:
+        return self.repository.list_runs(
+            limit=limit, offset=offset, include_orders=include_orders
+        )
+
+    def count_runs(self) -> int:
+        return self.repository.count_runs()
 
     def get_active_run(self) -> dict[str, Any] | None:
         with self._lock:
@@ -193,8 +239,7 @@ class RunCoordinator:
                 self._mark_cancelled_locked(run)
             else:
                 run["stage"] = "cancelling"
-                self.repository.save_run(run)
-                self._emit_locked(run_id, "run.cancelling", {})
+                self._save_and_emit_locked(run, "run.cancelling", {})
             self._changed.notify_all()
             return self.get_run(run_id)
 
@@ -218,7 +263,8 @@ class RunCoordinator:
         """Persist paths/status after a deliberate operator file transition."""
         with self._lock:
             run = self.get_run(run_id)
-            order = run["orders"].get(order_id)
+            stored_key = _stored_order_key(run, order_id)
+            order = run["orders"].get(stored_key) if stored_key else None
             if order is None:
                 raise RunNotFoundError(f"{run_id}/{order_id}")
             for item in order.get("files") or []:
@@ -235,12 +281,31 @@ class RunCoordinator:
                     *order.get("processing_errors", []), *errors
                 ]
                 order["passed"] = False
+            validate_operator_transition(str(order["status"]), status)
             order["status"] = status
-            self.repository.save_run(run)
-            self._emit_locked(
-                run_id,
+            self._save_and_emit_locked(
+                run,
                 "order.file_transition",
                 {"order_id": order_id, "status": status, "order": order},
+            )
+            self._changed.notify_all()
+            return self.get_run(run_id)
+
+    def restore_order_snapshot(
+        self, run_id: str, order_id: str, snapshot: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Restore an order after a compensated filesystem transition."""
+        with self._lock:
+            run = self.get_run(run_id)
+            stored_key = _stored_order_key(run, order_id)
+            if stored_key is None:
+                raise RunNotFoundError(f"{run_id}/{order_id}")
+            run["orders"][stored_key] = snapshot
+            self._update_counts(run)
+            self._save_and_emit_locked(
+                run,
+                "order.file_transition_rolled_back",
+                {"order_id": order_id, "status": snapshot.get("status")},
             )
             self._changed.notify_all()
             return self.get_run(run_id)
@@ -268,32 +333,72 @@ class RunCoordinator:
             if run["status"] in TERMINAL_RUN_STATUSES:
                 raise InvalidRunStateError("run is already finished")
             context = self._contexts.get(run_id)
-            order = context.orders.get(order_id) if context else None
-            stored_order = run["orders"].get(order_id)
+            stored_key = _stored_order_key(run, order_id)
+            order = context.orders.get(stored_key) if context and stored_key else None
+            stored_order = run["orders"].get(stored_key) if stored_key else None
             if order is None or not stored_order:
                 raise RunNotFoundError(f"{run_id}/{order_id}")
             if stored_order["status"] != "waiting_confirmation":
                 raise InvalidRunStateError("order is not waiting for confirmation")
 
+            decision_audit = [
+                {
+                    "path": str(item.path),
+                    "decision": "confirmed" if approved else "rejected",
+                    "original": {
+                        "width_mm": item.actual_width_mm,
+                        "height_mm": item.actual_height_mm,
+                        "dpi_x": item.dpi_x,
+                        "dpi_y": item.dpi_y,
+                        "resample_decision": item.resample_decision,
+                    },
+                    "proposed": {
+                        "target_mm": list(item.resample_target_mm)
+                        if item.resample_target_mm
+                        else None,
+                        "crop_mm": list(item.resample_crop_mm),
+                        "scale": item.resample_scale,
+                        "rotation_degrees": item.rotation_degrees,
+                    },
+                }
+                for item in context.adapter.pending_files(order)
+            ]
             context.adapter.decide(order, approved)
             decision = "confirmed" if approved else "rejected"
-            run["orders"][order_id] = order_check_to_dto(
+            run["orders"][stored_key] = order_check_to_dto(
                 order, status=f"correction_{decision}"
             )
             run["status"] = "running"
             run["stage"] = "processing"
-            self.repository.save_run(run)
-            self._emit_locked(
-                run_id,
+            self._save_and_emit_locked(
+                run,
                 f"order.correction_{decision}",
-                {"order_id": order_id},
+                {"order_id": order_id, "decisions": decision_audit},
             )
-            self._commands.put(("resume", run_id, order_id))
+            self._pending_resumes.append((run_id, stored_key))
+            self._schedule_next_locked()
             self._changed.notify_all()
             return self.get_run(run_id)
 
     def _schedule_next_locked(self) -> None:
-        if self._active_run_id is not None or not self._pending_runs:
+        if self._active_run_id is not None:
+            active = self.repository.get_run(self._active_run_id)
+            if active is not None and active.get("status") not in TERMINAL_RUN_STATUSES:
+                return
+            stale_run_id = self._active_run_id
+            self._active_run_id = None
+            self._contexts.pop(stale_run_id, None)
+            logger.warning(
+                "scheduler.recovered_stale_active run_id=%s status=%s",
+                stale_run_id,
+                active.get("status") if active else "missing",
+            )
+        if self._pending_resumes:
+            run_id, order_id = self._pending_resumes.popleft()
+            self._active_run_id = run_id
+            self._commands.put(("resume", run_id, order_id))
+            return
+        if not self._pending_runs:
             return
         run_id = self._pending_runs.popleft()
         self._active_run_id = run_id
@@ -334,8 +439,7 @@ class RunCoordinator:
             run["status"] = "running"
             run["stage"] = "scanning"
             run["started_at"] = _now()
-            self.repository.save_run(run)
-            self._emit_locked(run_id, "run.started", {})
+            self._save_and_emit_locked(run, "run.started", {})
             self._changed.notify_all()
 
         context = self._contexts[run_id]
@@ -368,12 +472,11 @@ class RunCoordinator:
                 )
                 run["stage"] = "processing"
                 run["progress"] = max(run["progress"], 10)
-                context.orders[order.order_id] = order
+                aggregate_id = context.add_order(order)
                 detected_dto = order_check_to_dto(order, status="detected")
-                run["orders"][order.order_id] = detected_dto
-                self.repository.save_run(run)
-                self._emit_locked(
-                    run_id,
+                run["orders"][aggregate_id] = detected_dto
+                self._save_and_emit_locked(
+                    run,
                     "order.detected",
                     {
                         "order_id": order.order_id,
@@ -383,12 +486,11 @@ class RunCoordinator:
                     },
                 )
                 checked_status = _inspection_status(order)
-                run["orders"][order.order_id] = order_check_to_dto(
+                run["orders"][aggregate_id] = order_check_to_dto(
                     order, status=checked_status
                 )
-                self.repository.save_run(run)
-                self._emit_locked(
-                    run_id,
+                self._save_and_emit_locked(
+                    run,
                     "order.checked",
                     {"order_id": order.order_id, "status": checked_status},
                 )
@@ -418,11 +520,10 @@ class RunCoordinator:
                     dto = order_check_to_dto(
                         order, status="waiting_confirmation"
                     )
-                    run["orders"][order.order_id] = dto
+                    run["orders"][aggregate_id] = dto
                     self._update_counts(run)
-                    self.repository.save_run(run)
-                    self._emit_locked(
-                        run_id,
+                    self._save_and_emit_locked(
+                        run,
                         "order.waiting_confirmation",
                         {
                             "order_id": order.order_id,
@@ -440,9 +541,8 @@ class RunCoordinator:
             run["total_orders"] = inspected
             if not inspected:
                 run["progress"] = 100
-            self.repository.save_run(run)
-            self._emit_locked(
-                run_id,
+            self._save_and_emit_locked(
+                run,
                 "scan.progress",
                 {"processed": inspected, "total": inspected, "progress": 100},
             )
@@ -470,9 +570,20 @@ class RunCoordinator:
                 preview_paths=[str(path) for path in artifacts.preview_paths],
                 processing_errors=artifacts.errors,
             )
-            run["orders"][order.order_id] = dto
+            run["orders"][context.key_for(order)] = dto
             self._update_counts(run)
-            self.repository.save_run(run)
+            self._save_and_emit_locked(
+                run,
+                "order.completed",
+                {
+                    "order_id": order.order_id,
+                    "status": status,
+                    "order": dto,
+                    "processed": run["processed_orders"],
+                    "total": run["total_orders"],
+                    "progress": run["progress"],
+                },
+            )
             if artifacts.pdf_path:
                 self._emit_locked(
                     run_id,
@@ -485,18 +596,6 @@ class RunCoordinator:
                     "preview.created",
                     {"order_id": order.order_id, "path": str(path)},
                 )
-            self._emit_locked(
-                run_id,
-                "order.completed",
-                {
-                    "order_id": order.order_id,
-                    "status": status,
-                    "order": dto,
-                    "processed": run["processed_orders"],
-                    "total": run["total_orders"],
-                    "progress": run["progress"],
-                },
-            )
             self._changed.notify_all()
 
     def _settle_run_locked(self, run: dict[str, Any]) -> None:
@@ -514,13 +613,17 @@ class RunCoordinator:
             run["stage"] = "waiting_confirmation"
             run["progress"] = self._progress(run)
             self.repository.save_run(run)
+            if self._active_run_id == run["id"]:
+                self._active_run_id = None
+                self._schedule_next_locked()
         elif terminal == run["total_orders"]:
             run["status"] = "completed"
             run["stage"] = "completed"
             run["progress"] = 100
             run["finished_at"] = _now()
-            self.repository.save_run(run)
-            self._emit_locked(run["id"], "run.completed", self._summary(run))
+            self._save_and_emit_locked(
+                run, "run.completed", self._summary(run)
+            )
             self._release_active_locked(run["id"])
         self._changed.notify_all()
 
@@ -537,8 +640,7 @@ class RunCoordinator:
         run["stage"] = "cancelled"
         run["finished_at"] = _now()
         self._update_counts(run)
-        self.repository.save_run(run)
-        self._emit_locked(run["id"], "run.cancelled", self._summary(run))
+        self._save_and_emit_locked(run, "run.cancelled", self._summary(run))
         self._release_active_locked(run["id"])
 
     def _fail_run(self, run_id: str, exc: Exception) -> None:
@@ -555,9 +657,8 @@ class RunCoordinator:
             run["stage"] = "failed"
             run["finished_at"] = _now()
             run["error"] = f"{type(exc).__name__}: {exc}"
-            self.repository.save_run(run)
-            self._emit_locked(
-                run_id,
+            self._save_and_emit_locked(
+                run,
                 "run.failed",
                 {
                     "error": run["error"],
@@ -606,6 +707,18 @@ class RunCoordinator:
         self, run_id: str, event_type: str, data: dict[str, Any]
     ) -> RunEvent:
         event = self.repository.append_event(run_id, event_type, data)
+        self._log_event(event, data)
+        return event
+
+    def _save_and_emit_locked(
+        self, run: dict[str, Any], event_type: str, data: dict[str, Any]
+    ) -> RunEvent:
+        event = self.repository.save_run_with_event(run, event_type, data)
+        self._log_event(event, data)
+        return event
+
+    @staticmethod
+    def _log_event(event: RunEvent, data: dict[str, Any]) -> None:
         fields = {
             key: data[key]
             for key in (
@@ -620,16 +733,15 @@ class RunCoordinator:
             )
             if key in data
         }
-        level = logging.ERROR if event_type == "run.failed" else logging.INFO
+        level = logging.ERROR if event.type == "run.failed" else logging.INFO
         logger.log(
             level,
             "run.event run_id=%s event=%s event_id=%s details=%s",
-            run_id,
-            event_type,
+            event.run_id,
+            event.type,
             event.id,
             fields or "-",
         )
-        return event
 
 
 def _inspection_status(order: OrderCheck) -> str:

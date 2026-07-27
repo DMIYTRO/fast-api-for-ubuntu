@@ -76,11 +76,10 @@ gs --version
 
 ### Подготовка веб-сервиса
 
-Создайте пароль и сохраните выведенный Argon2-хеш только в переменной окружения:
+Пароль админ-панели закреплён в приложении и не зависит от переменных
+окружения. Постоянный пароль: `1111`.
 
 ```bash
-.venv/bin/python manage.py set-password
-export IMAGE_MAGIC_PASSWORD_HASH='$argon2id$...'
 .venv/bin/alembic upgrade head
 .venv/bin/python control_panel.py
 ```

@@ -44,9 +44,21 @@ class RunRepository(Protocol):
 
     def save_run(self, run: dict[str, Any]) -> None: ...
 
+    def save_run_with_event(
+        self, run: dict[str, Any], event_type: str, data: dict[str, Any]
+    ) -> RunEvent: ...
+
     def get_run(self, run_id: str) -> dict[str, Any] | None: ...
 
-    def list_runs(self) -> list[dict[str, Any]]: ...
+    def list_runs(
+        self,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        include_orders: bool = True,
+    ) -> list[dict[str, Any]]: ...
+
+    def count_runs(self) -> int: ...
 
     def append_event(
         self, run_id: str, event_type: str, data: dict[str, Any]
@@ -80,14 +92,51 @@ class InMemoryRunRepository:
                 raise KeyError(run_id)
             self._runs[run_id] = deepcopy(run)
 
+    def save_run_with_event(
+        self, run: dict[str, Any], event_type: str, data: dict[str, Any]
+    ) -> RunEvent:
+        with self._lock:
+            run_id = str(run["id"])
+            if run_id not in self._runs:
+                raise KeyError(run_id)
+            event_id = self._next_event_ids[run_id]
+            event = RunEvent(
+                id=event_id,
+                type=event_type,
+                run_id=run_id,
+                data=deepcopy(data),
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+            self._runs[run_id] = deepcopy(run)
+            self._next_event_ids[run_id] = event_id + 1
+            self._events[run_id].append(event)
+            return deepcopy(event)
+
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
             value = self._runs.get(run_id)
             return deepcopy(value) if value is not None else None
 
-    def list_runs(self) -> list[dict[str, Any]]:
+    def list_runs(
+        self,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        include_orders: bool = True,
+    ) -> list[dict[str, Any]]:
         with self._lock:
-            return [deepcopy(value) for value in self._runs.values()]
+            values = list(self._runs.values())[offset:]
+            if limit is not None:
+                values = values[:limit]
+            result = [deepcopy(value) for value in values]
+            if not include_orders:
+                for value in result:
+                    value["orders"] = {}
+            return result
+
+    def count_runs(self) -> int:
+        with self._lock:
+            return len(self._runs)
 
     def append_event(
         self, run_id: str, event_type: str, data: dict[str, Any]

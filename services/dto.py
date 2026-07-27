@@ -40,6 +40,7 @@ def file_check_to_dto(value: FileCheck) -> dict[str, Any]:
         "height_px": value.height_px,
         "actual_format": value.actual_format,
         "colorspace": value.colorspace,
+        "size_mb": value.size_mb,
         "errors": list(value.errors),
         "warnings": list(value.warnings),
         "needs_resample": value.needs_resample,
@@ -83,6 +84,7 @@ def order_check_to_dto(
         else:
             status = "passed"
     return {
+        "aggregate_id": value.aggregate_id,
         "order_id": value.order_id,
         "customer_id": value.customer_id,
         "status": status,

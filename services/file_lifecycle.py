@@ -24,6 +24,7 @@ class FileTransition:
     source_paths: dict[str, str]
     pdf_path: str | None
     preview_paths: list[str]
+    moves: tuple[tuple[str, str, bool], ...] = ()
 
 
 class FileLifecycle:
@@ -91,6 +92,28 @@ class FileLifecycle:
             return self.return_for_rework(order)
         except FileLifecycleError:
             return FileTransition({}, None, [])
+
+    @staticmethod
+    def rollback(transition: FileTransition) -> None:
+        """Compensate a completed transition after a later persistence failure."""
+        errors: list[str] = []
+        for source_value, destination_value, reused in reversed(transition.moves):
+            source = Path(source_value)
+            destination = Path(destination_value)
+            try:
+                if source.exists():
+                    continue
+                source.parent.mkdir(parents=True, exist_ok=True)
+                if reused:
+                    shutil.copy2(destination, source)
+                elif destination.exists():
+                    shutil.move(str(destination), str(source))
+            except OSError as exc:
+                errors.append(f"{destination.name}: {exc}")
+        if errors:
+            raise FileLifecycleError(
+                "Не удалось полностью отменить перемещение: " + "; ".join(errors)
+            )
 
     def _source_paths(self, order: dict[str, Any]) -> list[Path]:
         paths = self._existing_source_paths(order)
@@ -185,4 +208,8 @@ class FileLifecycle:
             source_paths=source_paths,
             pdf_path=destinations.get(str(pdf)) if pdf else None,
             preview_paths=[destinations[str(path)] for path in preview_paths if str(path) in destinations],
+            moves=tuple(
+                (str(source), str(destination), reused)
+                for source, destination, reused in moves
+            ),
         )

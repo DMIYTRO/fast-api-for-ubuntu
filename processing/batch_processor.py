@@ -1,15 +1,16 @@
 from collections import defaultdict
 from pathlib import Path
 import shutil
-import subprocess
 import tempfile
 
 from core.inspector import count_frames, inspect_file
 from core.pdf_exporter import convert_image_to_pdf, merge_pdfs_with_ghostscript
 from core.preview_generator import generate_preview
 from core.resampler import resample_image
+from core.tool_runner import run_command
 from config.profiles import DEFAULT_PROFILE, PrePressProfile
 from .resample_policy import ResampleDecision, analyze_resample
+from .profile_rules import evaluate_metadata_rules
 
 from .filename_parser import parse_filename
 from .models import FileCheck, OrderCheck
@@ -62,7 +63,7 @@ class BatchProcessor:
         then happens one order at a time, so callers can publish partial
         results without waiting for the entire folder.
         """
-        grouped: dict[str, list[FileCheck]] = defaultdict(list)
+        grouped: dict[tuple[str, str], list[FileCheck]] = defaultdict(list)
         self.unparsed = []
         self.unsupported = []
         self.scanned_order_count = 0
@@ -81,11 +82,11 @@ class BatchProcessor:
                 check.errors.append(str(exc))
                 self.unparsed.append(check)
                 continue
-            grouped[check.parsed.order_id].append(check)
+            grouped[(check.parsed.customer_id, check.parsed.order_id)].append(check)
 
         sorted_groups = sorted(grouped.items())
         self.scanned_order_count = len(sorted_groups)
-        for order_id, files in sorted_groups:
+        for (_customer_id, order_id), files in sorted_groups:
             for check in files:
                 try:
                     path = check.path
@@ -105,6 +106,7 @@ class BatchProcessor:
                     check.dpi_y = meta.dpi_y
                     check.actual_format = meta.format.upper()
                     check.colorspace = meta.colorspace
+                    check.size_mb = meta.size_mb
                     self._validate_file(check)
                 except Exception as exc:
                     check.errors.append(f"не удалось прочитать файл: {exc}")
@@ -179,25 +181,20 @@ class BatchProcessor:
                 "проверьте ориентацию и совмещение лица и оборота"
             )
 
-        allowed_colorspaces = {value.upper() for value in self.profile.allowed_colorspaces}
-        if (check.colorspace or "").upper() not in allowed_colorspaces:
-            check.warnings.append(
-                f"цветовая модель {check.colorspace or 'не определена'} не входит в профиль "
-                f"{self.profile.name} ({', '.join(self.profile.allowed_colorspaces)}); "
-                "файл будет сохранён без преобразования цветовой модели"
-            )
-
         correction_has_enough_dpi = (
             plan.decision in {ResampleDecision.AUTO_CORRECT, ResampleDecision.ASK_CONFIRMATION}
             and min(plan.effective_dpi) >= self.min_dpi
         )
-        if (check.dpi is None or check.dpi < self.min_dpi) and not correction_has_enough_dpi:
-            actual_dpi = (
-                f"{check.dpi_x:.1f}x{check.dpi_y:.1f}"
-                if check.dpi_x is not None and check.dpi_y is not None
-                else "не определено"
-            )
-            check.errors.append(f"разрешение {actual_dpi} DPI; по обеим осям требуется не меньше {self.min_dpi:.0f} DPI")
+        metadata_rules = evaluate_metadata_rules(
+            profile=self.profile,
+            size_mb=check.size_mb,
+            colorspace=check.colorspace,
+            dpi_x=check.dpi_x,
+            dpi_y=check.dpi_y,
+            correction_has_enough_dpi=correction_has_enough_dpi,
+        )
+        check.errors.extend(metadata_rules.errors)
+        check.warnings.extend(metadata_rules.warnings)
 
         color_mode = (parsed.front_colors, parsed.back_colors)
         if color_mode not in self.profile.allowed_color_modes:
@@ -365,7 +362,7 @@ class BatchProcessor:
             f"-sOutputFile={page_pattern}",
             str(pdf_path),
         ]
-        result = subprocess.run(command, capture_output=True, text=True)
+        result = run_command(command, capture_output=True, text=True)
         if result.returncode != 0:
             details = (result.stderr or result.stdout).strip()
             raise ValueError(f"итоговый PDF повреждён или не открывается: {details}")
@@ -495,7 +492,7 @@ class BatchProcessor:
                 f"-sOutputFile={page_pattern}",
                 str(pdf_path),
             ]
-            result = subprocess.run(command, capture_output=True, text=True)
+            result = run_command(command, capture_output=True, text=True)
             if result.returncode != 0:
                 details = (result.stderr or result.stdout).strip()
                 raise ValueError(f"ошибка рендеринга PDF для превью: {details}")

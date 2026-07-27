@@ -230,21 +230,30 @@ def main() -> None:
             )
             previews_generated_count = len(target_pdfs)
 
-    # Запись аудита всех заказов в базу данных SQLAlchemy
+    # CLI и web используют одну модель истории запусков.
     try:
-        from core.history_db import save_order_audit
-        saved_count = 0
-        for order in orders:
-            pdf_p = created_pdf_map.get(order.order_id)
-            save_order_audit(
-                order=order,
-                pdf_path=pdf_p,
-                previews_count=previews_generated_count if pdf_p else 0,
-                db_path=Path.cwd() / "audit_history.db",
-                profile=processor.profile,
+        from server.database import Database, upgrade_database
+        from server.settings import Settings
+        from services.sql_repository import SqlRunRepository
+        from services.use_cases import record_completed_cli_run
+
+        history_settings = Settings.from_env()
+        upgrade_database(history_settings)
+        history_database = Database(history_settings.database_url)
+        try:
+            record_completed_cli_run(
+                SqlRunRepository(
+                    history_database.session_factory,
+                    recover_interrupted=False,
+                ),
+                input_path=args.input,
+                direction=args.direction,
+                orders=orders,
+                pdf_paths=created_pdf_map,
             )
-            saved_count += 1
-        print(f"\n[DB] История проверки {saved_count} заказов успешно сохранена в базу данных SQLite (audit_history.db).")
+        finally:
+            history_database.dispose()
+        print(f"\n[DB] История проверки {len(orders)} заказов сохранена в общей базе запусков.")
     except Exception as db_exc:
         print(f"\n[DB] Не удалось сохранить историю аудита в БД: {db_exc}")
 

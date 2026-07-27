@@ -5,7 +5,7 @@ from core.resampler import resample_image
 
 
 class ResamplerCommandTests(unittest.TestCase):
-    @patch("core.resampler.subprocess.run")
+    @patch("core.resampler.run_command")
     @patch("core.resampler.shutil.which", return_value="/usr/bin/magick")
     def test_uses_cover_crop_and_rotation_without_stretch(self, _which, run):
         resample_image("input.tif", "/tmp/output.tif", 94.0, 54.0, rotation_degrees=90)

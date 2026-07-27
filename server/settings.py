@@ -1,7 +1,8 @@
-"""Environment-backed server settings.
+"""Server settings.
 
-Secrets are deliberately read from the environment and are never persisted by
-this module.
+The local admin panel intentionally uses one installation-wide fixed password.
+Its Argon2 hash is stored here so that authentication does not depend on the
+shell environment used to start the application.
 """
 
 from __future__ import annotations
@@ -12,6 +13,13 @@ from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
+
+# Fixed admin-panel password: 1111
+FIXED_ADMIN_PASSWORD_HASH = (
+    "$argon2id$v=19$m=65536,t=3,p=4$"
+    "/ueIfGAyOIhIia1P2K32fA$"
+    "n/M+E3KMZBnEbBukYsTBH3YEH579V1UMUZhYLsmJIrc"
+)
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -45,7 +53,9 @@ class Settings:
             database_url=os.environ.get(
                 "IMAGE_MAGIC_DATABASE_URL", f"sqlite:///{default_db}"
             ),
-            password_hash=os.environ.get("IMAGE_MAGIC_PASSWORD_HASH") or None,
+            # Do not read IMAGE_MAGIC_PASSWORD_HASH here: the admin password
+            # must remain stable regardless of how the server is launched.
+            password_hash=FIXED_ADMIN_PASSWORD_HASH,
             session_hours=max(
                 1, int(os.environ.get("IMAGE_MAGIC_SESSION_HOURS", "12"))
             ),

@@ -4,7 +4,7 @@
 
 import os
 import shutil
-import subprocess
+from core.tool_runner import run_command
 
 def generate_preview(
     input_path: str,
@@ -49,5 +49,5 @@ def generate_preview(
         "-draw", f"rectangle {gx1},{gy1} {gx2},{gy2}",
         output_preview_path
     ]
-    subprocess.run(cmd, check=True)
+    run_command(cmd, check=True)
     return output_preview_path

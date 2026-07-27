@@ -19,7 +19,6 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
 
 from config.profiles import DEFAULT_DIRECTION, PROFILES
@@ -29,11 +28,14 @@ from server.database import Database, configure_database, get_db, upgrade_databa
 from server.errors import APIError, error_payload, install_error_handlers
 from server.logging_config import configure_logging
 from server.models import OrderAction, OrderResult
+from server.schemas import CheckOptions, CorrectionRequest, OrderActionRequest
 from server.settings import Settings
 from services import (
     FileLifecycle,
     FileLifecycleError,
     InvalidRunStateError,
+    OrderActionCommand,
+    OrderWorkflowService,
     ProcessingOptions,
     RunCoordinator,
     RunNotFoundError,
@@ -98,26 +100,6 @@ def resolve_input_path(
     if not candidate.is_dir():
         raise APIError(404, "folder_not_found", "Папка с заказами не найдена.")
     return candidate
-
-
-class CheckOptions(BaseModel):
-    input_path: str
-    direction: str = DEFAULT_DIRECTION
-    approve_corrections: bool = False
-    correction_policy: Literal["ask", "auto", "reject"] = "ask"
-    create_pdfs: bool = True
-    generate_previews: bool = True
-    copy_failures: bool = True
-
-
-class CorrectionRequest(BaseModel):
-    decision: Literal["confirm", "reject"]
-
-
-class OrderActionRequest(BaseModel):
-    order_ids: list[str] = Field(min_length=1)
-    run_id: str | None = None
-    comment: str | None = None
 
 
 def _json_error(status: int, code: str, message: str) -> JSONResponse:
@@ -340,6 +322,11 @@ def create_app(
     application.state.settings = settings
     application.state.database = database
     application.state.coordinator = coordinator
+    application.state.order_workflow = OrderWorkflowService(
+        coordinator,
+        database.session_factory,
+        lambda order_id, run_id: _find_order(coordinator, order_id, run_id),
+    )
     application.state.log_path = log_path
     application.state.allowed_roots = allowed_roots or ALLOWED_ROOTS
     application.state.default_input_dir = default_input_dir or DEFAULT_INPUT_DIR
@@ -455,13 +442,25 @@ def create_app(
         return _public_run(result)
 
     @application.get("/api/checks", dependencies=[Depends(protected)])
-    def list_checks(request: Request) -> dict[str, Any]:
-        items = sorted(
-            _get_coordinator(request).list_runs(),
-            key=lambda item: item.get("created_at") or "",
-            reverse=True,
+    def list_checks(
+        request: Request,
+        page: int = Query(default=1, ge=1),
+        limit: int = Query(default=50, ge=1, le=100),
+    ) -> dict[str, Any]:
+        coordinator_value = _get_coordinator(request)
+        items = coordinator_value.list_runs(
+            limit=limit,
+            offset=(page - 1) * limit,
+            include_orders=False,
         )
-        return {"items": [_public_run(item) for item in items]}
+        total = coordinator_value.count_runs()
+        return {
+            "items": [_public_run(item) for item in items],
+            "page": page,
+            "page_size": limit,
+            "total": total,
+            "total_pages": max(1, (total + limit - 1) // limit),
+        }
 
     @application.get("/api/checks/{run_id}", dependencies=[Depends(protected)])
     def get_check(request: Request, run_id: str) -> dict[str, Any]:
@@ -593,73 +592,14 @@ def create_app(
     def prepare_action(
         request: Request, payload: OrderActionRequest, action: str
     ) -> dict[str, Any]:
-        coordinator_value = _get_coordinator(request)
-        results = []
-        with request.app.state.database.session_factory() as session:
-            for order_id in payload.order_ids:
-                run, order = _find_order(coordinator_value, order_id, payload.run_id)
-                if action == "print" and not (
-                    order.get("passed") or order.get("status") in {"passed", "warning"}
-                ):
-                    results.append(
-                        {"order_id": order_id, "status": "rejected", "message": "Заказ не прошёл проверку."}
-                    )
-                    continue
-                lifecycle = FileLifecycle(Path(run["options"]["input_path"]))
-                try:
-                    transition = (
-                        lifecycle.accept_for_print(order)
-                        if action == "print"
-                        else lifecycle.return_for_rework(order)
-                    )
-                except FileLifecycleError as exc:
-                    transition = lifecycle.route_to_errors(order)
-                    coordinator_value.apply_file_transition(
-                        run["id"],
-                        str(order_id),
-                        status="error",
-                        source_paths=transition.source_paths,
-                        pdf_path=transition.pdf_path,
-                        preview_paths=transition.preview_paths,
-                        errors=[str(exc)],
-                    )
-                    results.append(
-                        {"order_id": order_id, "status": "error", "message": str(exc)}
-                    )
-                    continue
-                next_status = (
-                    "accepted_for_print" if action == "print" else "returned_for_rework"
-                )
-                coordinator_value.apply_file_transition(
-                    run["id"],
-                    str(order_id),
-                    status=next_status,
-                    source_paths=transition.source_paths,
-                    pdf_path=transition.pdf_path,
-                    preview_paths=transition.preview_paths,
-                )
-                stored = session.scalar(
-                    select(OrderResult)
-                    .where(
-                        OrderResult.run_id == run["id"],
-                        OrderResult.order_id == order_id,
-                    )
-                    .order_by(desc(OrderResult.updated_at))
-                )
-                if stored is None:
-                    results.append({"order_id": order_id, "status": "not_found"})
-                    continue
-                session.add(
-                    OrderAction(
-                        order_result_id=stored.id,
-                        action=action,
-                        comment=(payload.comment or "").strip() or None,
-                        status="prepared",
-                    )
-                )
-                results.append({"order_id": order_id, "status": "prepared"})
-            session.commit()
-        return {"items": results}
+        return request.app.state.order_workflow.prepare(
+            OrderActionCommand(
+                order_ids=tuple(payload.order_ids),
+                run_id=payload.run_id,
+                comment=payload.comment,
+            ),
+            action,
+        )
 
     @application.post(
         "/api/orders/prepare-print", dependencies=[Depends(protected)]

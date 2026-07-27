@@ -10,9 +10,9 @@
 import os
 import re
 import shutil
-import subprocess
 from typing import Tuple, Optional
 from core.inspector import ImageMetadata
+from core.tool_runner import run_command
 
 def parse_target_dimensions_from_filename(filename: str) -> Optional[Tuple[float, float]]:
     """Извлекает целевой размер в мм из имени файла, например `(70x100)` -> (70.0, 100.0)."""
@@ -71,5 +71,5 @@ def resample_image(
         output_path
     ]
 
-    subprocess.run(cmd, check=True)
+    run_command(cmd, check=True)
     return output_path

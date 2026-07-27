@@ -50,6 +50,17 @@ class FileLifecycleTests(unittest.TestCase):
         self.assertTrue(self.source.exists())
         self.assertTrue(self.preview.exists())
 
+    def test_completed_transition_can_be_compensated(self):
+        lifecycle = FileLifecycle(self.root)
+        transition = lifecycle.accept_for_print(self.order)
+
+        lifecycle.rollback(transition)
+
+        self.assertEqual(self.source.read_bytes(), b"source")
+        self.assertEqual(self.pdf.read_bytes(), b"pdf")
+        self.assertEqual(self.preview.read_bytes(), b"preview")
+        self.assertFalse((self.root / "Processed" / "face.jpg").exists())
+
     def test_error_routing_moves_available_artifacts_to_troubles(self):
         self.pdf.unlink()
         transition = FileLifecycle(self.root).route_to_errors(self.order)

@@ -104,18 +104,13 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 cd frontend && npm install && npm run build && cd ..
 
-# Команда выведет Argon2-хеш. Сохраните его в переменной окружения,
-# сам пароль в проект и базу не записывается.
-.venv/bin/python manage.py set-password
-export IMAGE_MAGIC_PASSWORD_HASH='$argon2id$...'
-
 .venv/bin/alembic upgrade head
 .venv/bin/python control_panel.py
 ```
 
 После запуска доступны:
 
-- `http://127.0.0.1:8006/login` — вход по паролю;
+- `http://127.0.0.1:8006/login` — вход, постоянный пароль: `1111`;
 - `http://127.0.0.1:8006/` — единый рабочий пульт;
 - `POST /api/checks` — запустить фоновую проверку папки;
 - `GET /api/checks` — список запусков;

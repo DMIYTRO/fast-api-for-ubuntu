@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
 from server.database import Database, upgrade_database
 from server.settings import Settings
@@ -36,6 +36,11 @@ class ServerDatabaseTests(unittest.TestCase):
             tables = set(inspect(database.engine).get_table_names())
             self.assertIn("alembic_version", tables)
             self.assertIn("check_runs", tables)
+            with database.engine.connect() as connection:
+                self.assertEqual(
+                    connection.scalar(text("SELECT version_num FROM alembic_version")),
+                    "0002_order_identity",
+                )
             database.dispose()
 
     def test_alembic_safely_baselines_complete_legacy_schema(self):
@@ -49,4 +54,9 @@ class ServerDatabaseTests(unittest.TestCase):
             self.assertIn(
                 "alembic_version", inspect(reopened.engine).get_table_names()
             )
+            with reopened.engine.connect() as connection:
+                self.assertEqual(
+                    connection.scalar(text("SELECT version_num FROM alembic_version")),
+                    "0002_order_identity",
+                )
             reopened.dispose()

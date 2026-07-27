@@ -4,8 +4,8 @@
 
 import os
 import shutil
-import subprocess
 from typing import List, Union
+from core.tool_runner import run_command
 
 def convert_image_to_pdf(
     input_image_path: str,
@@ -28,7 +28,7 @@ def convert_image_to_pdf(
         "-compress", compression,
         output_pdf_path
     ]
-    subprocess.run(cmd, check=True)
+    run_command(cmd, check=True)
     return output_pdf_path
 
 
@@ -66,7 +66,7 @@ def merge_pdfs_with_ghostscript(input_pdf_paths: List[str], output_pdf_path: str
         "-dCompressStreams=false",
         f"-sOutputFile={output_pdf_path}",
     ] + input_pdf_paths
-    subprocess.run(cmd, check=True)
+    run_command(cmd, check=True)
     return output_pdf_path
 
 def combine_images_to_pdf(
@@ -93,5 +93,5 @@ def combine_images_to_pdf(
         "-compress", compression,
         output_pdf_path,
     ]
-    subprocess.run(cmd, check=True)
+    run_command(cmd, check=True)
     return output_pdf_path

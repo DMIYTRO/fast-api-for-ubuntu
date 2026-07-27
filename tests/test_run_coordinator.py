@@ -239,7 +239,7 @@ class RunCoordinatorTests(unittest.TestCase):
         self.assertEqual(completed["orders"]["order-1"]["status"], "error")
         self.assertIn(("decide", "order-1", False), calls)
 
-    def test_waiting_run_keeps_next_run_in_queue(self):
+    def test_waiting_run_releases_worker_for_next_run(self):
         self.adapters["blocking"] = FakeAdapter(
             [make_order("order-1", waiting=True)]
         )
@@ -248,11 +248,13 @@ class RunCoordinatorTests(unittest.TestCase):
         self.coordinator.wait_for(first_id, {"waiting_confirmation"}, timeout=2)
         second_id = self.submit("next")["id"]
 
-        self.assertEqual(self.coordinator.get_run(second_id)["status"], "queued")
-        self.coordinator.confirm_correction(first_id, "order-1")
-        self.coordinator.wait_for(first_id, {"completed"}, timeout=2)
         second = self.coordinator.wait_for(second_id, {"completed"}, timeout=2)
         self.assertEqual(second["orders"]["order-2"]["status"], "passed")
+        self.assertEqual(
+            self.coordinator.get_run(first_id)["status"], "waiting_confirmation"
+        )
+        self.coordinator.confirm_correction(first_id, "order-1")
+        self.coordinator.wait_for(first_id, {"completed"}, timeout=2)
 
     def test_worker_failure_is_persisted_and_next_run_still_runs(self):
         self.adapters["broken"] = FakeAdapter(
@@ -270,6 +272,22 @@ class RunCoordinatorTests(unittest.TestCase):
             [event.type for event in self.coordinator.events(broken_id)][-1],
             "run.failed",
         )
+
+    def test_stale_terminal_active_id_does_not_block_new_run(self):
+        self.adapters["first"] = FakeAdapter([])
+        first_id = self.submit("first")["id"]
+        self.coordinator.wait_for(first_id, {"completed"}, timeout=2)
+        # Reproduce a long-running process whose in-memory active pointer was
+        # not updated after another process finalized the database row.
+        self.coordinator._active_run_id = first_id
+        self.adapters["second"] = FakeAdapter([make_order("order-2")])
+
+        second_id = self.submit("second")["id"]
+        completed = self.coordinator.wait_for(
+            second_id, {"completed"}, timeout=2
+        )
+
+        self.assertEqual(completed["orders"]["order-2"]["status"], "passed")
 
     def test_cancel_queued_run_never_executes_it(self):
         self.adapters["blocking"] = FakeAdapter(

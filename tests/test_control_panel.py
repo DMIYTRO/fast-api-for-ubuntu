@@ -270,6 +270,17 @@ class ControlPanelTests(unittest.TestCase):
             b"%PDF-test",
         )
 
+        repeated = self.client.post(
+            "/api/orders/prepare-print",
+            json={"run_id": run_id, "order_ids": ["1001"]},
+        )
+        self.assertEqual(
+            repeated.json()["items"],
+            [{"order_id": "1001", "status": "prepared", "idempotent": True}],
+        )
+        self.assertTrue((self.root / "Processed" / "sample-face.jpg").is_file())
+        self.assertFalse((self.root / "Troubles" / "1001").exists())
+
         return_without_comment = self.client.post(
             "/api/orders/prepare-reject",
             json={"run_id": run_id, "order_ids": ["1001"]},

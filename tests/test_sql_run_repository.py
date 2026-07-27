@@ -5,7 +5,7 @@ import unittest
 from sqlalchemy import func, select
 
 from server.database import Database
-from server.models import CheckRun, FileResult, OrderResult
+from server.models import CheckRun, CorrectionDecision, FileResult, OrderResult
 from server.models import RunEvent as SqlRunEvent
 from services.batch_adapter import ProcessingOptions
 from services.coordinator import RunCoordinator
@@ -155,6 +155,49 @@ class SqlRunRepositoryTests(unittest.TestCase):
                 session.scalar(select(func.count()).select_from(FileResult)), 1
             )
 
+    def test_two_customers_can_share_the_same_order_number(self):
+        run = sample_run()
+        first = run["orders"].pop("25506185")
+        first["aggregate_id"] = "12690:25506185"
+        second = {
+            **first,
+            "aggregate_id": "777:25506185",
+            "customer_id": "777",
+            "files": [
+                {
+                    **first["files"][0],
+                    "path": "/orders/input/other-face.jpg",
+                    "name": "other-face.jpg",
+                    "parsed": {
+                        **first["files"][0]["parsed"],
+                        "customer_id": "777",
+                    },
+                }
+            ],
+        }
+        run["orders"] = {
+            first["aggregate_id"]: first,
+            second["aggregate_id"]: second,
+        }
+
+        self.repository.create_run(run)
+
+        actual = self.repository.get_run("run-1")
+        self.assertEqual(set(actual["orders"]), {"12690:25506185", "777:25506185"})
+
+    def test_run_summaries_are_paginated_without_loading_orders(self):
+        self.repository.create_run(sample_run("run-1"))
+        self.repository.create_run(sample_run("run-2"))
+        self.repository.create_run(sample_run("run-3"))
+
+        page = self.repository.list_runs(
+            limit=1, offset=1, include_orders=False
+        )
+
+        self.assertEqual(len(page), 1)
+        self.assertEqual(page[0]["orders"], {})
+        self.assertEqual(self.repository.count_runs(), 3)
+
     def test_events_survive_repository_recreation_and_support_last_event_id(self):
         run = sample_run(status="completed")
         self.repository.create_run(run)
@@ -172,6 +215,45 @@ class SqlRunRepositoryTests(unittest.TestCase):
         self.assertEqual([item.id for item in events], [second.id])
         self.assertEqual(events[0].data, {"progress": 100})
         self.assertIn(f"id: {second.id}", events[0].as_sse())
+
+    def test_state_and_event_are_rolled_back_together(self):
+        run = sample_run(status="running")
+        self.repository.create_run(run)
+        changed = sample_run(status="completed")
+
+        with self.assertRaises(TypeError):
+            self.repository.save_run_with_event(
+                changed, "run.completed", {"invalid": object()}
+            )
+
+        self.assertEqual(self.repository.get_run("run-1")["status"], "running")
+        self.assertEqual(self.repository.list_events("run-1"), [])
+
+    def test_correction_decision_is_audited_with_transition(self):
+        run = sample_run(status="waiting_confirmation")
+        self.repository.create_run(run)
+        changed = sample_run(status="running")
+        changed["orders"]["25506185"]["files"][0][
+            "resample_decision"
+        ] = "auto_correct"
+        audit = {
+            "path": "/orders/input/order-face.jpg",
+            "decision": "confirmed",
+            "original": {"resample_decision": "ask_confirmation"},
+            "proposed": {"target_mm": [92.0, 52.0]},
+        }
+
+        self.repository.save_run_with_event(
+            changed,
+            "order.correction_confirmed",
+            {"order_id": "25506185", "decisions": [audit]},
+        )
+
+        with self.database.session_factory() as session:
+            record = session.scalar(select(CorrectionDecision))
+            self.assertEqual(record.decision, "confirmed")
+            self.assertIn("ask_confirmation", record.original_parameters_json)
+            self.assertIn("target_mm", record.proposed_parameters_json)
 
     def test_restart_marks_all_unrecoverable_active_states_failed(self):
         for index, status in enumerate(

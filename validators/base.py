@@ -5,6 +5,7 @@
 from core.inspector import ImageMetadata
 from config.profiles import PrePressProfile, DEFAULT_PROFILE
 from .rules import ValidationResult, ValidationItem
+from processing.profile_rules import evaluate_metadata_rules
 
 class BaseValidator:
     """Базовый валидатор общих параметров файла."""
@@ -15,9 +16,16 @@ class BaseValidator:
     def validate(self, meta: ImageMetadata) -> ValidationResult:
         """Проводит стандартные проверки файла."""
         items = []
+        shared = evaluate_metadata_rules(
+            profile=self.profile,
+            size_mb=meta.size_mb,
+            colorspace=meta.colorspace,
+            dpi_x=meta.dpi_x,
+            dpi_y=meta.dpi_y,
+        )
 
         # 1. Проверка разрешения (DPI)
-        dpi_ok = meta.dpi >= self.profile.min_dpi
+        dpi_ok = not any("разрешение " in value for value in shared.errors)
         items.append(ValidationItem(
             name="Разрешающая способность, DPI",
             actual_value=f"{int(meta.dpi)} DPI",
@@ -27,13 +35,13 @@ class BaseValidator:
         ))
 
         # 2. Проверка цветовой модели (CMYK)
-        colorspace_ok = meta.colorspace.upper() in [c.upper() for c in self.profile.allowed_colorspaces]
+        colorspace_ok = not shared.warnings
         items.append(ValidationItem(
             name="Цветовая модель",
             actual_value=meta.colorspace,
             target_value="CMYK",
-            passed=colorspace_ok,
-            message="Цветовая модель CMYK" if colorspace_ok else f"Файл имеет цветовую модель {meta.colorspace}, требуется CMYK"
+            passed=True,
+            message="Цветовая модель CMYK" if colorspace_ok else shared.warnings[0]
         ))
 
         # 3. Проверка цветового профиля (ICC)
@@ -56,7 +64,7 @@ class BaseValidator:
         ))
 
         # 5. Проверка объема файла (МБ)
-        size_ok = meta.size_mb <= self.profile.max_file_size_mb
+        size_ok = not any("размер файла " in value for value in shared.errors)
         items.append(ValidationItem(
             name="Размер файла, Mb",
             actual_value=f"{meta.size_mb}",

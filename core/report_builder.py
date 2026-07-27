@@ -391,6 +391,24 @@ def build_orders_html_report(
             warn_items = "".join(f"<li>{w}</li>" for w in all_warnings)
             messages_html += f'<div class="msg-box box-warning"><strong>⚠️ Попередження / Авто-ресемплинг:</strong><ul>{warn_items}</ul></div>'
 
+        rotated_files = [
+            item for item in order.files if item.rotation_degrees in {90, 180, 270}
+        ]
+        if rotated_files:
+            rotation_items = "".join(
+                f"<li>{item.parsed.side if item.parsed else item.path.name}: "
+                f"{item.rotation_degrees}°</li>"
+                for item in rotated_files
+            )
+            messages_html += (
+                '<div class="msg-box box-warning orientation-review">'
+                "<strong>⚠️ Требуется визуальная проверка</strong>"
+                "<p>Автоматический поворот:</p>"
+                f"<ul>{rotation_items}</ul>"
+                '<label><input type="checkbox" class="orientation-confirmation"> '
+                "Совмещение проверено пользователем</label></div>"
+            )
+
         if order.passed and not all_warnings:
             messages_html += '<div class="msg-box box-pass"><strong>✅ Заказ полностью соответствует стандартам допечатной подготовки.</strong></div>'
 

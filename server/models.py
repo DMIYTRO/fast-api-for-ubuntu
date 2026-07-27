@@ -81,7 +81,13 @@ class CheckRun(Base):
 class OrderResult(Base):
     __tablename__ = "order_results"
     __table_args__ = (
-        Index("ix_order_results_run_order", "run_id", "order_id", unique=True),
+        Index(
+            "ix_order_results_run_customer_order",
+            "run_id",
+            "customer_id",
+            "order_id",
+            unique=True,
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
