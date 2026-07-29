@@ -26,3 +26,4 @@ image_magic.db
 logs/
 frontend/node_modules/
 frontend/.vite/
+/sborka_api/sborka_api_key.txt

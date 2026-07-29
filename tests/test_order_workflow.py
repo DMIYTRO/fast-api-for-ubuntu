@@ -58,6 +58,11 @@ class BrokenLifecycle:
         raise OSError("cannot initialize lifecycle")
 
 
+class RollbackLifecycle(BlockingLifecycle):
+    def rollback(self, _transition):
+        return None
+
+
 class FakeCoordinator:
     def __init__(self, order):
         self.order = order
@@ -268,6 +273,89 @@ class OrderWorkflowTests(unittest.TestCase):
             str(conflicted_path.resolve()),
         )
         self.assertIn("(новый)", result["items"][0]["conflict"]["suggested_name"])
+
+    def test_print_sends_order_to_prepress_and_stores_response(self):
+        BlockingLifecycle.release.set()
+        calls = []
+        service = OrderWorkflowService(
+            self.coordinator,
+            self.database.session_factory,
+            lambda _order_id, _run_id: (self.run, self.order),
+            lifecycle_factory=BlockingLifecycle,
+            prepress_sender=lambda order_id, comment: (
+                calls.append((order_id, comment))
+                or {"http_status": 200, "response": {"ok": True}}
+            ),
+        )
+
+        result = service.prepare(
+            OrderActionCommand(("1001",), run_id="run-1", comment="Проверено"),
+            "print",
+        )
+
+        self.assertEqual(calls, [("1001", "Проверено")])
+        self.assertEqual(result["items"][0]["prepress"]["http_status"], 200)
+        with self.database.session_factory() as session:
+            action = session.scalar(select(OrderAction))
+            self.assertIn('"ok": true', action.cms_response_json)
+
+    def test_multiple_prints_use_one_prepress_request_without_comment(self):
+        BlockingLifecycle.release.set()
+        self.order["order_id"] = "1001"
+        second_order = dict(self.order, order_id="1002")
+        with self.database.session_factory() as session, session.begin():
+            session.add(
+                OrderResult(
+                    id=2,
+                    run_id="run-1",
+                    order_id="1002",
+                    status="passed",
+                    passed=True,
+                )
+            )
+        calls = []
+        original_finder = lambda order_id, _run_id: (
+            self.run,
+            second_order if order_id == "1002" else self.order,
+        )
+        service = OrderWorkflowService(
+            self.coordinator,
+            self.database.session_factory,
+            original_finder,
+            lifecycle_factory=BlockingLifecycle,
+            prepress_sender=lambda order_ids, comment: (
+                calls.append((order_ids, comment))
+                or {"http_status": 200, "response": {"ok": True}}
+            ),
+        )
+
+        result = service.prepare(
+            OrderActionCommand(("1001", "1002"), run_id="run-1", comment="не использовать"),
+            "print",
+        )
+
+        self.assertEqual(calls, [(["1001", "1002"], None)])
+        self.assertEqual([item["status"] for item in result["items"]], ["prepared", "prepared"])
+
+    def test_prepress_failure_rolls_back_local_print_transition(self):
+        BlockingLifecycle.release.set()
+        service = OrderWorkflowService(
+            self.coordinator,
+            self.database.session_factory,
+            lambda _order_id, _run_id: (self.run, self.order),
+            lifecycle_factory=RollbackLifecycle,
+            prepress_sender=lambda _order_id, _comment: (_ for _ in ()).throw(
+                RuntimeError("sborka unavailable")
+            ),
+        )
+
+        result = service.prepare(self.command, "print")
+
+        self.assertEqual(result["items"][0]["status"], "error")
+        self.assertEqual(self.order["status"], "passed")
+        with self.database.session_factory() as session:
+            action = session.scalar(select(OrderAction))
+            self.assertEqual(action.status, "failed")
 
     def test_database_rejects_two_pending_actions_even_for_different_actions(self):
         with self.database.session_factory() as session:

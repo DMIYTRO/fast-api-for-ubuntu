@@ -6,7 +6,7 @@ from .models import ParsedFilename
 
 SIZE_RE = re.compile(r"_\((\d+(?:[.,]\d+)?)\s*[xх]\s*(\d+(?:[.,]\d+)?)\)_", re.IGNORECASE)
 COLORS_RE = re.compile(r"_(\d+)-(\d+)_")
-ORDER_RE = re.compile(r"_\((\d+)-(\d+)\)_")
+ORDER_RE = re.compile(r"_\((\d+)-(\d+)\)(?:_|$)")
 SIDE_RE = re.compile(r"(?:_|-)(face|back)$", re.IGNORECASE)
 
 
@@ -28,7 +28,13 @@ def parse_filename(path: Path) -> ParsedFilename:
     # PDF side assignment is deliberately resolved by the order layer.  A
     # one-page 4-0 PDF is valid without a face/back suffix, while a one-page
     # 4-4 PDF still needs a complementary file (and therefore a side).
-    if not side_match and path.suffix.lower() != ".pdf":
+    # A one-sided raster (for example 1-0 / 4-0 / 5-0) is unambiguously the face.
+    # Duplex raster files still require explicit face/back suffixes.
+    if (
+        not side_match
+        and path.suffix.lower() != ".pdf"
+        and (not colors_match or int(colors_match.group(2)) > 0)
+    ):
         missing.append("сторона face или back")
     if missing:
         raise ValueError("в имени отсутствует: " + ", ".join(missing))

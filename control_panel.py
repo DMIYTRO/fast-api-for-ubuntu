@@ -40,6 +40,7 @@ from services import (
     RunCoordinator,
     RunNotFoundError,
 )
+from services.sborka_integration import build_sender
 from services.repository import InMemoryRunRepository, RunRepository
 
 try:
@@ -326,6 +327,14 @@ def create_app(
         coordinator,
         database.session_factory,
         lambda order_id, run_id: _find_order(coordinator, order_id, run_id),
+        prepress_sender=(
+            build_sender(
+                settings.sborka_api_dir,
+                timeout=settings.sborka_timeout_seconds,
+            )
+            if settings.sborka_enabled
+            else None
+        ),
     )
     application.state.log_path = log_path
     application.state.allowed_roots = allowed_roots or ALLOWED_ROOTS

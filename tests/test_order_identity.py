@@ -5,9 +5,19 @@ from unittest.mock import patch
 
 from core.inspector import ImageMetadata
 from processing.batch_processor import BatchProcessor
+from processing.filename_parser import parse_filename
 
 
 class OrderIdentityTests(unittest.TestCase):
+    def test_side_less_one_sided_jpg_is_treated_as_face(self):
+        for colors in ("1-0", "4-0", "5-0"):
+            parsed = parse_filename(
+                Path(f"job_(90x50)_{colors}_(777-25657208).jpg")
+            )
+            self.assertEqual(parsed.customer_id, "777")
+            self.assertEqual(parsed.order_id, "25657208")
+            self.assertEqual(parsed.side, "")
+
     def test_same_order_number_for_different_customers_stays_separate(self):
         with tempfile.TemporaryDirectory() as value:
             root = Path(value)

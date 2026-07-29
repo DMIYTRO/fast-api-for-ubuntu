@@ -377,7 +377,7 @@ def build_orders_html_report(
         # 4. Формат
         face_fmt = face_file.actual_format if face_file else "—"
         back_fmt = back_file.actual_format if back_file else "—"
-        rows_code += render_param_row("Формат файла", face_fmt, back_fmt, "TIFF/JPEG/PDF")
+        rows_code += render_param_row("Формат файла", face_fmt, back_fmt, "JPG/JPEG/TIFF/PDF")
 
         # Сообщения статуса/ошибок/попереджень
         messages_html = ""

@@ -6,6 +6,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
 import logging
+import json
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -42,11 +43,13 @@ class OrderWorkflowService:
         ],
         *,
         lifecycle_factory: Callable[[Path], FileLifecycle] = FileLifecycle,
+        prepress_sender: Callable[[str | list[str], str | None], dict[str, Any]] | None = None,
     ) -> None:
         self.coordinator = coordinator
         self.session_factory = session_factory
         self.order_finder = order_finder
         self.lifecycle_factory = lifecycle_factory
+        self.prepress_sender = prepress_sender
         self._action_locks_guard = Lock()
         self._action_locks: dict[int, tuple[Lock, str]] = {}
 
@@ -105,6 +108,13 @@ class OrderWorkflowService:
         self, command: OrderActionCommand, action: str
     ) -> dict[str, list[dict[str, Any]]]:
         results: list[dict[str, Any]] = []
+        batch_prepress_result = None
+        if (
+            action == "print"
+            and self.prepress_sender is not None
+            and len(command.order_ids) > 1
+        ):
+            batch_prepress_result = self.prepress_sender(list(command.order_ids), None)
         with self.session_factory() as session:
             for order_id in command.order_ids:
                 run, order = self.order_finder(order_id, command.run_id)
@@ -200,7 +210,11 @@ class OrderWorkflowService:
                     action_record = OrderAction(
                         order_result_id=stored.id,
                         action=action,
-                        comment=(command.comment or "").strip() or None,
+                        comment=(
+                            None
+                            if batch_prepress_result is not None
+                            else (command.comment or "").strip() or None
+                        ),
                         status="pending",
                     )
                     session.add(action_record)
@@ -285,9 +299,26 @@ class OrderWorkflowService:
                             pdf_path=transition.pdf_path,
                             preview_paths=transition.preview_paths,
                         )
+                        prepress_result = None
+                        if batch_prepress_result is not None:
+                            prepress_result = batch_prepress_result
+                        elif action == "print" and self.prepress_sender is not None:
+                            prepress_result = self.prepress_sender(
+                                order_id, command.comment
+                            )
                         action_record.status = "prepared"
+                        if prepress_result is not None:
+                            action_record.cms_response_json = json.dumps(
+                                prepress_result, ensure_ascii=False
+                            )
                         session.commit()
-                        results.append({"order_id": order_id, "status": "prepared"})
+                        results.append(
+                            {
+                                "order_id": order_id,
+                                "status": "prepared",
+                                **({"prepress": prepress_result} if prepress_result else {}),
+                            }
+                        )
                     except Exception as exc:
                         session.rollback()
                         try:

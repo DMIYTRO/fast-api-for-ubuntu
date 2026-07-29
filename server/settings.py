@@ -36,6 +36,9 @@ class Settings:
     log_max_bytes: int = 10 * 1024 * 1024
     log_backup_count: int = 10
     log_heartbeat_seconds: int = 60
+    sborka_api_dir: Path = PROJECT_DIR / "sborka_api"
+    sborka_timeout_seconds: int = 20
+    sborka_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -92,5 +95,22 @@ class Settings:
             ),
             log_heartbeat_seconds=max(
                 10, int(os.environ.get("IMAGE_MAGIC_LOG_HEARTBEAT_SECONDS", "60"))
+            ),
+            sborka_api_dir=Path(
+                os.environ.get("IMAGE_MAGIC_SBORKA_API_DIR", PROJECT_DIR / "sborka_api")
+            ).expanduser().resolve(),
+            sborka_timeout_seconds=max(
+                1, int(os.environ.get("IMAGE_MAGIC_SBORKA_TIMEOUT_SECONDS", "20"))
+            ),
+            sborka_enabled=_env_bool(
+                "IMAGE_MAGIC_SBORKA_ENABLED",
+                (
+                    Path(
+                        os.environ.get(
+                            "IMAGE_MAGIC_SBORKA_API_DIR", PROJECT_DIR / "sborka_api"
+                        )
+                    ).expanduser()
+                    / "sborka_api_key.txt"
+                ).is_file(),
             ),
         )
