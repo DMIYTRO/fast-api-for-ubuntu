@@ -15,10 +15,10 @@ class SettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.password_hash, "test-password-hash")
 
-    def test_missing_admin_password_hash_stops_startup(self):
+    def test_missing_admin_password_hash_uses_test_server_password(self):
         with patch.dict(os.environ, {"IMAGE_MAGIC_PASSWORD_HASH": ""}):
-            with self.assertRaisesRegex(RuntimeError, "IMAGE_MAGIC_PASSWORD_HASH"):
-                Settings.from_env()
+            settings = Settings.from_env()
+        self.assertTrue(settings.password_hash)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,11 @@ from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
+# Временный пароль для локального тестового сервера. Удалить после тестового этапа.
+TEST_SERVER_PASSWORD_HASH = (
+    "$argon2id$v=19$m=65536,t=3,p=4$N2Kma52ne4WjmBNi7AYvBw$"
+    "VdDv4X2PUCX+vQGlJvbbjP5MdwqOR5Kqx3tjxYBG37s"
+)
 
 def _env_bool(name: str, default: bool) -> bool:
     value = os.environ.get(name)
@@ -36,13 +41,10 @@ class Settings:
     def from_env(cls) -> "Settings":
         default_db = PROJECT_DIR / "image_magic.db"
         secure_value = os.environ.get("IMAGE_MAGIC_COOKIE_SECURE")
-        password_hash = os.environ.get("IMAGE_MAGIC_PASSWORD_HASH", "").strip()
-        if not password_hash:
-            raise RuntimeError(
-                "Не задан IMAGE_MAGIC_PASSWORD_HASH. "
-                "Создайте хеш командой '.venv/bin/python manage.py set-password' "
-                "и передайте его через окружение."
-            )
+        password_hash = (
+            os.environ.get("IMAGE_MAGIC_PASSWORD_HASH", "").strip()
+            or TEST_SERVER_PASSWORD_HASH
+        )
         return cls(
             database_url=os.environ.get(
                 "IMAGE_MAGIC_DATABASE_URL", f"sqlite:///{default_db}"
