@@ -1,10 +1,12 @@
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 import shutil
 import tempfile
 
 from core.inspector import count_frames, inspect_file
-from core.pdf_exporter import convert_image_to_pdf, merge_pdfs_with_ghostscript
+from core.pdf_inspector import inspect_pdf
+from core.pdf_exporter import convert_image_to_pdf, merge_pdfs_with_pymupdf
 from core.preview_generator import generate_preview
 from core.resampler import resample_image
 from core.tool_runner import run_command
@@ -16,8 +18,27 @@ from .filename_parser import parse_filename
 from .models import FileCheck, OrderCheck
 
 
-SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".pdf"}
 REJECTED_EXTENSIONS = {".psd", ".bmp", ".heic", ".heif"}
+# PDF point / pixel arithmetic can undershoot an exact boundary by several
+# millionths (e.g. 299.9999957 for a nominal 300 DPI image).
+DPI_EPSILON = 0.01
+
+
+@dataclass(frozen=True)
+class _LogicalPageRef:
+    """A page in the final PDF and the source page it must represent."""
+
+    source: FileCheck
+    source_page_index: int
+    expected_side: str
+    expected_width_mm: float
+    expected_height_mm: float
+
+
+def _logical_side(item: FileCheck) -> str:
+    """Return the production side, including a side-less 4-0 PDF."""
+    return item.parsed.side or "face"
 
 
 class BatchProcessor:
@@ -90,6 +111,9 @@ class BatchProcessor:
             for check in files:
                 try:
                     path = check.path
+                    if path.suffix.lower() == ".pdf":
+                        self._inspect_pdf_file(check)
+                        continue
                     frame_count = count_frames(str(path))
                     if frame_count != 1:
                         check.errors.append(
@@ -118,6 +142,102 @@ class BatchProcessor:
             )
             self._validate_order(order)
             yield order
+
+    def _inspect_pdf_file(self, check: FileCheck) -> None:
+        """Read and validate a PDF without routing it through ImageMagick."""
+        inspection = inspect_pdf(check.path)
+        check.actual_format = "PDF"
+        check.page_count = inspection.page_count
+        check.pdf_pages = inspection.pages
+        check.pdf_content_type = (
+            "mixed" if any(page.content_type == "mixed" for page in inspection.pages)
+            else "raster" if any(page.content_type == "raster" for page in inspection.pages)
+            else "vector" if inspection.pages else None
+        )
+        image_infos = [image for page in inspection.pages for image in page.images]
+        check.pdf_colorspaces = tuple(sorted({
+            image.colorspace_name or "unknown" for image in image_infos
+        }))
+        dpi_x_values = [
+            image.effective_dpi_x
+            for image in image_infos
+            if image.effective_dpi_x is not None
+        ]
+        dpi_y_values = [
+            image.effective_dpi_y
+            for image in image_infos
+            if image.effective_dpi_y is not None
+        ]
+        check.dpi_x = min(dpi_x_values) if dpi_x_values else None
+        check.dpi_y = min(dpi_y_values) if dpi_y_values else None
+        check.dpi = (
+            min(check.dpi_x, check.dpi_y)
+            if check.dpi_x is not None and check.dpi_y is not None
+            else check.dpi_x or check.dpi_y
+        )
+        check.pdf_min_dpi = check.dpi
+        check.colorspace = ", ".join(check.pdf_colorspaces) or None
+        check.size_mb = check.path.stat().st_size / (1024 * 1024)
+        check.errors.extend(inspection.errors)
+        check.warnings.extend(inspection.warnings)
+
+        if not inspection.pages:
+            return
+
+        first_page = inspection.pages[0]
+        check.actual_width_mm = first_page.width_mm
+        check.actual_height_mm = first_page.height_mm
+        check.rotation_degrees = first_page.rotation
+
+        parsed = check.parsed
+        expected = (
+            parsed.width_mm + self.size_extra_mm,
+            parsed.height_mm + self.size_extra_mm,
+        )
+        for page in inspection.pages:
+            actual = (page.width_mm, page.height_mm)
+            if not self._dimensions_match(actual, expected) and not self._dimensions_match(
+                actual, (expected[1], expected[0])
+            ):
+                check.errors.append(
+                    f"PDF страница {page.page_number} имеет размер "
+                    f"{actual[0]:.1f}x{actual[1]:.1f} мм; ожидается "
+                    f"{expected[0]:.1f}x{expected[1]:.1f} мм"
+                )
+            if page.rotation not in {0, 90, 180, 270}:
+                check.errors.append(
+                    f"PDF страница {page.page_number} имеет недопустимый поворот "
+                    f"{page.rotation}°"
+                )
+
+            for image in page.images:
+                dpi_values = [
+                    dpi for dpi in (image.effective_dpi_x, image.effective_dpi_y)
+                    if dpi is not None
+                ]
+                # Effective DPI is calculated from PDF points and therefore
+                # can be 299.99999999999994 for an exact 300 DPI placement.
+                # Treat that floating-point noise as the configured boundary,
+                # while still rejecting a materially lower resolution.
+                if dpi_values and min(dpi_values) + DPI_EPSILON < self.min_dpi:
+                    check.errors.append(
+                        f"PDF страница {page.page_number}: effective DPI "
+                        f"{min(dpi_values):.1f}; требуется не менее {self.min_dpi:.0f}"
+                    )
+                colorspace = image.colorspace_name or "unknown"
+                if "RGB" in colorspace and "ICCBased" not in colorspace:
+                    check.warnings.append(
+                        f"PDF страница {page.page_number}: растровое изображение "
+                        "имеет RGB colorspace"
+                    )
+                elif colorspace == "unknown":
+                    check.errors.append(
+                        f"PDF страница {page.page_number}: неизвестная цветовая модель"
+                    )
+
+    @staticmethod
+    def _pdf_pages(item: FileCheck) -> tuple[object, ...]:
+        return item.pdf_pages if item.page_count is not None else ()
 
     def _validate_file(self, check: FileCheck) -> None:
         parsed = check.parsed
@@ -225,9 +345,46 @@ class BatchProcessor:
     def _validate_order(order: OrderCheck) -> None:
         sides: dict[str, list[FileCheck]] = defaultdict(list)
         for item in order.files:
-            sides[item.parsed.side].append(item)
+            # A two-page PDF is a complete duplex order.  Its page indices
+            # define face/back; filename side suffixes are not needed.
+            if item.page_count == 2:
+                sides["complete_pdf"].append(item)
+            else:
+                sides[item.parsed.side].append(item)
 
-        if not sides["face"]:
+        duplex_files = [item for item in order.files if item.page_count == 2]
+        if len(duplex_files) > 1:
+            order.errors.append("найдено несколько двухстраничных PDF в одном заказе")
+        if duplex_files and len(order.files) > 1:
+            order.errors.append(
+                "двухстраничный PDF является полным заказом; дополнительные стороны запрещены"
+            )
+
+        color_modes = {(item.parsed.front_colors, item.parsed.back_colors) for item in order.files}
+        if len(color_modes) != 1:
+            order.errors.append("у файлов заказа не совпадает цветность в имени")
+            return
+
+        _, back_colors = next(iter(color_modes))
+        if duplex_files:
+            expected_pages = 2 if back_colors > 0 else 1
+            if back_colors == 0:
+                order.errors.append("двухстраничный PDF недопустим для односторонней печати")
+            if duplex_files[0].page_count != expected_pages:
+                order.errors.append(
+                    f"для цветности с оборотом требуется {expected_pages} логические страницы"
+                )
+            # A complete PDF does not need a filename side and must not be
+            # forced through the legacy face/back checks below.
+            if len(order.files) == 1:
+                return
+
+        if back_colors == 0 and len(order.files) > 1:
+            order.errors.append(
+                "для односторонней печати разрешён только один входной файл"
+            )
+
+        if back_colors > 0 and not duplex_files and not sides["face"]:
             order.errors.append("не найден обязательный файл face")
         if len(sides["face"]) > 1:
             order.errors.append("найдено несколько файлов face")
@@ -251,11 +408,6 @@ class BatchProcessor:
             )
             order.errors.append(f"ориентация сторон не совпадает: {details}")
 
-        color_modes = {(item.parsed.front_colors, item.parsed.back_colors) for item in order.files}
-        if len(color_modes) != 1:
-            order.errors.append("у файлов заказа не совпадает цветность в имени")
-            return
-
         declared_sizes = {(item.parsed.width_mm, item.parsed.height_mm) for item in order.files}
         if len(declared_sizes) != 1:
             order.errors.append("у файлов заказа не совпадает размер в имени")
@@ -270,8 +422,7 @@ class BatchProcessor:
                 "стороны заказа имеют разные форматы: " + ", ".join(sorted(actual_formats))
             )
 
-        _, back_colors = next(iter(color_modes))
-        if back_colors > 0 and not sides["back"]:
+        if back_colors > 0 and not sides["back"] and not duplex_files:
             order.errors.append("для двусторонней печати не найден файл back")
         if back_colors == 0 and sides["back"]:
             order.errors.append("для односторонней печати найден лишний файл back")
@@ -288,46 +439,24 @@ class BatchProcessor:
         for order in orders:
             if not order.passed:
                 continue
-            ordered_files = sorted(order.files, key=lambda item: 0 if item.parsed.side == "face" else 1)
-            face_file = next(item for item in ordered_files if item.parsed.side == "face")
-            output_path = self.output_dir / f"{face_file.path.stem}.pdf"
+            ordered_files = self._ordered_files_for_creation(order)
+            output_path = self.output_dir / f"{self._output_stem(order, ordered_files)}.pdf"
             try:
                 with tempfile.TemporaryDirectory(
                     prefix=f".{order.order_id}_",
                     dir=self.output_dir,
                 ) as temporary_dir:
-                    page_pdfs = []
-                    for page_number, item in enumerate(ordered_files, start=1):
-                        source_image_path = str(item.path)
-                        dpi_arg = f"{item.dpi_x}x{item.dpi_y}"
-
-                        if item.needs_resample and item.resample_target_mm:
-                            resampled_path = Path(temporary_dir) / f"resampled_{page_number}_{item.parsed.side}{item.path.suffix}"
-                            resample_image(
-                                str(item.path),
-                                str(resampled_path),
-                                target_width_mm=item.resample_target_mm[0],
-                                target_height_mm=item.resample_target_mm[1],
-                                target_dpi=self.min_dpi,
-                                rotation_degrees=item.rotation_degrees,
-                            )
-                            source_image_path = str(resampled_path)
-                            dpi_arg = str(self.min_dpi)
-
-                        page_path = Path(temporary_dir) / f"{page_number}_{item.parsed.side}.pdf"
-                        convert_image_to_pdf(
-                            source_image_path,
-                            str(page_path),
-                            dpi=dpi_arg,
-                            compression="none",
-                        )
-                        page_pdfs.append(str(page_path))
+                    page_refs = self._build_page_refs(ordered_files)
+                    page_pdfs = self._prepare_page_pdfs(
+                        page_refs,
+                        Path(temporary_dir),
+                    )
 
                     temporary_output = Path(temporary_dir) / "combined.pdf"
-                    merge_pdfs_with_ghostscript(page_pdfs, str(temporary_output))
+                    merge_pdfs_with_pymupdf(page_pdfs, str(temporary_output))
                     self._validate_created_pdf(
                         temporary_output,
-                        ordered_files,
+                        page_refs,
                         Path(temporary_dir) / "validation",
                     )
                     temporary_output.replace(output_path)
@@ -336,10 +465,102 @@ class BatchProcessor:
                 results.append((order, output_path, str(exc)))
         return results
 
+    @staticmethod
+    def _ordered_files_for_creation(order: OrderCheck) -> list[FileCheck]:
+        """Order inputs by production side, while supporting complete PDFs."""
+        if len(order.files) == 1 and order.files[0].page_count == 2:
+            return list(order.files)
+        return sorted(order.files, key=lambda item: 0 if _logical_side(item) == "face" else 1)
+
+    @staticmethod
+    def _output_stem(order: OrderCheck, ordered_files: list[FileCheck]) -> str:
+        """Choose a stable name even when a one-page PDF has no side suffix."""
+        if len(ordered_files) == 1:
+            return ordered_files[0].path.stem
+        face = next((item for item in ordered_files if _logical_side(item) == "face"), None)
+        return (face or ordered_files[0]).path.stem
+
+    @staticmethod
+    def _build_page_refs(ordered_files: list[FileCheck]) -> list[_LogicalPageRef]:
+        refs: list[_LogicalPageRef] = []
+        if len(ordered_files) == 1 and ordered_files[0].page_count == 2:
+            item = ordered_files[0]
+            for index, page in enumerate(item.pdf_pages):
+                refs.append(
+                    _LogicalPageRef(
+                        source=item,
+                        source_page_index=index,
+                        expected_side="face" if index == 0 else "back",
+                        expected_width_mm=page.width_mm,
+                        expected_height_mm=page.height_mm,
+                    )
+                )
+            return refs
+
+        for item in ordered_files:
+            if item.page_count == 1 and item.pdf_pages:
+                page = item.pdf_pages[0]
+                width_mm, height_mm = page.width_mm, page.height_mm
+                page_index = 0
+            else:
+                width_mm, height_mm = item.actual_width_mm, item.actual_height_mm
+                page_index = 0
+            if width_mm is None or height_mm is None:
+                raise ValueError(f"не удалось определить размер страницы: {item.path.name}")
+            refs.append(
+                _LogicalPageRef(
+                    source=item,
+                    source_page_index=page_index,
+                    expected_side=_logical_side(item),
+                    expected_width_mm=width_mm,
+                    expected_height_mm=height_mm,
+                )
+            )
+        return refs
+
+    def _prepare_page_pdfs(self, page_refs: list[_LogicalPageRef], temporary_dir: Path) -> list[str]:
+        """Create page PDFs for rasters and keep incoming PDFs untouched."""
+        page_pdfs: list[str] = []
+        converted: dict[Path, str] = {}
+        for page_number, ref in enumerate(page_refs, start=1):
+            item = ref.source
+            if item.path.suffix.lower() == ".pdf":
+                if str(item.path) not in page_pdfs:
+                    page_pdfs.append(str(item.path))
+                continue
+
+            source_image_path = str(item.path)
+            dpi_arg = f"{item.dpi_x}x{item.dpi_y}"
+            if item.needs_resample and item.resample_target_mm:
+                resampled_path = temporary_dir / (
+                    f"resampled_{page_number}_{ref.expected_side}{item.path.suffix}"
+                )
+                resample_image(
+                    str(item.path),
+                    str(resampled_path),
+                    target_width_mm=item.resample_target_mm[0],
+                    target_height_mm=item.resample_target_mm[1],
+                    target_dpi=self.min_dpi,
+                    rotation_degrees=item.rotation_degrees,
+                )
+                source_image_path = str(resampled_path)
+                dpi_arg = str(self.min_dpi)
+
+            page_path = temporary_dir / f"{page_number}_{ref.expected_side}.pdf"
+            convert_image_to_pdf(
+                source_image_path,
+                str(page_path),
+                dpi=dpi_arg,
+                compression="none",
+            )
+            converted[item.path] = str(page_path)
+            page_pdfs.append(str(page_path))
+        return page_pdfs
+
     def _validate_created_pdf(
         self,
         pdf_path: Path,
-        ordered_files: list[FileCheck],
+        page_refs: list[_LogicalPageRef],
         validation_dir: Path,
     ) -> None:
         """Render the final PDF and verify readability, page count, order and page sizes."""
@@ -368,30 +589,29 @@ class BatchProcessor:
             raise ValueError(f"итоговый PDF повреждён или не открывается: {details}")
 
         rendered_pages = sorted(validation_dir.glob("page-*.png"))
-        if len(rendered_pages) != len(ordered_files):
+        if len(rendered_pages) != len(page_refs):
             raise ValueError(
-                f"в итоговом PDF {len(rendered_pages)} страниц; ожидалось {len(ordered_files)}"
+                f"в итоговом PDF {len(rendered_pages)} страниц; ожидалось {len(page_refs)}"
             )
 
-        for page_number, (rendered_page, source) in enumerate(zip(rendered_pages, ordered_files), start=1):
+        for page_number, (rendered_page, ref) in enumerate(zip(rendered_pages, page_refs), start=1):
             page_meta = inspect_file(str(rendered_page))
-            expected = (
-                source.resample_target_mm
-                if (source.needs_resample and source.resample_target_mm)
-                else (source.actual_width_mm, source.actual_height_mm)
-            )
+            source = ref.source
+            expected = (ref.expected_width_mm, ref.expected_height_mm)
+            if source.needs_resample and source.resample_target_mm and source.path.suffix.lower() != ".pdf":
+                expected = source.resample_target_mm
             actual = (page_meta.width_mm, page_meta.height_mm)
             # A 72-DPI control render has a rounding step of about 0.35 mm.
             validation_tolerance = max(self.tolerance_mm, 0.6)
             if any(abs(a - e) > validation_tolerance for a, e in zip(actual, expected)):
                 raise ValueError(
-                    f"страница {page_number} ({source.parsed.side}) имеет размер "
+                    f"страница {page_number} ({ref.expected_side}) имеет размер "
                     f"{actual[0]:.1f}x{actual[1]:.1f} мм; ожидалось "
                     f"{expected[0]:.1f}x{expected[1]:.1f} мм"
                 )
 
             expected_side = "face" if page_number == 1 else "back"
-            if source.parsed.side != expected_side:
+            if ref.expected_side != expected_side:
                 raise ValueError(
                     f"нарушен порядок страниц: страница {page_number} должна быть {expected_side}"
                 )

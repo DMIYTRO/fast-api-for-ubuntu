@@ -5,6 +5,9 @@
 import os
 import shutil
 from typing import List, Union
+
+import pymupdf
+
 from core.tool_runner import run_command
 
 def convert_image_to_pdf(
@@ -67,6 +70,64 @@ def merge_pdfs_with_ghostscript(input_pdf_paths: List[str], output_pdf_path: str
         f"-sOutputFile={output_pdf_path}",
     ] + input_pdf_paths
     run_command(cmd, check=True)
+    return output_pdf_path
+
+
+def merge_pdfs_with_pymupdf(input_pdf_paths: List[str], output_pdf_path: str) -> str:
+    """Merge complete PDF documents by copying pages without rasterization."""
+    if not input_pdf_paths:
+        raise ValueError("Список PDF-файлов для объединения пуст.")
+
+    output_path = os.path.abspath(output_pdf_path)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    expected_page_count = 0
+    merged = pymupdf.open()
+
+    try:
+        for input_pdf_path in input_pdf_paths:
+            if not os.path.isfile(input_pdf_path):
+                raise FileNotFoundError(f"Входной PDF не найден: {input_pdf_path}")
+            if os.path.getsize(input_pdf_path) == 0:
+                raise ValueError(f"Входной PDF пуст: {input_pdf_path}")
+
+            try:
+                source = pymupdf.open(input_pdf_path)
+            except Exception as exc:
+                raise ValueError(f"Не удалось открыть входной PDF: {input_pdf_path}") from exc
+
+            try:
+                if source.page_count == 0:
+                    raise ValueError(f"Входной PDF не содержит страниц: {input_pdf_path}")
+                merged.insert_pdf(source)
+                expected_page_count += source.page_count
+            finally:
+                source.close()
+
+        if expected_page_count == 0:
+            raise ValueError("Входные PDF не содержат страниц.")
+        merged.save(output_path)
+    except Exception:
+        merged.close()
+        raise
+    else:
+        merged.close()
+
+    if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
+        raise ValueError("PyMuPDF не создал итоговый PDF или файл пуст.")
+
+    try:
+        check = pymupdf.open(output_path)
+    except Exception as exc:
+        raise ValueError("PyMuPDF создал нечитаемый итоговый PDF.") from exc
+    try:
+        if check.page_count != expected_page_count:
+            raise ValueError(
+                "Неверное количество страниц в итоговом PDF: "
+                f"{check.page_count}; ожидалось {expected_page_count}."
+            )
+    finally:
+        check.close()
+
     return output_pdf_path
 
 def combine_images_to_pdf(

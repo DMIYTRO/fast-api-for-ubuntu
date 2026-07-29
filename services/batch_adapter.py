@@ -129,16 +129,19 @@ class BatchProcessorAdapter:
             result.pdf_path = pdf_path
 
             if self.options.generate_previews:
-                ordered = sorted(
-                    order.files,
-                    key=lambda item: 0 if item.parsed.side == "face" else 1,
-                )
+                if len(order.files) == 1 and order.files[0].page_count == 2:
+                    stem = order.files[0].path.stem
+                    page_names = [f"{stem}_page1", f"{stem}_page2"]
+                else:
+                    ordered = sorted(
+                        order.files,
+                        key=lambda item: 0 if item.parsed.side == "face" else 1,
+                    )
+                    page_names = [item.path.stem for item in ordered]
                 preview_results = self.processor.generate_previews_for_all(
                     [pdf_path],
                     self.preview_dir,
-                    pdf_page_names_map={
-                        pdf_path: [item.path.stem for item in ordered]
-                    },
+                    pdf_page_names_map={pdf_path: page_names},
                 )
                 if preview_results:
                     _, previews, preview_error = preview_results[0]

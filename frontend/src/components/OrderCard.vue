@@ -16,7 +16,12 @@ const back = computed(() => files.value.find((file) => String(file.side || file.
 const parsed = computed(() => face.value?.parsed || {});
 const colorMode = computed(() => parsed.value.front_colors != null ? `${parsed.value.front_colors}-${parsed.value.back_colors ?? 0}` : "—");
 const declaredSize = computed(() => parsed.value.width_mm && parsed.value.height_mm ? `${parsed.value.width_mm} × ${parsed.value.height_mm} мм` : "Размер не указан");
-const expectedSize = computed(() => parsed.value.width_mm && parsed.value.height_mm ? `${parsed.value.width_mm + 4} × ${parsed.value.height_mm + 4} мм` : "—");
+const formatNumber = (input, decimals = 1) => {
+  const number = Number(input);
+  return Number.isFinite(number) ? number.toFixed(decimals) : "—";
+};
+const formatMm = (input) => formatNumber(input, 1);
+const expectedSize = computed(() => parsed.value.width_mm && parsed.value.height_mm ? `${formatMm(parsed.value.width_mm + 4)} × ${formatMm(parsed.value.height_mm + 4)} мм` : "—");
 const issueText = (value) => typeof value === "string" ? value : value?.message || value?.code;
 const allErrors = computed(() => [
   ...(props.order.errors || []),
@@ -28,8 +33,16 @@ const allWarnings = computed(() => [
 ].map(issueText).filter(Boolean));
 const statusLabel = { detected: "Обнаружен", passed: "Прошёл", completed: "Прошёл", warning: "Предупреждение", error: "Ошибка", failed: "Ошибка", waiting_confirmation: "Нужно решение", processing: "Проверяется" };
 const value = (input, suffix = "") => input != null && input !== "" ? `${input}${suffix}` : "—";
-const size = (file) => file ? `${value(file.width_mm || file.actual_width_mm)} × ${value(file.height_mm || file.actual_height_mm, " мм")}` : "—";
-const dpi = (file) => file ? `${value(file.dpi_x || file.dpi)} × ${value(file.dpi_y || file.dpi, " DPI")}` : "—";
+const size = (file) => file ? `${formatMm(file.width_mm ?? file.actual_width_mm)} × ${formatMm(file.height_mm ?? file.actual_height_mm)} мм` : "—";
+const dpi = (file) => {
+  if (!file) return "—";
+  if (file.pdf_content_type === "vector") return "Вектор";
+  const x = file.dpi_x ?? file.pdf_min_dpi ?? file.dpi;
+  const y = file.dpi_y ?? file.pdf_min_dpi ?? file.dpi;
+  return x != null || y != null
+    ? `${formatNumber(x)} × ${formatNumber(y)} DPI`
+    : "Не определяется";
+};
 const color = (file) => file?.colorspace || file?.color_space || "—";
 const format = (file) => file?.format || file?.actual_format || "—";
 const rotation = (file) => file ? `${file.rotation_degrees || 0}°` : "—";

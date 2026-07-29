@@ -40,6 +40,13 @@ class FileCheck:
     resample_confirmed: Optional[bool] = None
     rotation_degrees: int = 0
     orientation_verified: bool = False
+    # PDF-specific facts.  These are optional so existing image workflows and
+    # callers constructing FileCheck directly remain compatible.
+    page_count: Optional[int] = None
+    pdf_pages: tuple[object, ...] = ()
+    pdf_colorspaces: tuple[str, ...] = ()
+    pdf_min_dpi: Optional[float] = None
+    pdf_content_type: Optional[str] = None
 
     @property
     def passed(self) -> bool:
