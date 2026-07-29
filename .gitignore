@@ -4,12 +4,19 @@ output_report/previews/
 # Результаты обработки и превью не являются входными тестовыми данными.
 /input_files/Processed/
 /input_files/Previews/Processed/
+/input_files/PDF/
+/input_files/Troubles/
+/input_files/output_report/
 /output/
+/output_report/
 *.pdf
-/output_report/*.pdf
 /tmp/pdfs/
 *.tif
 *.tiff
+*.bak
+*.error.txt
+*.db-shm
+*.db-wal
 __pycache__/
 .DS_Store
 audit_history.db
