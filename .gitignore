@@ -1,12 +1,21 @@
 # Исключаем сгенерированные превью и выходные тяжелые отчеты
 output_real_files/
 output_report/previews/
+# Результаты обработки и превью не являются входными тестовыми данными.
+/input_files/Processed/
+/input_files/Previews/Processed/
+/output/
+*.pdf
+/output_report/*.pdf
+/tmp/pdfs/
 *.tif
 *.tiff
 __pycache__/
 .DS_Store
 audit_history.db
 image_magic.db
+/image_magic.db-shm
+/image_magic.db-wal
 logs/
 frontend/node_modules/
 frontend/.vite/
