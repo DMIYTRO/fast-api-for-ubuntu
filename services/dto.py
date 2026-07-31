@@ -7,6 +7,7 @@ directly to FastAPI/Pydantic without leaking ``Path`` objects or mutable
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from processing.models import FileCheck, OrderCheck, ParsedFilename
@@ -26,8 +27,10 @@ def parsed_filename_to_dto(value: ParsedFilename | None) -> dict[str, Any] | Non
     }
 
 
-def file_check_to_dto(value: FileCheck) -> dict[str, Any]:
-    return {
+def file_check_to_dto(
+    value: FileCheck, *, preview_paths: list[str] | None = None
+) -> dict[str, Any]:
+    dto = {
         "path": str(value.path),
         "name": value.path.name,
         "parsed": parsed_filename_to_dto(value.parsed),
@@ -65,6 +68,17 @@ def file_check_to_dto(value: FileCheck) -> dict[str, Any]:
         "orientation_verified": value.orientation_verified,
         "passed": value.passed,
     }
+    matching_paths = [
+        path
+        for path in preview_paths or []
+        if Path(path).name.startswith(f"{value.path.stem}_")
+    ]
+    if matching_paths:
+        # The first path is retained for existing single-preview API clients;
+        # the full list also preserves previews of all PDF pages.
+        dto["preview_path"] = matching_paths[0]
+        dto["preview_paths"] = matching_paths
+    return dto
 
 
 def order_check_to_dto(
@@ -96,7 +110,10 @@ def order_check_to_dto(
         "pending_confirmations": pending,
         "errors": list(value.errors),
         "warnings": list(value.warnings),
-        "files": [file_check_to_dto(item) for item in value.files],
+        "files": [
+            file_check_to_dto(item, preview_paths=preview_paths)
+            for item in value.files
+        ],
         "pdf_path": pdf_path,
         "preview_paths": list(preview_paths or []),
         "processing_errors": list(processing_errors or []),

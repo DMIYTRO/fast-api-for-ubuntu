@@ -212,6 +212,24 @@ class OrderWorkflowService:
                             }
                         )
                         continue
+                    previous_order = deepcopy(order)
+                    return_preview_name = None
+                    if action == "reject" and self.rework_sender is not None:
+                        try:
+                            return_preview_name = prepare_return_preview_name(
+                                order_id,
+                                input_path=Path(run["options"]["input_path"]),
+                                preview_paths=previous_order.get("preview_paths"),
+                                files=previous_order.get("files"),
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "return.preview_unavailable run_id=%s order_id=%s error=%s",
+                                run["id"],
+                                order_id,
+                                exc,
+                            )
+                            return_preview_name = ""
                     action_record = OrderAction(
                         order_result_id=stored.id,
                         action=action,
@@ -244,7 +262,6 @@ class OrderWorkflowService:
                         )
                         results.append(self._busy_result(order_id, action, active))
                         continue
-                    previous_order = deepcopy(order)
                     try:
                         lifecycle = self.lifecycle_factory(
                             Path(run["options"]["input_path"])
@@ -315,9 +332,7 @@ class OrderWorkflowService:
                             prepress_result = self.rework_sender(
                                 order_id,
                                 (command.comment or "").strip(),
-                                prepare_return_preview_name(
-                                    order_id, previous_order.get("preview_paths")
-                                ),
+                                return_preview_name or "",
                                 command.design,
                                 command.design_cost,
                             )

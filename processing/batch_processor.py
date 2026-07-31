@@ -765,3 +765,48 @@ class BatchProcessor:
             except Exception as exc:
                 results.append((pdf_path, [], str(exc)))
         return results
+
+    def generate_previews_for_files(
+        self,
+        files: list[FileCheck],
+        preview_dir: Path,
+    ) -> list[tuple[FileCheck, list[Path], str | None]]:
+        """Generate previews directly from every available source file.
+
+        Unlike ``generate_previews_for_all``, this method deliberately does
+        not depend on a successfully assembled production PDF.  A source file
+        can therefore still be reviewed when it fails prepress validation.
+        """
+        results: list[tuple[FileCheck, list[Path], str | None]] = []
+        for file_check in files:
+            try:
+                if file_check.path.suffix.lower() == ".pdf":
+                    page_count = file_check.page_count or 1
+                    page_names = (
+                        [file_check.path.stem]
+                        if page_count == 1
+                        else [
+                            f"{file_check.path.stem}_page{page_number}"
+                            for page_number in range(1, page_count + 1)
+                        ]
+                    )
+                    previews = self.generate_pdf_previews(
+                        file_check.path, preview_dir, page_names=page_names
+                    )
+                else:
+                    meta = inspect_file(str(file_check.path))
+                    preview_path = preview_dir / f"{file_check.path.stem}_preview.png"
+                    generate_preview(
+                        input_path=str(file_check.path),
+                        output_preview_path=str(preview_path),
+                        dpi=meta.dpi or 300.0,
+                        w_px=meta.width_px,
+                        h_px=meta.height_px,
+                        safe_zone_mm=self.profile.safe_zone_mm,
+                        bleed_mm=1.0,
+                    )
+                    previews = [preview_path]
+                results.append((file_check, previews, None))
+            except Exception as exc:
+                results.append((file_check, [], str(exc)))
+        return results

@@ -223,6 +223,9 @@ class OrderWorkflowTests(unittest.TestCase):
 
     def test_rework_sends_individual_options_and_preview_name_stub(self):
         sent: list[tuple[str, str, str, bool, str]] = []
+        preview_path = Path(self.temporary_directory.name) / "preview.png"
+        preview_path.write_bytes(b"preview")
+        self.order["preview_paths"] = [str(preview_path)]
         service = OrderWorkflowService(
             self.coordinator,
             self.database.session_factory,
@@ -247,7 +250,30 @@ class OrderWorkflowTests(unittest.TestCase):
             sent, [("1001", "Неверный размер.", "preview.png", False, "0")]
         )
 
-    def test_rework_preview_stub_does_not_block_when_preview_is_missing(self):
+    def test_rework_uses_preview_from_processed_preview_folder(self):
+        sent: list[str] = []
+        self.order["preview_paths"] = []
+        preview_dir = Path(self.temporary_directory.name) / "Previews" / "Processed"
+        preview_dir.mkdir(parents=True)
+        preview_name = "01_KS_(777-1001)_preview.png"
+        (preview_dir / preview_name).write_bytes(b"preview")
+        service = OrderWorkflowService(
+            self.coordinator,
+            self.database.session_factory,
+            lambda _order_id, _run_id: (self.run, self.order),
+            lifecycle_factory=BlockingLifecycle,
+            rework_sender=lambda _order, _comment, preview, _design, _cost: (
+                sent.append(preview) or {"http_status": 200}
+            ),
+        )
+        BlockingLifecycle.release.set()
+
+        result = service.prepare(self.command, "reject")
+
+        self.assertEqual(result["items"][0]["status"], "prepared")
+        self.assertEqual(sent, [preview_name])
+
+    def test_rework_continues_without_a_preview(self):
         sent: list[str] = []
         self.order["preview_paths"] = []
         service = OrderWorkflowService(
@@ -264,7 +290,7 @@ class OrderWorkflowTests(unittest.TestCase):
         result = service.prepare(self.command, "reject")
 
         self.assertEqual(result["items"][0]["status"], "prepared")
-        self.assertEqual(sent, ["1001_20.png"])
+        self.assertEqual(sent, [""])
 
     def test_lifecycle_initialization_failure_marks_action_failed_and_retries(self):
         broken_service = OrderWorkflowService(

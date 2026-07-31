@@ -93,6 +93,26 @@ class BatchProcessorAdapter:
     def process_order(self, order: OrderCheck) -> OrderArtifacts:
         result = OrderArtifacts()
         try:
+            # Previews are review artifacts, not production artifacts.  Make
+            # them for every readable source file, even when the order is
+            # invalid, PDF creation is disabled, or another file fails.
+            if self.options.generate_previews:
+                preview_results = self.processor.generate_previews_for_files(
+                    order.files, self.preview_dir
+                )
+                for file_check, previews, preview_error in preview_results:
+                    result.preview_paths.extend(previews)
+                    if preview_error:
+                        logger.error(
+                            "file.preview_failed order_id=%s file=%s error=%s",
+                            order.order_id,
+                            file_check.path.name,
+                            preview_error,
+                        )
+                        result.errors.append(
+                            f"Превью {file_check.path.name}: {preview_error}"
+                        )
+
             if not order.passed:
                 if self.options.copy_failures:
                     copies = self.processor.copy_failed_to_troubles(
@@ -127,36 +147,6 @@ class BatchProcessorAdapter:
                     )
                 return result
             result.pdf_path = pdf_path
-
-            if self.options.generate_previews:
-                if len(order.files) == 1 and order.files[0].page_count == 2:
-                    stem = order.files[0].path.stem
-                    page_names = [f"{stem}_page1", f"{stem}_page2"]
-                else:
-                    ordered = sorted(
-                        order.files,
-                        key=lambda item: 0 if item.parsed.side == "face" else 1,
-                    )
-                    page_names = [item.path.stem for item in ordered]
-                preview_results = self.processor.generate_previews_for_all(
-                    [pdf_path],
-                    self.preview_dir,
-                    pdf_page_names_map={pdf_path: page_names},
-                )
-                if preview_results:
-                    _, previews, preview_error = preview_results[0]
-                    result.preview_paths.extend(previews)
-                    if preview_error:
-                        logger.error(
-                            "order.preview_failed order_id=%s error=%s",
-                            order.order_id,
-                            preview_error,
-                        )
-                        result.errors.append(f"Превью: {preview_error}")
-                else:
-                    result.errors.append(
-                        "BatchProcessor не вернул результат создания превью"
-                    )
         except Exception as exc:
             # ImageMagick/Ghostscript/programming failures terminate this order,
             # never the worker or the web process.
