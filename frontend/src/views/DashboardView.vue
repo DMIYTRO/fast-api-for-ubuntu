@@ -19,12 +19,14 @@ async function act(action, comment) {
   actionBusy.value = true;
   try {
     const result = await checks.act(action, comment);
-    const failed = result.filter((item) => !["prepared", "conflict"].includes(item.status));
+    const failed = result.filter((item) => !["prepared", "pending", "conflict"].includes(item.status));
     if (failed.length) {
       const first = failed[0];
       toast.value = `Не удалось обработать ${failed.length} заказ(а): ${first.message || first.status}`;
     } else if (result.some((item) => item.status === "conflict")) {
       toast.value = "Нужно решить конфликт файлов перед отправкой.";
+    } else if (result.some((item) => item.status === "pending")) {
+      toast.value = "Загрузка превью запущена в фоне.";
     } else {
       toast.value = action === "print" ? "Задание на печать подготовлено" : "Возврат подготовлен";
     }

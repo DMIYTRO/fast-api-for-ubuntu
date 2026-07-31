@@ -156,6 +156,17 @@ class OrderWorkflowTests(unittest.TestCase):
             self.assertEqual(first.result(timeout=2)["items"][0]["status"], "prepared")
             executor.shutdown()
 
+    def test_submit_returns_before_background_file_processing_finishes(self):
+        result = self.service.submit(self.command, "reject")
+
+        self.assertEqual(result["items"][0]["status"], "pending")
+        self.assertTrue(BlockingLifecycle.entered.wait(timeout=2))
+        self.assertEqual(BlockingLifecycle.calls, ["reject"])
+
+        BlockingLifecycle.release.set()
+        self.service.shutdown()
+        self.assertEqual(self.coordinator.transitions, ["returned_for_rework"])
+
     def test_conflicting_action_does_not_start_a_second_move(self):
         executor, first = self._start_prepare("print")
         try:
@@ -291,6 +302,14 @@ class OrderWorkflowTests(unittest.TestCase):
 
         self.assertEqual(result["items"][0]["status"], "prepared")
         self.assertEqual(sent, [""])
+
+    def test_uploaded_previews_are_removed_only_by_the_cleanup_step(self):
+        preview = Path(self.temporary_directory.name) / "uploaded_preview.png"
+        preview.write_bytes(b"preview")
+
+        OrderWorkflowService._remove_uploaded_previews([preview])
+
+        self.assertFalse(preview.exists())
 
     def test_lifecycle_initialization_failure_marks_action_failed_and_retries(self):
         broken_service = OrderWorkflowService(

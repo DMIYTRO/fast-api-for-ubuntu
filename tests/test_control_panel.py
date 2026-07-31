@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import os
+import time
 from pathlib import Path
 
 from argon2 import PasswordHasher
@@ -297,11 +298,21 @@ class ControlPanelTests(unittest.TestCase):
         self.assertEqual(return_without_comment.status_code, 200)
         self.assertEqual(
             return_without_comment.json()["items"],
-            [{"order_id": "1001", "status": "prepared"}],
+            [
+                {
+                    "order_id": "1001",
+                    "status": "pending",
+                    "message": "Задача поставлена в очередь. Загрузка продолжается в фоне.",
+                }
+            ],
         )
-        history = self.client.get(
-            "/api/order-history", params={"action": "reject"}
-        )
+        deadline = time.monotonic() + 2
+        history = self.client.get("/api/order-history", params={"action": "reject"})
+        while not history.json()["items"] and time.monotonic() < deadline:
+            time.sleep(0.02)
+            history = self.client.get(
+                "/api/order-history", params={"action": "reject"}
+            )
         self.assertEqual(history.status_code, 200)
         item = history.json()["items"][0]
         self.assertEqual(item["order_id"], "1001")

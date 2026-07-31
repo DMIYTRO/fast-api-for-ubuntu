@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass
 import logging
@@ -48,6 +49,7 @@ class OrderWorkflowService:
         lifecycle_factory: Callable[[Path], FileLifecycle] = FileLifecycle,
         prepress_sender: Callable[[str | list[str], str | None], dict[str, Any]] | None = None,
         rework_sender: Callable[[str, str, str, bool, str], dict[str, Any]] | None = None,
+        preview_uploader: Callable[[list[Path]], list[str]] | None = None,
     ) -> None:
         self.coordinator = coordinator
         self.session_factory = session_factory
@@ -55,8 +57,12 @@ class OrderWorkflowService:
         self.lifecycle_factory = lifecycle_factory
         self.prepress_sender = prepress_sender
         self.rework_sender = rework_sender
+        self.preview_uploader = preview_uploader
         self._action_locks_guard = Lock()
         self._action_locks: dict[int, tuple[Lock, str]] = {}
+        self._background_guard = Lock()
+        self._background_actions: set[tuple[str, str, str]] = set()
+        self._background_executor: ThreadPoolExecutor | None = None
 
     def _claim_action(self, order_result_id: int, action: str) -> str | None:
         """Claim an order without waiting; return the action already in progress."""
@@ -108,6 +114,98 @@ class OrderWorkflowService:
             if "conflict_strategy" not in str(exc):
                 raise
             return method(order)
+
+    @staticmethod
+    def _return_preview_upload_paths(
+        input_path: Path, transition: Any, preview_name: str
+    ) -> list[Path]:
+        """Find the previews after a return transition for one batch upload."""
+        paths = [
+            Path(path) for path in transition.preview_paths if Path(path).is_file()
+        ]
+        if preview_name and not any(path.name == preview_name for path in paths):
+            collage = input_path / "Previews" / "Return" / preview_name
+            if not collage.is_file():
+                raise FileLifecycleError(
+                    f"Не найдено превью для загрузки: {preview_name}"
+                )
+            paths.append(collage)
+        return paths
+
+    @staticmethod
+    def _remove_uploaded_previews(paths: list[Path]) -> None:
+        """Remove local copies only after the remote action is committed."""
+        for path in dict.fromkeys(paths):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                # The Sborka action has already completed at this point.  A
+                # cleanup failure must not make a completed return retryable.
+                logger.warning(
+                    "preview.local_cleanup_failed file=%s error=%s", path.name, exc
+                )
+
+    def submit(self, command: OrderActionCommand, action: str) -> dict[str, list[dict[str, Any]]]:
+        """Queue an operator action and return without waiting for FTP/HTTP I/O."""
+        run_key = command.run_id or "active"
+        keys = {(run_key, str(order_id), action) for order_id in command.order_ids}
+        with self._background_guard:
+            already_queued = keys & self._background_actions
+            queued = keys - already_queued
+            self._background_actions.update(queued)
+            if queued and self._background_executor is None:
+                self._background_executor = ThreadPoolExecutor(
+                    max_workers=2, thread_name_prefix="image-magic-actions"
+                )
+            executor = self._background_executor
+
+        if queued and executor is not None:
+            future = executor.submit(self._run_background, command, action, queued)
+            future.add_done_callback(self._log_background_failure)
+        return {
+            "items": [
+                {
+                    "order_id": str(order_id),
+                    "status": "pending",
+                    "message": (
+                        "Действие уже выполняется в фоне."
+                        if (run_key, str(order_id), action) in already_queued
+                        else "Задача поставлена в очередь. Загрузка продолжается в фоне."
+                    ),
+                }
+                for order_id in command.order_ids
+            ]
+        }
+
+    def _run_background(
+        self,
+        command: OrderActionCommand,
+        action: str,
+        keys: set[tuple[str, str, str]],
+    ) -> None:
+        try:
+            self.prepare(command, action)
+        finally:
+            with self._background_guard:
+                self._background_actions.difference_update(keys)
+
+    @staticmethod
+    def _log_background_failure(future: Future[None]) -> None:
+        try:
+            future.result()
+        except Exception as exc:
+            logger.error(
+                "order.background_action_failed error=%s",
+                exc,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
+    def shutdown(self) -> None:
+        """Finish queued actions during a graceful server shutdown."""
+        with self._background_guard:
+            executor, self._background_executor = self._background_executor, None
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=False)
 
     def prepare(
         self, command: OrderActionCommand, action: str
@@ -313,6 +411,7 @@ class OrderWorkflowService:
                         )
                         continue
                     try:
+                        upload_paths: list[Path] = []
                         self.coordinator.apply_file_transition(
                             run["id"],
                             order_id,
@@ -329,6 +428,14 @@ class OrderWorkflowService:
                                 order_id, command.comment
                             )
                         elif action == "reject" and self.rework_sender is not None:
+                            if self.preview_uploader is not None:
+                                upload_paths = self._return_preview_upload_paths(
+                                    Path(run["options"]["input_path"]),
+                                    transition,
+                                    return_preview_name or "",
+                                )
+                                if upload_paths:
+                                    self.preview_uploader(upload_paths)
                             prepress_result = self.rework_sender(
                                 order_id,
                                 (command.comment or "").strip(),
@@ -342,6 +449,8 @@ class OrderWorkflowService:
                                 prepress_result, ensure_ascii=False
                             )
                         session.commit()
+                        if upload_paths:
+                            self._remove_uploaded_previews(upload_paths)
                         results.append(
                             {
                                 "order_id": order_id,

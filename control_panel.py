@@ -41,6 +41,7 @@ from services import (
     RunNotFoundError,
 )
 from services.sborka_integration import build_rework_sender, build_sender
+from services.ftp_preview_uploader import build_ftp_preview_uploader
 from services.repository import InMemoryRunRepository, RunRepository
 
 try:
@@ -321,6 +322,7 @@ def create_app(
             heartbeat_task.cancel()
             with suppress(asyncio.CancelledError):
                 await heartbeat_task
+            application.state.order_workflow.shutdown()
             coordinator.shutdown(timeout=None)
             database.dispose()
             logger.info("application.stopped")
@@ -353,6 +355,10 @@ def create_app(
             )
             if settings.sborka_enabled
             else None
+        ),
+        preview_uploader=build_ftp_preview_uploader(
+            PROJECT_DIR / "sborka_ftp_credentials.json",
+            timeout=settings.sborka_timeout_seconds,
         ),
     )
     application.state.log_path = log_path
@@ -646,7 +652,17 @@ def create_app(
     def prepare_reject(
         request: Request, payload: OrderActionRequest
     ) -> dict[str, Any]:
-        return prepare_action(request, payload, "reject")
+        return request.app.state.order_workflow.submit(
+            OrderActionCommand(
+                order_ids=tuple(payload.order_ids),
+                run_id=payload.run_id,
+                comment=payload.comment,
+                design=payload.design,
+                design_cost=payload.design_cost,
+                conflict_strategy=payload.conflict_strategy,
+            ),
+            "reject",
+        )
 
     @application.get("/api/order-history", dependencies=[Depends(protected)])
     def order_history(
