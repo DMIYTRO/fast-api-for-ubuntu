@@ -178,6 +178,17 @@ def _safe_result_path(run: dict[str, Any], raw_path: str | None) -> Path:
     return target
 
 
+def _safe_history_preview_path(root_path: str, raw_path: str | None) -> Path | None:
+    """Return an available history preview only when it remains inside its run."""
+    if not raw_path:
+        return None
+    root = Path(root_path).resolve()
+    target = Path(raw_path).resolve()
+    if not _is_inside(target, root) or not target.is_file():
+        return None
+    return target
+
+
 def _find_order(
     coordinator: RunCoordinator, order_id: str, run_id: str | None = None
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -641,6 +652,7 @@ def create_app(
     def order_history(
         request: Request,
         action: Literal["all", "print", "reject"] = "all",
+        status: Literal["prepared", "failed", "all"] = "prepared",
         date_from: str | None = None,
         date_to: str | None = None,
         search: str = "",
@@ -660,6 +672,8 @@ def create_app(
             statement = select(OrderAction).join(OrderResult)
             if action != "all":
                 statement = statement.where(OrderAction.action == action)
+            if status != "all":
+                statement = statement.where(OrderAction.status == status)
             if start:
                 statement = statement.where(OrderAction.created_at >= start)
             if end:
@@ -682,7 +696,9 @@ def create_app(
                         "url": f"/api/order-history/{item.id}/previews/{index}",
                     }
                     for index, file in enumerate(order.files)
-                    if file.preview_path
+                    if _safe_history_preview_path(
+                        order.run.input_path, file.preview_path
+                    ) is not None
                 ]
                 items.append(
                     {
@@ -718,10 +734,10 @@ def create_app(
             files = list(action.order_result.files)
             if file_index < 0 or file_index >= len(files):
                 raise APIError(404, "preview_not_found", "Превью не найдено.")
-            preview = files[file_index].preview_path
-            root = Path(action.order_result.run.input_path).resolve()
-            target = Path(preview).resolve() if preview else None
-            if target is None or not _is_inside(target, root) or not target.is_file():
+            target = _safe_history_preview_path(
+                action.order_result.run.input_path, files[file_index].preview_path
+            )
+            if target is None:
                 raise APIError(404, "preview_not_found", "Превью не найдено.")
             return FileResponse(target)
 

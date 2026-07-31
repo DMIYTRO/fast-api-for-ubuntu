@@ -5,6 +5,7 @@ from pathlib import Path
 
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 # ``control_panel`` exposes an application instance at import time.  Production
 # requires this setting; the suite supplies an isolated hash before importing it.
@@ -14,6 +15,7 @@ os.environ.setdefault(
 
 import control_panel
 from processing.models import FileCheck, OrderCheck, ParsedFilename
+from server.models import FileResult, OrderAction, OrderResult
 from server.settings import Settings
 from services.batch_adapter import OrderArtifacts
 
@@ -309,6 +311,75 @@ class ControlPanelTests(unittest.TestCase):
             self.client.get(item["previews"][0]["url"]).content,
             b"preview-image",
         )
+
+    def test_order_history_filters_status_and_omits_unavailable_previews(self):
+        self.adapter_type = OneOrderAdapter
+        self.login()
+        response = self.client.post(
+            "/api/checks",
+            json={
+                "input_path": str(self.root),
+                "direction": "digital",
+                "create_pdfs": True,
+                "generate_previews": True,
+                "copy_failures": False,
+            },
+        )
+        run_id = response.json()["id"]
+        self.client.app.state.coordinator.wait_for(run_id, timeout=2)
+        prepared = self.client.post(
+            "/api/orders/prepare-print",
+            json={"run_id": run_id, "order_ids": ["1001"]},
+        )
+        self.assertEqual(prepared.status_code, 200)
+
+        with self.client.app.state.database.session_factory() as session:
+            order = session.scalar(select(OrderResult).where(OrderResult.run_id == run_id))
+            self.assertIsNotNone(order)
+            session.add(OrderAction(order_result_id=order.id, action="reject", status="failed"))
+            session.commit()
+
+        default_history = self.client.get("/api/order-history")
+        self.assertEqual(default_history.status_code, 200)
+        self.assertEqual(default_history.json()["total"], 1)
+        prepared_item = default_history.json()["items"][0]
+        self.assertEqual(prepared_item["status"], "prepared")
+        self.assertEqual(
+            self.client.get(prepared_item["previews"][0]["url"]).content,
+            b"preview-image",
+        )
+
+        failed_history = self.client.get("/api/order-history", params={"status": "failed"})
+        self.assertEqual(failed_history.status_code, 200)
+        self.assertEqual(failed_history.json()["total"], 1)
+        self.assertEqual(failed_history.json()["items"][0]["status"], "failed")
+        all_history = self.client.get("/api/order-history", params={"status": "all"})
+        self.assertEqual(all_history.status_code, 200)
+        self.assertEqual(all_history.json()["total"], 2)
+        self.assertEqual(
+            {item["status"] for item in all_history.json()["items"]},
+            {"prepared", "failed"},
+        )
+
+        with self.client.app.state.database.session_factory() as session:
+            file = session.scalar(select(FileResult).where(FileResult.order_result_id == order.id))
+            self.assertIsNotNone(file)
+            file.preview_path = str(self.root / "Previews" / "missing.png")
+            session.commit()
+        self.assertEqual(self.client.get("/api/order-history").json()["items"][0]["previews"], [])
+
+        with tempfile.TemporaryDirectory() as outside:
+            outside_preview = Path(outside) / "preview.png"
+            outside_preview.write_bytes(b"outside-preview")
+            with self.client.app.state.database.session_factory() as session:
+                file = session.scalar(select(FileResult).where(FileResult.order_result_id == order.id))
+                self.assertIsNotNone(file)
+                file.preview_path = str(outside_preview)
+                session.commit()
+            self.assertEqual(
+                self.client.get("/api/order-history").json()["items"][0]["previews"],
+                [],
+            )
 
 
 if __name__ == "__main__":
