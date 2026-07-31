@@ -17,7 +17,18 @@ const showBackToTop = ref(false);
 async function logout() { await auth.logout(); router.replace("/login"); }
 async function act(action, comment) {
   actionBusy.value = true;
-  try { await checks.act(action, comment); toast.value = action === "print" ? "Задание на печать подготовлено" : "Возврат подготовлен"; }
+  try {
+    const result = await checks.act(action, comment);
+    const failed = result.filter((item) => !["prepared", "conflict"].includes(item.status));
+    if (failed.length) {
+      const first = failed[0];
+      toast.value = `Не удалось обработать ${failed.length} заказ(а): ${first.message || first.status}`;
+    } else if (result.some((item) => item.status === "conflict")) {
+      toast.value = "Нужно решить конфликт файлов перед отправкой.";
+    } else {
+      toast.value = action === "print" ? "Задание на печать подготовлено" : "Возврат подготовлен";
+    }
+  }
   catch (error) { toast.value = error.message; }
   finally { actionBusy.value = false; window.setTimeout(() => toast.value = "", 5000); }
 }
@@ -61,7 +72,7 @@ onBeforeUnmount(() => {
       <RunHistory :runs="checks.runs" :active-id="checks.activeRun.id" @select="checks.selectRun" />
       <OrderFilters :model-value="checks.filter" :search="checks.search" :orders="checks.orders" :visible-orders="checks.filteredOrders" :selected="checks.selected" @toggle-all="checks.toggleAllFiltered()" @update:model-value="checks.setFilter" @update:search="checks.search = $event" />
       <section v-if="checks.filteredOrders.length" class="order-grid">
-        <OrderCard v-for="order in checks.filteredOrders" :key="order.order_id ?? order.id" :order="order" :reasons="checks.config?.return_reasons || []" :selected="checks.selected.includes(String(order.order_id ?? order.id))" @toggle="checks.toggle(order)" @decide="checks.decide(order, $event)" @return-comment="checks.setReturnComment(order, $event)" />
+        <OrderCard v-for="order in checks.filteredOrders" :key="order.order_id ?? order.id" :order="order" :reasons="checks.config?.return_reasons || []" :selected="checks.selected.includes(String(order.order_id ?? order.id))" :paid-design="checks.returnDesignEnabled(order)" :design-cost="checks.returnDesignCost(order)" @toggle="checks.toggle(order)" @decide="checks.decide(order, $event)" @return-comment="checks.setReturnComment(order, $event)" @return-design="checks.setReturnDesign(order, $event)" @return-cost="checks.setReturnDesignCost(order, $event)" />
       </section>
       <section v-else class="empty-state surface"><div>⌁</div><h2>{{ checks.orders.length ? "Ничего не найдено" : "Заказы появятся здесь" }}</h2><p>{{ checks.orders.length ? "Измените фильтр или поисковый запрос." : "Первые карточки появятся ещё до завершения проверки." }}</p></section>
     </template>

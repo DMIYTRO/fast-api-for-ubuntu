@@ -27,7 +27,7 @@ function submit() {
     <button class="button danger" @click="prepare('reject')">Вернуть на доработку</button>
     <button class="button success" :disabled="!canPrint || busy" :title="!canPrint ? 'В печать можно отправить только прошедшие заказы' : ''" @click="prepare('print')">Провести в печать</button>
   </section>
-  <div v-if="mode === 'reject'" class="confirm-backdrop"><form class="confirm-card" @submit.prevent="submit"><h3>Подготовить возврат</h3><p>Выберите общую причину или используйте индивидуальные причины, заданные кнопкой 💬 в карточках.</p>
+  <div v-if="mode === 'reject'" class="confirm-backdrop"><form class="confirm-card" @submit.prevent="submit"><h3>Вернуть на доработку</h3><p>Для каждого заказа будет создан отдельный запрос в Sborka с его номером, комментарием и именем сформированного превью.</p>
     <p v-if="preparedCount" class="prepared-comments">Индивидуальные причины заполнены для {{ preparedCount }} из {{ count }} заказов.</p>
     <input v-if="reasons?.length" v-model.trim="reasonSearch" type="search" placeholder="Поиск причины">
     <div v-if="reasons?.length" class="reason-picker">

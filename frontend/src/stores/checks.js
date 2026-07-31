@@ -33,7 +33,7 @@ export const useChecksStore = defineStore("checks", {
   state: () => ({
     runs: [], activeRun: null, orders: [], config: null, loading: false, error: "",
     connection: "closed", selected: [], filter: localStorage.getItem("im-filter") || "all",
-    search: "", events: [], drawerOpen: false, stopEvents: null, actionResults: {}, returnComments: {}, conflictPrompt: null,
+    search: "", events: [], drawerOpen: false, stopEvents: null, actionResults: {}, returnComments: {}, returnDesign: {}, conflictPrompt: null,
   }),
   getters: {
     filteredOrders(state) {
@@ -153,6 +153,26 @@ export const useChecksStore = defineStore("checks", {
         : [...new Set([...this.selected, ...ids])];
     },
     clearSelection() { this.selected = []; },
+    returnDesignEnabled(order) {
+      const id = String(order.order_id ?? order.id);
+      return this.returnDesign[id]?.design !== false;
+    },
+    returnDesignCost(order) {
+      const id = String(order.order_id ?? order.id);
+      return this.returnDesign[id]?.design_cost ?? "0";
+    },
+    setReturnDesign(order, design) {
+      const id = String(order.order_id ?? order.id);
+      const designCost = this.returnDesign[id]?.design_cost ?? "0";
+      this.returnDesign[id] = { design, design_cost: designCost };
+    },
+    setReturnDesignCost(order, designCost) {
+      const id = String(order.order_id ?? order.id);
+      this.returnDesign[id] = {
+        design: this.returnDesign[id]?.design !== false,
+        design_cost: designCost || "0",
+      };
+    },
     setReturnComment(order, comment) {
       const id = String(order.order_id ?? order.id);
       if (comment) this.returnComments[id] = comment;
@@ -171,6 +191,7 @@ export const useChecksStore = defineStore("checks", {
           order_ids: [orderId],
           run_id,
           comment: [this.returnComments[orderId], comment].filter(Boolean).join("\n"),
+          ...(this.returnDesign[orderId] || { design: true, design_cost: "0" }),
           conflict_strategy: conflictStrategy,
         })));
       const result = responses.flatMap((response) => list(response));
@@ -190,8 +211,18 @@ export const useChecksStore = defineStore("checks", {
         return result;
       }
       this.conflictPrompt = null;
-      if (action === "reject") order_ids.forEach((id) => delete this.returnComments[id]);
-      this.clearSelection();
+      if (action === "reject") {
+        const completedIds = new Set(result
+          .filter((item) => item.status === "prepared")
+          .map((item) => String(item.order_id)));
+        completedIds.forEach((id) => {
+          delete this.returnComments[id];
+          delete this.returnDesign[id];
+        });
+        this.selected = this.selected.filter((id) => !completedIds.has(String(id)));
+      } else {
+        this.clearSelection();
+      }
       // Print/reject preparation changes order actions only. Keep the active
       // run object intact so its verification progress cannot jump or reset.
       await this.refreshOrders(run_id);

@@ -14,6 +14,15 @@ TEST_SERVER_PASSWORD_HASH = (
     "VdDv4X2PUCX+vQGlJvbbjP5MdwqOR5Kqx3tjxYBG37s"
 )
 
+
+def _default_sborka_api_dir() -> Path:
+    """Prefer the shared Sborka API checkout when it provides rework support."""
+    shared_dir = PROJECT_DIR.parent / "sborka_api"
+    if (shared_dir / "sborka_touser.py").is_file():
+        return shared_dir
+    return PROJECT_DIR / "sborka_api"
+
+
 def _env_bool(name: str, default: bool) -> bool:
     value = os.environ.get(name)
     if value is None:
@@ -36,7 +45,7 @@ class Settings:
     log_max_bytes: int = 10 * 1024 * 1024
     log_backup_count: int = 10
     log_heartbeat_seconds: int = 60
-    sborka_api_dir: Path = PROJECT_DIR / "sborka_api"
+    sborka_api_dir: Path = _default_sborka_api_dir()
     sborka_timeout_seconds: int = 20
     sborka_enabled: bool = False
 
@@ -97,7 +106,7 @@ class Settings:
                 10, int(os.environ.get("IMAGE_MAGIC_LOG_HEARTBEAT_SECONDS", "60"))
             ),
             sborka_api_dir=Path(
-                os.environ.get("IMAGE_MAGIC_SBORKA_API_DIR", PROJECT_DIR / "sborka_api")
+                os.environ.get("IMAGE_MAGIC_SBORKA_API_DIR", _default_sborka_api_dir())
             ).expanduser().resolve(),
             sborka_timeout_seconds=max(
                 1, int(os.environ.get("IMAGE_MAGIC_SBORKA_TIMEOUT_SECONDS", "20"))
@@ -107,7 +116,7 @@ class Settings:
                 (
                     Path(
                         os.environ.get(
-                            "IMAGE_MAGIC_SBORKA_API_DIR", PROJECT_DIR / "sborka_api"
+                            "IMAGE_MAGIC_SBORKA_API_DIR", _default_sborka_api_dir()
                         )
                     ).expanduser()
                     / "sborka_api_key.txt"

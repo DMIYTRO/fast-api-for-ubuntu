@@ -20,6 +20,7 @@ from server.models import OrderAction, OrderResult
 from .coordinator import RunCoordinator
 from .domain import validate_operator_transition
 from .file_lifecycle import FileConflictError, FileLifecycle, FileLifecycleError
+from .return_preview import prepare_return_preview_name
 
 
 logger = logging.getLogger("image_magic.order_workflow")
@@ -30,6 +31,8 @@ class OrderActionCommand:
     order_ids: tuple[str, ...]
     run_id: str | None = None
     comment: str | None = None
+    design: bool = True
+    design_cost: str = "0"
     conflict_strategy: str = "fail"
 
 
@@ -44,12 +47,14 @@ class OrderWorkflowService:
         *,
         lifecycle_factory: Callable[[Path], FileLifecycle] = FileLifecycle,
         prepress_sender: Callable[[str | list[str], str | None], dict[str, Any]] | None = None,
+        rework_sender: Callable[[str, str, str, bool, str], dict[str, Any]] | None = None,
     ) -> None:
         self.coordinator = coordinator
         self.session_factory = session_factory
         self.order_finder = order_finder
         self.lifecycle_factory = lifecycle_factory
         self.prepress_sender = prepress_sender
+        self.rework_sender = rework_sender
         self._action_locks_guard = Lock()
         self._action_locks: dict[int, tuple[Lock, str]] = {}
 
@@ -305,6 +310,16 @@ class OrderWorkflowService:
                         elif action == "print" and self.prepress_sender is not None:
                             prepress_result = self.prepress_sender(
                                 order_id, command.comment
+                            )
+                        elif action == "reject" and self.rework_sender is not None:
+                            prepress_result = self.rework_sender(
+                                order_id,
+                                (command.comment or "").strip(),
+                                prepare_return_preview_name(
+                                    order_id, previous_order.get("preview_paths")
+                                ),
+                                command.design,
+                                command.design_cost,
                             )
                         action_record.status = "prepared"
                         if prepress_result is not None:

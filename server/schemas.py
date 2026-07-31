@@ -43,4 +43,6 @@ class OrderActionRequest(BaseModel):
     order_ids: list[str] = Field(min_length=1)
     run_id: str | None = None
     comment: str | None = None
+    design: bool = True
+    design_cost: str = "0"
     conflict_strategy: Literal["fail", "replace", "rename"] = "fail"

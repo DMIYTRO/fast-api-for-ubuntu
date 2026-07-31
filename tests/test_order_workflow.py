@@ -221,6 +221,51 @@ class OrderWorkflowTests(unittest.TestCase):
         self.assertEqual(BlockingLifecycle.calls, [])
         self.assertEqual(self.coordinator.transitions, [])
 
+    def test_rework_sends_individual_options_and_preview_name_stub(self):
+        sent: list[tuple[str, str, str, bool, str]] = []
+        service = OrderWorkflowService(
+            self.coordinator,
+            self.database.session_factory,
+            lambda _order_id, _run_id: (self.run, self.order),
+            lifecycle_factory=BlockingLifecycle,
+            rework_sender=lambda order_id, comment, preview, design, cost: (
+                sent.append((order_id, comment, preview, design, cost))
+                or {"http_status": 200, "preview_priem": preview}
+            ),
+        )
+        BlockingLifecycle.release.set()
+
+        result = service.prepare(
+            OrderActionCommand(
+                ("1001",), run_id="run-1", comment="Неверный размер.", design=False
+            ),
+            "reject",
+        )
+
+        self.assertEqual(result["items"][0]["status"], "prepared")
+        self.assertEqual(
+            sent, [("1001", "Неверный размер.", "preview.png", False, "0")]
+        )
+
+    def test_rework_preview_stub_does_not_block_when_preview_is_missing(self):
+        sent: list[str] = []
+        self.order["preview_paths"] = []
+        service = OrderWorkflowService(
+            self.coordinator,
+            self.database.session_factory,
+            lambda _order_id, _run_id: (self.run, self.order),
+            lifecycle_factory=BlockingLifecycle,
+            rework_sender=lambda _order, _comment, preview, _design, _cost: (
+                sent.append(preview) or {"http_status": 200}
+            ),
+        )
+        BlockingLifecycle.release.set()
+
+        result = service.prepare(self.command, "reject")
+
+        self.assertEqual(result["items"][0]["status"], "prepared")
+        self.assertEqual(sent, ["1001_20.png"])
+
     def test_lifecycle_initialization_failure_marks_action_failed_and_retries(self):
         broken_service = OrderWorkflowService(
             self.coordinator,

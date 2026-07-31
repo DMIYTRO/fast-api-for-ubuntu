@@ -40,7 +40,7 @@ from services import (
     RunCoordinator,
     RunNotFoundError,
 )
-from services.sborka_integration import build_sender
+from services.sborka_integration import build_rework_sender, build_sender
 from services.repository import InMemoryRunRepository, RunRepository
 
 try:
@@ -335,6 +335,14 @@ def create_app(
             if settings.sborka_enabled
             else None
         ),
+        rework_sender=(
+            build_rework_sender(
+                settings.sborka_api_dir,
+                timeout=settings.sborka_timeout_seconds,
+            )
+            if settings.sborka_enabled
+            else None
+        ),
     )
     application.state.log_path = log_path
     application.state.allowed_roots = allowed_roots or ALLOWED_ROOTS
@@ -606,6 +614,8 @@ def create_app(
                 order_ids=tuple(payload.order_ids),
                 run_id=payload.run_id,
                 comment=payload.comment,
+                design=payload.design,
+                design_cost=payload.design_cost,
                 conflict_strategy=payload.conflict_strategy,
             ),
             action,

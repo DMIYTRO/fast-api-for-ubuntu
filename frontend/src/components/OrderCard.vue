@@ -5,8 +5,8 @@ import FileParameters from "./FileParameters.vue";
 import CorrectionDecision from "./CorrectionDecision.vue";
 import ReturnReasons from "./ReturnReasons.vue";
 
-const props = defineProps({ order: Object, selected: Boolean, reasons: Array });
-const emit = defineEmits(["toggle", "decide", "return-comment"]);
+const props = defineProps({ order: Object, selected: Boolean, reasons: Array, paidDesign: { type: Boolean, default: true }, designCost: { type: String, default: "0" } });
+const emit = defineEmits(["toggle", "decide", "return-comment", "return-design", "return-cost"]);
 const expanded = ref(false);
 const busy = ref(false);
 const id = computed(() => props.order.order_id ?? props.order.id);
@@ -65,6 +65,13 @@ async function decide(value) {
       </div>
       <div class="order-head-actions">
         <ReturnReasons :order="order" :reasons="reasons" @change="$emit('return-comment', $event)" />
+        <button type="button" class="paid-design" :class="{ active: paidDesign }" :aria-pressed="paidDesign" title="Предложить клиенту платную доработку" @click.stop="$emit('return-design', !paidDesign)">
+          Платная доработка
+        </button>
+        <label v-if="paidDesign" class="design-cost">
+          <span>Стоимость</span>
+          <input :value="designCost" type="number" min="0" step="0.01" inputmode="decimal" aria-label="Стоимость платной доработки" @input="$emit('return-cost', $event.target.value)">
+        </label>
         <span class="order-status" :class="`status-${order.status}`">{{ statusLabel[order.status] || order.status }}</span>
       </div>
     </header>

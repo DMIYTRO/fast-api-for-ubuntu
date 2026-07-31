@@ -138,6 +138,8 @@ describe("checks store", () => {
     store.orders = [{ order_id: "100" }, { order_id: "200" }];
     store.selected = ["100", "200"];
     store.returnComments = { "100": "Размер неверный.", "200": "Низкое разрешение." };
+    store.setReturnDesign(store.orders[0], false);
+    store.setReturnDesignCost(store.orders[1], "50");
     const reject = vi.spyOn(api, "prepareReject").mockImplementation(async ({ order_ids }) => ({
       items: [{ order_id: order_ids[0], status: "prepared" }],
     }));
@@ -147,13 +149,35 @@ describe("checks store", () => {
     await store.act("reject", "Общий комментарий.");
 
     expect(reject).toHaveBeenNthCalledWith(1, {
-      order_ids: ["100"], run_id: "run-1", comment: "Размер неверный.\nОбщий комментарий.",
+      order_ids: ["100"], run_id: "run-1", comment: "Размер неверный.\nОбщий комментарий.", design: false, design_cost: "0", conflict_strategy: "fail",
     });
     expect(reject).toHaveBeenNthCalledWith(2, {
-      order_ids: ["200"], run_id: "run-1", comment: "Низкое разрешение.\nОбщий комментарий.",
+      order_ids: ["200"], run_id: "run-1", comment: "Низкое разрешение.\nОбщий комментарий.", design: true, design_cost: "50", conflict_strategy: "fail",
     });
     expect(store.returnComments).toEqual({});
     expect(store.activeRun.progress).toBe(73);
     expect(getRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps failed rework orders selected so they can be retried", async () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1" };
+    store.orders = [{ order_id: "100" }, { order_id: "200" }];
+    store.selected = ["100", "200"];
+    store.returnComments = { "100": "Причина 1", "200": "Причина 2" };
+    vi.spyOn(api, "prepareReject").mockImplementation(async ({ order_ids }) => ({
+      items: [{
+        order_id: order_ids[0],
+        status: order_ids[0] === "100" ? "prepared" : "error",
+        ...(order_ids[0] === "200" ? { message: "Sborka не отвечает." } : {}),
+      }],
+    }));
+    vi.spyOn(api, "orders").mockResolvedValue({ items: store.orders });
+
+    const result = await store.act("reject", "");
+
+    expect(result.map((item) => item.status)).toEqual(["prepared", "error"]);
+    expect(store.selected).toEqual(["200"]);
+    expect(store.returnComments).toEqual({ "200": "Причина 2" });
   });
 });
