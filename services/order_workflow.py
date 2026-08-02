@@ -221,9 +221,27 @@ class OrderWorkflowService:
         with self.session_factory() as session:
             for order_id in command.order_ids:
                 run, order = self.order_finder(order_id, command.run_id)
-                if action == "print" and not (
-                    order.get("passed")
-                    or order.get("status") in {"passed", "warning"}
+                pitstop = order.get("pitstop") or None
+                pitstop_ready = (
+                    pitstop is None
+                    or (
+                        pitstop.get("execution_status") == "completed"
+                        and pitstop.get("verdict") in {"passed", "warning"}
+                        and (
+                            order.get("current_pdf_revision") is None
+                            or pitstop.get("checked_revision")
+                            == order.get("current_pdf_revision")
+                        )
+                    )
+                )
+                if (
+                    action == "print"
+                    and order.get("status")
+                    not in {"accepted_for_print", "returned_for_rework"}
+                    and not (
+                        order.get("status") in {"passed", "warning"}
+                        and pitstop_ready
+                    )
                 ):
                     results.append(
                         {

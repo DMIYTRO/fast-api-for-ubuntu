@@ -4,6 +4,29 @@ import { connectRunEvents } from "../services/events.js";
 
 const list = (data) => Array.isArray(data) ? data : (data?.items || data?.orders || []);
 const running = (status) => ["queued", "running", "waiting_confirmation", "cancelling"].includes(status);
+const terminalStatuses = ["accepted_for_print", "returned_for_rework"];
+const printableStatuses = ["passed", "warning", "completed"];
+const pitstopPendingStatuses = ["queued", "pending", "running", "checking", "processing"];
+
+export const matchesStatusFilter = (order, filter) => {
+  const status = order?.status || "detected";
+  if (filter === "all") return true;
+  if (filter === "passed") return printableStatuses.includes(status);
+  if (filter === "warning") return status === "warning";
+  if (filter === "error") return ["error", "failed", "technical_error"].includes(status);
+  return status === filter;
+};
+
+export const isOrderPrintable = (order) => {
+  if (!printableStatuses.includes(order?.status)) return false;
+  const pitstop = order?.pitstop;
+  if (!pitstop) return true;
+  const executionStatus = String(pitstop.execution_status || "").toLowerCase();
+  const verdict = String(pitstop.verdict || "").toLowerCase();
+  if (pitstopPendingStatuses.includes(executionStatus) || ["failed", "error", "technical_error"].includes(executionStatus)) return false;
+  if (["error", "failed", "rejected", "technical_error"].includes(verdict)) return false;
+  return executionStatus === "completed" && ["passed", "warning", "ok", "success"].includes(verdict);
+};
 const decorateOrder = (order, runId) => {
   if (!order) return order;
   const orderId = String(order.order_id ?? order.id ?? "");
@@ -39,21 +62,18 @@ export const useChecksStore = defineStore("checks", {
     filteredOrders(state) {
       const query = state.search.trim().toLowerCase();
       return state.orders.filter((order) => {
-        const status = order.status || (order.passed ? "passed" : "error");
+        const status = order.status || "detected";
         // This dashboard is an active work queue.  Orders already handed to
         // print or returned for rework belong to their file folders/history,
         // not to any of the active tabs (including "Все").
-        if (["accepted_for_print", "returned_for_rework"].includes(status)) return false;
-        const filterOk = state.filter === "all" || status === state.filter ||
-          (state.filter === "passed" && ["passed", "warning", "completed"].includes(status)) ||
-          (state.filter === "warning" && (status === "warning" || order.warnings?.length)) ||
-          (state.filter === "error" && (status === "error" || status === "failed" || order.errors?.length));
+        if (terminalStatuses.includes(status)) return false;
+        const filterOk = matchesStatusFilter(order, state.filter);
         const text = [order.order_id, order.id, order.customer_id, ...(order.files || []).map((file) => file.filename)].join(" ").toLowerCase();
         return filterOk && (!query || text.includes(query));
       });
     },
     selectedOrders: (state) => state.orders.filter((order) => state.selected.includes(String(order.order_id ?? order.id))),
-    canPrint() { return this.selectedOrders.length > 0 && this.selectedOrders.every((order) => ["passed", "warning", "completed"].includes(order.status)); },
+    canPrint() { return this.selectedOrders.length > 0 && this.selectedOrders.every(isOrderPrintable); },
   },
   actions: {
     setFilter(value) { this.filter = value; localStorage.setItem("im-filter", value); },
@@ -113,12 +133,20 @@ export const useChecksStore = defineStore("checks", {
         const id = String(orderData.order_id ?? orderData.id);
         const index = this.orders.findIndex((item) => String(item.order_id ?? item.id) === id);
         if (index < 0) this.orders.unshift(orderData);
-        else this.orders.splice(index, 1, { ...this.orders[index], ...orderData });
+        else {
+          const previous = this.orders[index];
+          const updated = { ...previous, ...orderData };
+          this.orders.splice(index, 1, updated);
+          this._dropSelectionWhenPrintBecomesBlocked(id, previous, updated);
+        }
       } else if (event.order_id) {
         const id = String(event.order_id);
         const index = this.orders.findIndex((item) => String(item.order_id ?? item.id) === id);
         if (index >= 0 && event.status) {
-          this.orders.splice(index, 1, { ...this.orders[index], status: event.status });
+          const previous = this.orders[index];
+          const updated = { ...previous, status: event.status };
+          this.orders.splice(index, 1, updated);
+          this._dropSelectionWhenPrintBecomesBlocked(id, previous, updated);
         }
       }
       if (["run.completed", "run.failed", "run.cancelled"].includes(event.type)) {
@@ -248,6 +276,11 @@ export const useChecksStore = defineStore("checks", {
     },
     _terminalStatusForAction(action) {
       return action === "print" ? "accepted_for_print" : "returned_for_rework";
+    },
+    _dropSelectionWhenPrintBecomesBlocked(id, previous, updated) {
+      if (isOrderPrintable(previous) && !isOrderPrintable(updated)) {
+        this.selected = this.selected.filter((selectedId) => String(selectedId) !== String(id));
+      }
     },
   },
 });

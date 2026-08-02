@@ -8,6 +8,7 @@ import uuid
 
 from sqlalchemy import (
     Boolean,
+    BigInteger,
     DateTime,
     Float,
     ForeignKey,
@@ -98,6 +99,15 @@ class OrderResult(Base):
     order_id: Mapped[str] = mapped_column(String(64), index=True)
     customer_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), index=True, default="pending")
+    source_status: Mapped[str] = mapped_column(
+        String(32), index=True, default="pending"
+    )
+    pitstop_status: Mapped[str] = mapped_column(
+        String(32), index=True, default="not_checked"
+    )
+    workflow_status: Mapped[str] = mapped_column(
+        String(32), index=True, default="active"
+    )
     passed: Mapped[bool] = mapped_column(Boolean, default=False)
     errors_json: Mapped[str] = mapped_column(Text, default="[]")
     warnings_json: Mapped[str] = mapped_column(Text, default="[]")
@@ -116,6 +126,102 @@ class OrderResult(Base):
     actions: Mapped[list["OrderAction"]] = relationship(
         back_populates="order_result", cascade="all, delete-orphan"
     )
+    pdf_revisions: Mapped[list["PdfRevision"]] = relationship(
+        back_populates="order_result", cascade="all, delete-orphan"
+    )
+
+
+class PdfRevision(Base):
+    __tablename__ = "pdf_revisions"
+    __table_args__ = (
+        Index(
+            "uq_pdf_revisions_order_revision",
+            "order_result_id",
+            "revision_number",
+            unique=True,
+        ),
+        Index(
+            "uq_pdf_revisions_one_current_per_order",
+            "order_result_id",
+            unique=True,
+            sqlite_where=text("is_current = 1"),
+            postgresql_where=text("is_current"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    order_result_id: Mapped[int] = mapped_column(
+        ForeignKey("order_results.id", ondelete="CASCADE"), index=True
+    )
+    revision_number: Mapped[int] = mapped_column(Integer)
+    pdf_path: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    size_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by_action: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+    order_result: Mapped[OrderResult] = relationship(back_populates="pdf_revisions")
+    checks: Mapped[list["PitstopCheck"]] = relationship(
+        back_populates="pdf_revision", cascade="all, delete-orphan"
+    )
+
+
+class PitstopCheck(Base):
+    __tablename__ = "pitstop_checks"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_hex)
+    pdf_revision_id: Mapped[int] = mapped_column(
+        ForeignKey("pdf_revisions.id", ondelete="CASCADE"), index=True
+    )
+    execution_status: Mapped[str] = mapped_column(String(32), index=True)
+    verdict: Mapped[str] = mapped_column(String(32), index=True)
+    checked_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    profile_key: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    profile_name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    profile_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    page_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    errors_count: Mapped[int] = mapped_column(Integer, default=0)
+    warnings_count: Mapped[int] = mapped_column(Integer, default=0)
+    fixes_count: Mapped[int] = mapped_column(Integer, default=0)
+    critical_failures_count: Mapped[int] = mapped_column(Integer, default=0)
+    noncritical_failures_count: Mapped[int] = mapped_column(Integer, default=0)
+    informations_count: Mapped[int] = mapped_column(Integer, default=0)
+    report_json_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    report_xml_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    technical_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+    pdf_revision: Mapped[PdfRevision] = relationship(back_populates="checks")
+    issues: Mapped[list["PitstopIssue"]] = relationship(
+        back_populates="check", cascade="all, delete-orphan"
+    )
+
+
+class PitstopIssue(Base):
+    __tablename__ = "pitstop_issues"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    issue_id: Mapped[str] = mapped_column(String(64), default=uuid_hex)
+    pitstop_check_id: Mapped[str] = mapped_column(
+        ForeignKey("pitstop_checks.id", ondelete="CASCADE"), index=True
+    )
+    fingerprint: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    severity: Mapped[str] = mapped_column(String(32), index=True)
+    action_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    message: Mapped[str] = mapped_column(Text)
+    occurrences: Mapped[int] = mapped_column(Integer, default=1)
+    locations_json: Mapped[str] = mapped_column(Text, default="[]")
+
+    check: Mapped[PitstopCheck] = relationship(back_populates="issues")
 
 
 class FileResult(Base):

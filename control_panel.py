@@ -8,7 +8,7 @@ import asyncio
 import json
 import logging
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import resource
 import shutil
 import time
@@ -27,7 +27,7 @@ from server.auth import AuthService, create_auth_router, require_session
 from server.database import Database, configure_database, get_db, upgrade_database
 from server.errors import APIError, error_payload, install_error_handlers
 from server.logging_config import configure_logging
-from server.models import OrderAction, OrderResult
+from server.models import OrderAction, OrderResult, PitstopCheck
 from server.schemas import CheckOptions, CorrectionRequest, OrderActionRequest
 from server.settings import Settings
 from services import (
@@ -39,6 +39,15 @@ from services import (
     ProcessingOptions,
     RunCoordinator,
     RunNotFoundError,
+    BatchProcessorAdapter,
+)
+from services.pitstop import (
+    PitStopProfile,
+    PitStopProfileCatalog,
+    PitStopService,
+    PitStopServiceSettings,
+    SSHSettings,
+    SSHTransport,
 )
 from services.sborka_integration import build_rework_sender, build_sender
 from services.ftp_preview_uploader import build_ftp_preview_uploader
@@ -144,6 +153,22 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
             }
         if order.get("pdf_path"):
             order["pdf_url"] = f"/api/orders/{order_id}/pdf?run_id={run_id}"
+        pitstop = order.get("pitstop") or {}
+        check_id = str(pitstop.get("check_id") or "")
+        if check_id:
+            reports = pitstop.get("reports") or {}
+            pitstop["reports"] = {
+                "json_url": (
+                    f"/api/pitstop-checks/{check_id}/reports/json"
+                    if reports.get("json_url")
+                    else None
+                ),
+                "xml_url": (
+                    f"/api/pitstop-checks/{check_id}/reports/xml"
+                    if reports.get("xml_url")
+                    else None
+                ),
+            }
         for index, item in enumerate(order.get("files") or []):
             file_id = str(item.get("id") or f"{run_id}:{order_id}:{index}")
             item["id"] = file_id
@@ -266,6 +291,66 @@ def _default_repository(database: Database) -> RunRepository:
     return InMemoryRunRepository()
 
 
+def _pitstop_adapter_factory(settings: Settings):
+    required = {
+        "IMAGE_MAGIC_PITSTOP_HOST": settings.pitstop_host,
+        "IMAGE_MAGIC_PITSTOP_USERNAME": settings.pitstop_username,
+        "IMAGE_MAGIC_PITSTOP_CLI_PATH": settings.pitstop_cli_path,
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing or not settings.pitstop_profiles:
+        profile_missing = (
+            ("IMAGE_MAGIC_PITSTOP_PROFILE_DIGITAL/OFFSET",)
+            if not settings.pitstop_profiles
+            else ()
+        )
+        details = ", ".join([*missing, *profile_missing])
+        raise ValueError(f"PitStop включён, но не настроены параметры: {details}")
+
+    catalog = PitStopProfileCatalog(
+        PitStopProfile(
+            id=profile_id,
+            label=label,
+            windows_path=PureWindowsPath(windows_path),
+        )
+        for profile_id, label, windows_path in settings.pitstop_profiles
+    )
+    configured_profiles = {profile.id for profile in catalog.profiles}
+    transport = SSHTransport(
+        SSHSettings(
+            host=settings.pitstop_host,
+            username=settings.pitstop_username,
+            port=settings.pitstop_port,
+            known_hosts_file=settings.pitstop_known_hosts_file,
+            identity_file=settings.pitstop_identity_file,
+            connect_timeout_seconds=settings.pitstop_connect_timeout_seconds,
+        )
+    )
+
+    def factory(options: ProcessingOptions) -> BatchProcessorAdapter:
+        if options.direction not in configured_profiles:
+            raise ValueError(
+                f"Для направления {options.direction!r} не настроен профиль PitStop."
+            )
+        input_dir = Path(options.input_path).resolve()
+        service = PitStopService(
+            settings=PitStopServiceSettings(
+                cli_path=PureWindowsPath(settings.pitstop_cli_path),
+                mac_shared_root=settings.pitstop_mac_shared_root.resolve(),
+                windows_shared_root=PureWindowsPath(
+                    settings.pitstop_windows_shared_root
+                ),
+                report_root=input_dir / "output_report" / "pitstop",
+                command_timeout_seconds=settings.pitstop_command_timeout_seconds,
+            ),
+            profiles=catalog,
+            transport=transport,
+        )
+        return BatchProcessorAdapter(options, pitstop_service=service)
+
+    return factory
+
+
 def create_app(
     *,
     settings: Settings | None = None,
@@ -287,6 +372,8 @@ def create_app(
     coordinator_options: dict[str, Any] = {"autostart": False}
     if adapter_factory is not None:
         coordinator_options["adapter_factory"] = adapter_factory
+    elif settings.pitstop_enabled:
+        coordinator_options["adapter_factory"] = _pitstop_adapter_factory(settings)
     coordinator = RunCoordinator(repository, **coordinator_options)
     auth_service = AuthService(settings)
     protected = require_session(settings, auth_service)
@@ -622,6 +709,37 @@ def create_app(
     ) -> FileResponse:
         run, order = _find_order(_get_coordinator(request), order_id, run_id)
         return FileResponse(_safe_result_path(run, order.get("pdf_path")))
+
+    @application.get(
+        "/api/pitstop-checks/{check_id}/reports/{report_format}",
+        dependencies=[Depends(protected)],
+    )
+    def pitstop_report(
+        request: Request,
+        check_id: str,
+        report_format: Literal["json", "xml"],
+    ) -> FileResponse:
+        with request.app.state.database.session_factory() as session:
+            check = session.get(PitstopCheck, check_id)
+            if check is None:
+                raise APIError(
+                    404, "pitstop_check_not_found", "Проверка PitStop не найдена."
+                )
+            run_id = check.pdf_revision.order_result.run_id
+            raw_path = (
+                check.report_json_path
+                if report_format == "json"
+                else check.report_xml_path
+            )
+        run = _get_run_or_404(_get_coordinator(request), run_id)
+        return FileResponse(
+            _safe_result_path(run, raw_path),
+            media_type=(
+                "application/json"
+                if report_format == "json"
+                else "application/xml"
+            ),
+        )
 
     def prepare_action(
         request: Request, payload: OrderActionRequest, action: str

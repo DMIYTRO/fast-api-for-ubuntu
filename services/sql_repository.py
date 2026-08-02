@@ -18,6 +18,10 @@ from server.models import (
     FileResult,
     OrderAction,
     OrderResult,
+    PdfRevision,
+    PitstopCheck,
+    PitstopIssue,
+    uuid_hex,
 )
 from server.models import RunEvent as SqlRunEvent
 
@@ -55,6 +59,20 @@ _ORDER_STANDARD_KEYS = {
     "warnings",
     "pdf_path",
     "files",
+    "source_status",
+    "pitstop_status",
+    "workflow_status",
+    "current_pdf_revision",
+    "current_pdf_sha256",
+    "pitstop",
+}
+_PITSTOP_ORDER_KEYS = {
+    "source_status",
+    "pitstop_status",
+    "workflow_status",
+    "current_pdf_revision",
+    "current_pdf_sha256",
+    "pitstop",
 }
 _FILE_MAPPED_KEYS = {
     "file_result_id",
@@ -190,6 +208,10 @@ class SqlRunRepository:
                 .options(
                     selectinload(CheckRun.orders).selectinload(OrderResult.files),
                     selectinload(CheckRun.orders).selectinload(OrderResult.actions),
+                    selectinload(CheckRun.orders)
+                    .selectinload(OrderResult.pdf_revisions)
+                    .selectinload(PdfRevision.checks)
+                    .selectinload(PitstopCheck.issues),
                 )
             )
             record = session.scalar(statement)
@@ -210,6 +232,10 @@ class SqlRunRepository:
                 statement = statement.options(
                     selectinload(CheckRun.orders).selectinload(OrderResult.files),
                     selectinload(CheckRun.orders).selectinload(OrderResult.actions),
+                    selectinload(CheckRun.orders)
+                    .selectinload(OrderResult.pdf_revisions)
+                    .selectinload(PdfRevision.checks)
+                    .selectinload(PitstopCheck.issues),
                 )
             if offset:
                 statement = statement.offset(offset)
@@ -424,10 +450,21 @@ class SqlRunRepository:
     ) -> list[int]:
         record.customer_id = _optional_str(order.get("customer_id"))
         record.status = str(order.get("status", "pending"))
+        if "source_status" in order:
+            record.source_status = str(order.get("source_status") or "pending")
+        elif record.id is None:
+            record.source_status = record.status
+        if "pitstop_status" in order:
+            record.pitstop_status = str(
+                order.get("pitstop_status") or "not_checked"
+            )
+        if "workflow_status" in order:
+            record.workflow_status = str(order.get("workflow_status") or "active")
         record.passed = bool(order.get("passed", False))
         record.errors_json = _json_dump(list(order.get("errors") or []))
         record.warnings_json = _json_dump(list(order.get("warnings") or []))
         record.pdf_path = _optional_str(order.get("pdf_path"))
+        self._apply_pitstop(session, record, order)
 
         existing_files_by_id = {item.id: item for item in record.files}
         existing_files: dict[str, list[FileResult]] = {}
@@ -485,6 +522,110 @@ class SqlRunRepository:
         return ordered_file_ids
 
     @staticmethod
+    def _apply_pitstop(
+        session: Session,
+        record: OrderResult,
+        order: dict[str, Any],
+    ) -> None:
+        has_revision_contract = (
+            order.get("current_pdf_revision") is not None
+            or order.get("current_pdf_sha256") is not None
+            or bool(order.get("pitstop"))
+        )
+        if not has_revision_contract:
+            return
+
+        pitstop = order.get("pitstop") or {}
+        revision_number = order.get("current_pdf_revision")
+        if revision_number is None:
+            revision_number = pitstop.get("checked_revision")
+        revision_number = int(revision_number or 1)
+        if revision_number <= 0:
+            raise ValueError("current_pdf_revision must be a positive integer")
+        pdf_path = _optional_str(order.get("pdf_path"))
+        if not pdf_path:
+            raise ValueError("pdf_path is required for a PDF revision")
+
+        revisions_by_number = {
+            item.revision_number: item for item in record.pdf_revisions
+        }
+        revision = revisions_by_number.get(revision_number)
+        if revision is None:
+            revision = PdfRevision(
+                order_result=record,
+                revision_number=revision_number,
+                pdf_path=pdf_path,
+            )
+            session.add(revision)
+        for item in record.pdf_revisions:
+            if item is not revision and item.is_current:
+                item.is_current = False
+        # Flush clearing the previous current flag before setting a new one so
+        # the partial unique index is respected by SQLite and PostgreSQL.
+        session.flush()
+        revision.pdf_path = pdf_path
+        revision.sha256 = _optional_str(order.get("current_pdf_sha256"))
+        revision.is_current = True
+        session.flush()
+
+        if not pitstop:
+            return
+        check_id = str(pitstop.get("check_id") or uuid_hex())
+        check = session.get(PitstopCheck, check_id)
+        if check is not None and check.pdf_revision_id != revision.id:
+            raise ValueError(
+                f"PitStop check {check_id} belongs to another PDF revision"
+            )
+        if check is None:
+            check = PitstopCheck(
+                id=check_id,
+                pdf_revision=revision,
+                execution_status="pending",
+                verdict="pending",
+            )
+            session.add(check)
+        check.execution_status = str(
+            pitstop.get("execution_status") or "pending"
+        )
+        check.verdict = str(pitstop.get("verdict") or "pending")
+        check.checked_at = _datetime(pitstop.get("checked_at"))
+        profile = pitstop.get("profile") or {}
+        check.profile_key = _optional_str(profile.get("key"))
+        check.profile_name = _optional_str(profile.get("name"))
+        check.profile_version = _optional_str(profile.get("version"))
+        check.page_count = _optional_int(pitstop.get("pages"))
+        counts = pitstop.get("counts") or {}
+        check.errors_count = int(counts.get("errors") or 0)
+        check.warnings_count = int(counts.get("warnings") or 0)
+        check.fixes_count = int(counts.get("fixes") or 0)
+        check.critical_failures_count = int(
+            counts.get("critical_failures") or 0
+        )
+        check.noncritical_failures_count = int(
+            counts.get("noncritical_failures") or 0
+        )
+        check.informations_count = int(counts.get("informations") or 0)
+        reports = pitstop.get("reports") or {}
+        check.report_json_path = _optional_str(reports.get("json_url"))
+        check.report_xml_path = _optional_str(reports.get("xml_url"))
+        check.technical_error = _optional_str(pitstop.get("technical_error"))
+        session.flush()
+
+        check.issues.clear()
+        for issue in pitstop.get("issues") or []:
+            check.issues.append(
+                PitstopIssue(
+                    issue_id=str(issue.get("id") or uuid_hex()),
+                    fingerprint=_optional_str(issue.get("fingerprint")),
+                    severity=str(issue.get("severity") or "information"),
+                    action_id=_optional_str(issue.get("action_id")),
+                    message=str(issue.get("message") or ""),
+                    occurrences=int(issue.get("occurrences") or 1),
+                    locations_json=_json_dump(list(issue.get("locations") or [])),
+                )
+            )
+
+    @staticmethod
     def _apply_file(
         record: FileResult,
         file_dto: dict[str, Any],
@@ -523,6 +664,9 @@ class SqlRunRepository:
                 for key, value in order.items()
                 if key not in _ORDER_STANDARD_KEYS
             }
+            order_extras[str(order_id)]["__pitstop_fields__"] = sorted(
+                key for key in _PITSTOP_ORDER_KEYS if key in order
+            )
             order_extras[str(order_id)]["__storage_key__"] = str(order_id)
             ordered_file_ids = file_ids_by_order.get(str(order_id), [])
             file_extras[str(order_id)] = {
@@ -590,6 +734,7 @@ class SqlRunRepository:
                 or order_extras.get(order_record.order_id)
                 or {}
             )
+            pitstop_fields = set(order.pop("__pitstop_fields__", []))
             files = []
             extras_for_files = (
                 file_extras.get(composite_key)
@@ -642,6 +787,44 @@ class SqlRunRepository:
                     "pdf_path": order_record.pdf_path,
                 }
             )
+            current_revision = next(
+                (
+                    revision
+                    for revision in order_record.pdf_revisions
+                    if revision.is_current
+                ),
+                None,
+            )
+            if "current_pdf_revision" in pitstop_fields:
+                order["current_pdf_revision"] = None
+            if "current_pdf_sha256" in pitstop_fields:
+                order["current_pdf_sha256"] = None
+            if "pitstop" in pitstop_fields:
+                order["pitstop"] = None
+            if current_revision is not None:
+                if "current_pdf_revision" in pitstop_fields:
+                    order["current_pdf_revision"] = current_revision.revision_number
+                if "current_pdf_sha256" in pitstop_fields:
+                    order["current_pdf_sha256"] = current_revision.sha256
+                if "pitstop" in pitstop_fields and current_revision.checks:
+                    latest_check = max(
+                        current_revision.checks,
+                        key=lambda item: (
+                            item.checked_at or item.created_at,
+                            item.created_at,
+                            item.id,
+                        ),
+                    )
+                    order["pitstop"] = _pitstop_check_to_dto(
+                        latest_check, current_revision.revision_number
+                    )
+            for field_name in (
+                "source_status",
+                "pitstop_status",
+                "workflow_status",
+            ):
+                if field_name in pitstop_fields:
+                    order[field_name] = getattr(order_record, field_name)
             if order_record.actions:
                 order["actions"] = [
                     {
@@ -689,6 +872,55 @@ def _optional_str(value: Any) -> str | None:
 
 def _optional_float(value: Any) -> float | None:
     return None if value is None else float(value)
+
+
+def _optional_int(value: Any) -> int | None:
+    return None if value is None else int(value)
+
+
+def _pitstop_check_to_dto(
+    check: PitstopCheck, revision_number: int
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "check_id": check.id,
+        "execution_status": check.execution_status,
+        "verdict": check.verdict,
+        "checked_at": _iso(check.checked_at),
+        "checked_revision": revision_number,
+        "profile": {
+            "key": check.profile_key,
+            "name": check.profile_name,
+            "version": check.profile_version,
+        },
+        "pages": check.page_count,
+        "counts": {
+            "errors": check.errors_count,
+            "warnings": check.warnings_count,
+            "fixes": check.fixes_count,
+            "critical_failures": check.critical_failures_count,
+            "noncritical_failures": check.noncritical_failures_count,
+            "informations": check.informations_count,
+        },
+        "issues": [
+            {
+                "id": issue.issue_id,
+                "fingerprint": issue.fingerprint,
+                "severity": issue.severity,
+                "action_id": issue.action_id,
+                "message": issue.message,
+                "occurrences": issue.occurrences,
+                "locations": _json_load(issue.locations_json, []),
+            }
+            for issue in sorted(check.issues, key=lambda item: item.id)
+        ],
+        "reports": {
+            "json_url": check.report_json_path,
+            "xml_url": check.report_xml_path,
+        },
+    }
+    if check.technical_error is not None:
+        result["technical_error"] = check.technical_error
+    return result
 
 
 def _required_record_id(value: Any, field_name: str) -> int:

@@ -13,6 +13,9 @@ from server.models import (
     FileResult,
     OrderAction,
     OrderResult,
+    PdfRevision,
+    PitstopCheck,
+    PitstopIssue,
 )
 from server.models import RunEvent as SqlRunEvent
 from services.batch_adapter import ProcessingOptions
@@ -137,6 +140,124 @@ class SqlRunRepositoryTests(unittest.TestCase):
             file_record = session.scalar(select(FileResult))
             self.assertEqual(file_record.source_path, "/orders/input/order-face.jpg")
             self.assertEqual(file_record.status, "waiting_confirmation")
+
+    def test_round_trip_persists_current_pdf_and_latest_pitstop_check(self):
+        expected = sample_run(status="completed")
+        order = expected["orders"]["25506185"]
+        order.update(
+            {
+                "status": "error",
+                "source_status": "passed",
+                "pitstop_status": "error",
+                "workflow_status": "active",
+                "pdf_path": "/orders/input/PDF/order.pdf",
+                "current_pdf_revision": 2,
+                "current_pdf_sha256": "a" * 64,
+                "pitstop": {
+                    "check_id": "pitstop-check-2",
+                    "execution_status": "completed",
+                    "verdict": "error",
+                    "checked_at": "2026-07-25T10:00:08+00:00",
+                    "checked_revision": 2,
+                    "profile": {
+                        "key": "sborka",
+                        "name": "Sborka 2Corel",
+                        "version": "3",
+                    },
+                    "pages": 2,
+                    "counts": {
+                        "errors": 1,
+                        "warnings": 1,
+                        "fixes": 0,
+                        "critical_failures": 0,
+                        "noncritical_failures": 0,
+                        "informations": 2,
+                    },
+                    "issues": [
+                        {
+                            "id": "issue-1",
+                            "fingerprint": "font:not-embedded:1",
+                            "severity": "error",
+                            "action_id": "1012",
+                            "message": "Шрифт не встроен",
+                            "occurrences": 1,
+                            "locations": [
+                                {
+                                    "page": 1,
+                                    "bbox": [10.0, 20.0, 30.0, 40.0],
+                                    "units": "pt",
+                                }
+                            ],
+                        }
+                    ],
+                    "reports": {
+                        "json_url": "/api/reports/check-2.json",
+                        "xml_url": "/api/reports/check-2.xml",
+                    },
+                },
+            }
+        )
+
+        self.repository.create_run(expected)
+        actual = self.repository.get_run("run-1")
+        actual["orders"]["25506185"]["files"][0].pop("file_result_id")
+        self.assertEqual(actual, expected)
+
+        with self.database.session_factory() as session:
+            revision = session.scalar(select(PdfRevision))
+            self.assertEqual(revision.revision_number, 2)
+            self.assertTrue(revision.is_current)
+            self.assertEqual(revision.sha256, "a" * 64)
+            self.assertEqual(
+                session.scalar(select(func.count()).select_from(PitstopCheck)), 1
+            )
+            issue = session.scalar(select(PitstopIssue))
+            self.assertEqual(issue.issue_id, "issue-1")
+            self.assertEqual(json.loads(issue.locations_json)[0]["page"], 1)
+
+    def test_new_pdf_revision_preserves_history_and_switches_current(self):
+        run = sample_run(status="completed")
+        order = run["orders"]["25506185"]
+        order.update(
+            {
+                "pdf_path": "/orders/input/PDF/order.pdf",
+                "current_pdf_revision": 1,
+                "current_pdf_sha256": "a" * 64,
+            }
+        )
+        self.repository.create_run(run)
+        stored = self.repository.get_run("run-1")
+        stored_order = stored["orders"]["25506185"]
+        stored_order["current_pdf_revision"] = 2
+        stored_order["current_pdf_sha256"] = "b" * 64
+        self.repository.save_run(stored)
+
+        with self.database.session_factory() as session:
+            revisions = list(
+                session.scalars(
+                    select(PdfRevision).order_by(PdfRevision.revision_number)
+                )
+            )
+            self.assertEqual([item.revision_number for item in revisions], [1, 2])
+            self.assertEqual([item.is_current for item in revisions], [False, True])
+
+    def test_pending_pitstop_fields_round_trip_without_a_pdf(self):
+        expected = sample_run()
+        expected["orders"]["25506185"].update(
+            {
+                "source_status": "waiting_confirmation",
+                "pitstop_status": "not_checked",
+                "workflow_status": "active",
+                "current_pdf_revision": None,
+                "current_pdf_sha256": None,
+                "pitstop": None,
+            }
+        )
+        self.repository.create_run(expected)
+
+        actual = self.repository.get_run("run-1")
+        actual["orders"]["25506185"]["files"][0].pop("file_result_id")
+        self.assertEqual(actual, expected)
 
     def test_save_updates_rows_without_duplicating_orders_or_files(self):
         self.repository.create_run(sample_run())

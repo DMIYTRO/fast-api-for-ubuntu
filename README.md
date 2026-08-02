@@ -23,6 +23,8 @@ Image Magic проверяет растровые макеты перед печ
 - формирование и копирование готовых комментариев возврата по выбранным заказам;
 - копирование отклонённых заказов в `Troubles` без изменения оригиналов;
 - сохранение истории проверок в SQLite через SQLAlchemy.
+- report-only проверка итогового PDF через PitStop Server с отдельным
+  отображением проблем PDF и технических сбоев;
 
 ## Политика размеров
 
@@ -126,6 +128,31 @@ export IMAGE_MAGIC_PASSWORD_HASH='ХЕШ_ИЗ_ПРЕДЫДУЩЕЙ_КОМАНД�
 Сессии и результаты сохраняются в `image_magic.db`; незавершённый запуск
 после перезапуска помечается прерванным, а завершённая история остаётся доступна.
 
+### PitStop Server
+
+Интеграция выключена по умолчанию. Она использует SSH-ключ и общую папку
+macOS/Windows; пароль VM в конфигурации приложения не хранится.
+
+```bash
+export IMAGE_MAGIC_PITSTOP_ENABLED=true
+export IMAGE_MAGIC_PITSTOP_HOST="10.211.55.3"
+export IMAGE_MAGIC_PITSTOP_PORT="22"
+export IMAGE_MAGIC_PITSTOP_USERNAME="Admin"
+export IMAGE_MAGIC_PITSTOP_CLI_PATH='C:\Program Files\Enfocus\Enfocus PitStop Server 23\PitStopServerCLI.exe'
+export IMAGE_MAGIC_PITSTOP_PROFILE_DIGITAL='C:\Profiles\Sborka_2Corel.ppp'
+export IMAGE_MAGIC_PITSTOP_PROFILE_OFFSET='C:\Profiles\Sborka_Offset.ppp'
+export IMAGE_MAGIC_PITSTOP_KNOWN_HOSTS="$HOME/.ssh/known_hosts"
+export IMAGE_MAGIC_PITSTOP_IDENTITY_FILE="$HOME/.ssh/id_ed25519"
+export IMAGE_MAGIC_PITSTOP_MAC_SHARED_ROOT="/Users/admin"
+export IMAGE_MAGIC_PITSTOP_WINDOWS_SHARED_ROOT='C:\Mac\Home'
+```
+
+Для каждого успешно собранного PDF порядок обработки такой: PitStop report-only,
+сохранение JSON/XML, расчёт итогового статуса, затем production preview именно
+проверенной ревизии PDF. До завершения PitStop заказ не считается готовым к
+печати. Отчёты сохраняются в `output_report/pitstop/` и выдаются через
+защищённые API-ссылки.
+
 ### Журнал диагностики
 
 Сервер постоянно пишет журнал в `logs/image-magic.log`. В нём сохраняются:
@@ -200,7 +227,7 @@ output_report/       интерактивный report.html
 ## Тесты
 
 ```bash
-.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m pytest -q
 cd frontend && npm test && npm run build
 ```
 

@@ -99,6 +99,35 @@ class BlockingAdapter(FakeAdapter):
         return super().process_order(order)
 
 
+class PitStopBlockingAdapter(FakeAdapter):
+    pitstop_enabled = True
+
+    def __init__(self, orders):
+        super().__init__(orders)
+        self.processing_started = threading.Event()
+        self.release_processing = threading.Event()
+
+    def process_order(self, order):
+        self.processing_started.set()
+        self.release_processing.wait(timeout=2)
+        return OrderArtifacts(
+            pdf_path=Path(f"/out/{order.order_id}.pdf"),
+            preview_paths=[Path(f"/out/{order.order_id}.png")],
+            pitstop={
+                "check_id": "pitstop-1",
+                "execution_status": "completed",
+                "verdict": "error",
+                "checked_revision": 1,
+                "profile": {"key": "digital", "name": "Test", "version": None},
+                "counts": {"errors": 1, "warnings": 0},
+                "issues": [],
+                "reports": {"json_url": None, "xml_url": None},
+            },
+            current_pdf_revision=1,
+            current_pdf_sha256="a" * 64,
+        )
+
+
 class IncrementalBlockingAdapter(FakeAdapter):
     def __init__(self, orders):
         super().__init__(orders)
@@ -192,6 +221,30 @@ class RunCoordinatorTests(unittest.TestCase):
         completed = self.coordinator.wait_for(run_id, {"completed"}, timeout=2)
         self.assertEqual(completed["total_orders"], 2)
         self.assertIn("second", completed["orders"])
+
+    def test_pitstop_order_never_becomes_terminal_green_before_final_result(self):
+        adapter = PitStopBlockingAdapter([make_order("pitstop-order")])
+        self.adapters["pitstop"] = adapter
+        run_id = self.submit("pitstop")["id"]
+
+        self.assertTrue(adapter.processing_started.wait(timeout=2))
+        pending = self.coordinator.get_run(run_id)["orders"]["pitstop-order"]
+        self.assertEqual(pending["source_status"], "passed")
+        self.assertEqual(pending["status"], "processing")
+        checked = next(
+            event
+            for event in self.coordinator.events(run_id)
+            if event.type == "order.checked"
+        )
+        self.assertEqual(checked.data["status"], "processing")
+
+        adapter.release_processing.set()
+        completed = self.coordinator.wait_for(run_id, {"completed"}, timeout=2)
+        final = completed["orders"]["pitstop-order"]
+        self.assertEqual(final["status"], "error")
+        self.assertFalse(final["passed"])
+        event_types = [event.type for event in self.coordinator.events(run_id)]
+        self.assertIn("pitstop.check_completed", event_types)
 
     def test_rejection_completes_order_as_error_and_cannot_be_repeated(self):
         self.adapters["reject"] = FakeAdapter(

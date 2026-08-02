@@ -1,0 +1,37 @@
+{
+  "generalDocInfo": {
+    "documentProperties": {
+      "numPages": 2
+    }
+  },
+  "processInfo": {
+    "preflightDateTime": "2026-07-30T18:45:22",
+    "preflightProfile": "Sborka_2Corel"
+  },
+  "preflightReport": {
+    "criticalfailuresNumber": 0,
+    "errorsNumber": 0,
+    "fixesNumber": 0,
+    "informationsNumber": 0,
+    "noncriticalfailuresNumber": 0,
+    "signoffsNumber": 0,
+    "warningsNumber": 1,
+    "warnings": {
+      "preflightReportItem": [
+        {
+          "actionID": 2078,
+          "message": "ICC based is used (1x on page 1)",
+          "location": [
+            {
+              "page": 0,
+              "minX": 0.0,
+              "minY": 0.0,
+              "maxX": 124.8,
+              "maxY": 125.04
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

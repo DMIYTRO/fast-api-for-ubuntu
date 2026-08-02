@@ -22,6 +22,20 @@ describe("checks store", () => {
     expect(store.filteredOrders).toEqual([]);
   });
 
+  it("uses only the final status for filters and ignores legacy passed and issue arrays", () => {
+    const store = useChecksStore();
+    store.orders = [
+      { order_id: "100", status: "error", passed: true },
+      { order_id: "200", status: "passed", errors: ["Старый результат"] },
+      { order_id: "300", status: "warning" },
+    ];
+
+    store.setFilter("passed");
+    expect(store.filteredOrders.map((order) => order.order_id)).toEqual(["200", "300"]);
+    store.setFilter("error");
+    expect(store.filteredOrders.map((order) => order.order_id)).toEqual(["100"]);
+  });
+
   it("does not restore a completed run after a page refresh", async () => {
     const store = useChecksStore();
     vi.spyOn(api, "config").mockResolvedValue({});
@@ -92,6 +106,68 @@ describe("checks store", () => {
     expect(store.canPrint).toBe(true);
     store.selected.push("200");
     expect(store.canPrint).toBe(false);
+  });
+
+  it("blocks print while PitStop is running or after a technical failure", () => {
+    const store = useChecksStore();
+    store.orders = [{
+      order_id: "100",
+      status: "passed",
+      pitstop: { execution_status: "running" },
+    }];
+    store.selected = ["100"];
+    expect(store.canPrint).toBe(false);
+
+    store.orders[0].pitstop = { execution_status: "failed", verdict: "unknown" };
+    expect(store.canPrint).toBe(false);
+
+    store.orders[0].pitstop = { execution_status: "completed", verdict: "passed" };
+    expect(store.canPrint).toBe(true);
+  });
+
+  it("removes a selected printable order when a PitStop event makes it invalid without moving the card", () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1" };
+    store.orders = [
+      { order_id: "100", status: "passed" },
+      { order_id: "200", status: "passed" },
+      { order_id: "300", status: "passed" },
+    ];
+    store.selected = ["200"];
+
+    store.applyEvent({
+      type: "order.pitstop_completed",
+      run_id: "run-1",
+      order: {
+        order_id: "200",
+        status: "error",
+        pitstop: { execution_status: "completed", verdict: "error" },
+      },
+    });
+
+    expect(store.orders.map((order) => order.order_id)).toEqual(["100", "200", "300"]);
+    expect(store.orders[1].pitstop.verdict).toBe("error");
+    expect(store.selected).toEqual([]);
+    expect(store.canPrint).toBe(false);
+  });
+
+  it("removes a selected order when PitStop starts rechecking an otherwise passed PDF", () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1" };
+    store.orders = [{ order_id: "100", status: "passed" }];
+    store.selected = ["100"];
+
+    store.applyEvent({
+      type: "order.pitstop_started",
+      run_id: "run-1",
+      order: {
+        order_id: "100",
+        status: "pitstop_checking",
+        pitstop: { execution_status: "running" },
+      },
+    });
+
+    expect(store.selected).toEqual([]);
   });
 
   it("hides orders already accepted for print from the passed filter", () => {

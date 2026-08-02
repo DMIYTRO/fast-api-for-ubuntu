@@ -84,6 +84,37 @@ class OneOrderAdapter(EmptyAdapter):
         return OrderArtifacts(pdf_path=pdf, preview_paths=[preview])
 
 
+class PitStopOrderAdapter(OneOrderAdapter):
+    pitstop_enabled = True
+
+    def process_order(self, order):
+        artifacts = super().process_order(order)
+        report_dir = self.input_dir / "output_report" / "pitstop" / "check-api"
+        report_dir.mkdir(parents=True)
+        report_json = report_dir / "report.json"
+        report_xml = report_dir / "report.xml"
+        report_json.write_text('{"result":"ok"}', encoding="utf-8")
+        report_xml.write_text("<result>ok</result>", encoding="utf-8")
+        artifacts.current_pdf_revision = 1
+        artifacts.current_pdf_sha256 = "a" * 64
+        artifacts.pitstop = {
+            "check_id": "check-api",
+            "execution_status": "completed",
+            "verdict": "passed",
+            "checked_at": "2026-08-02T12:00:00+00:00",
+            "checked_revision": 1,
+            "profile": {"key": "digital", "name": "Test", "version": "1"},
+            "pages": 1,
+            "counts": {"errors": 0, "warnings": 0},
+            "issues": [],
+            "reports": {
+                "json_url": str(report_json),
+                "xml_url": str(report_xml),
+            },
+        }
+        return artifacts
+
+
 class ControlPanelTests(unittest.TestCase):
     def setUp(self):
         self.temporary_directory = tempfile.TemporaryDirectory(
@@ -322,6 +353,29 @@ class ControlPanelTests(unittest.TestCase):
             self.client.get(item["previews"][0]["url"]).content,
             b"preview-image",
         )
+
+    def test_pitstop_report_paths_are_replaced_with_protected_api_urls(self):
+        self.adapter_type = PitStopOrderAdapter
+        self.login()
+        response = self.client.post(
+            "/api/checks",
+            json={"input_path": str(self.root), "direction": "digital"},
+        )
+        run_id = response.json()["id"]
+        self.client.app.state.coordinator.wait_for(run_id, timeout=2)
+
+        order = self.client.get(
+            f"/api/checks/{run_id}/orders"
+        ).json()["items"][0]
+        reports = order["pitstop"]["reports"]
+        self.assertEqual(
+            reports["json_url"], "/api/pitstop-checks/check-api/reports/json"
+        )
+        self.assertNotIn(str(self.root), str(reports))
+        self.assertEqual(self.client.get(reports["json_url"]).json(), {"result": "ok"})
+        xml = self.client.get(reports["xml_url"])
+        self.assertEqual(xml.status_code, 200)
+        self.assertIn("<result>ok</result>", xml.text)
 
     def test_order_history_filters_status_and_omits_unavailable_previews(self):
         self.adapter_type = OneOrderAdapter

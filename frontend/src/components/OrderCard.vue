@@ -4,6 +4,7 @@ import PreviewViewer from "./PreviewViewer.vue";
 import FileParameters from "./FileParameters.vue";
 import CorrectionDecision from "./CorrectionDecision.vue";
 import ReturnReasons from "./ReturnReasons.vue";
+import PitStopReport from "./PitStopReport.vue";
 
 const props = defineProps({ order: Object, selected: Boolean, reasons: Array, paidDesign: { type: Boolean, default: true }, designCost: { type: String, default: "0" } });
 const emit = defineEmits(["toggle", "decide", "return-comment", "return-design", "return-cost"]);
@@ -31,7 +32,14 @@ const allWarnings = computed(() => [
   ...(props.order.warnings || []),
   ...files.value.flatMap((file) => file.warnings || []),
 ].map(issueText).filter(Boolean));
-const statusLabel = { detected: "Обнаружен", passed: "Прошёл", completed: "Прошёл", warning: "Предупреждение", error: "Ошибка", failed: "Ошибка", waiting_confirmation: "Нужно решение", processing: "Проверяется" };
+const statusLabel = { detected: "Обнаружен", passed: "Прошёл", completed: "Прошёл", warning: "Предупреждение", error: "Ошибка PDF", failed: "Ошибка", technical_error: "Сбой проверки", pitstop_checking: "PitStop проверяет", waiting_confirmation: "Нужно решение", processing: "Проверяется" };
+const successful = computed(() => {
+  if (!["passed", "completed"].includes(props.order.status)) return false;
+  if (!props.order.pitstop) return true;
+  const execution = String(props.order.pitstop.execution_status || "").toLowerCase();
+  const verdict = String(props.order.pitstop.verdict || "").toLowerCase();
+  return execution === "completed" && ["passed", "ok", "success"].includes(verdict);
+});
 const value = (input, suffix = "") => input != null && input !== "" ? `${input}${suffix}` : "—";
 const size = (file) => file ? `${formatMm(file.width_mm ?? file.actual_width_mm)} × ${formatMm(file.height_mm ?? file.actual_height_mm)} мм` : "—";
 const dpi = (file) => {
@@ -103,7 +111,8 @@ async function decide(value) {
 
         <div v-if="allErrors.length" class="issue-list errors"><strong>Ошибки проверки</strong><ul><li v-for="item in allErrors" :key="item">{{ item }}</li></ul></div>
         <div v-if="allWarnings.length" class="issue-list warnings"><strong>Предупреждения</strong><ul><li v-for="item in allWarnings" :key="item">{{ item }}</li></ul></div>
-        <div v-if="order.passed && !allErrors.length && !allWarnings.length" class="issue-list success-note"><strong>Заказ соответствует требованиям допечатной подготовки.</strong></div>
+        <div v-if="successful && !allErrors.length && !allWarnings.length" class="issue-list success-note"><strong>Заказ соответствует требованиям допечатной подготовки.</strong></div>
+        <PitStopReport v-if="order.pitstop" :pitstop="order.pitstop" />
         <CorrectionDecision :order="order" :busy="busy" @decide="decide" />
         <p v-if="order.action_result" class="action-result" :class="`status-${order.action_result.status}`">Действие: {{ order.action_result.status === "prepared" ? "подготовлено" : (order.action_result.message || order.action_result.status) }}</p>
       </section>

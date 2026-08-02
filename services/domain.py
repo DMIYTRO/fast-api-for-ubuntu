@@ -18,6 +18,7 @@ class RunStatus(StrEnum):
 
 class OrderStatus(StrEnum):
     DETECTED = "detected"
+    PROCESSING = "processing"
     WAITING_CONFIRMATION = "waiting_confirmation"
     CORRECTION_CONFIRMED = "correction_confirmed"
     CORRECTION_REJECTED = "correction_rejected"

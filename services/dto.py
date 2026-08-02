@@ -88,6 +88,12 @@ def order_check_to_dto(
     pdf_path: str | None = None,
     preview_paths: list[str] | None = None,
     processing_errors: list[str] | None = None,
+    source_status: str | None = None,
+    pitstop_status: str | None = None,
+    workflow_status: str = "active",
+    pitstop: dict[str, object] | None = None,
+    current_pdf_revision: int | None = None,
+    current_pdf_sha256: str | None = None,
 ) -> dict[str, Any]:
     pending = sum(
         item.resample_decision == "ask_confirmation" for item in value.files
@@ -101,12 +107,17 @@ def order_check_to_dto(
             status = "warning"
         else:
             status = "passed"
-    return {
+    source_status = source_status or status
+    effective_passed = status in {"passed", "warning"}
+    result = {
         "aggregate_id": value.aggregate_id,
         "order_id": value.order_id,
         "customer_id": value.customer_id,
         "status": status,
-        "passed": value.passed,
+        "passed": effective_passed,
+        "source_status": source_status,
+        "pitstop_status": pitstop_status or "not_checked",
+        "workflow_status": workflow_status,
         "pending_confirmations": pending,
         "errors": list(value.errors),
         "warnings": list(value.warnings),
@@ -118,3 +129,10 @@ def order_check_to_dto(
         "preview_paths": list(preview_paths or []),
         "processing_errors": list(processing_errors or []),
     }
+    if current_pdf_revision is not None:
+        result["current_pdf_revision"] = current_pdf_revision
+    if current_pdf_sha256 is not None:
+        result["current_pdf_sha256"] = current_pdf_sha256
+    if pitstop is not None:
+        result["pitstop"] = pitstop
+    return result

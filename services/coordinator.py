@@ -496,13 +496,25 @@ class RunCoordinator:
                     },
                 )
                 checked_status = _inspection_status(order)
+                effective_checked_status = (
+                    "processing"
+                    if checked_status in {"passed", "warning"}
+                    and bool(getattr(context.adapter, "pitstop_enabled", False))
+                    else checked_status
+                )
                 run["orders"][aggregate_id] = order_check_to_dto(
-                    order, status=checked_status
+                    order,
+                    status=effective_checked_status,
+                    source_status=checked_status,
                 )
                 self._save_and_emit_locked(
                     run,
                     "order.checked",
-                    {"order_id": order.order_id, "status": checked_status},
+                    {
+                        "order_id": order.order_id,
+                        "status": effective_checked_status,
+                        "source_status": checked_status,
+                    },
                 )
                 self._changed.notify_all()
 
@@ -573,15 +585,47 @@ class RunCoordinator:
         with self._lock:
             run = self.get_run(run_id)
             status = _completed_order_status(order, artifacts)
+            source_status = _inspection_status(order)
+            pitstop = artifacts.pitstop
+            pitstop_status = (
+                str(pitstop.get("verdict") or "error")
+                if pitstop
+                else "not_checked"
+            )
+            if pitstop and pitstop.get("execution_status") != "completed":
+                pitstop_status = "technical_error"
             dto = order_check_to_dto(
                 order,
                 status=status,
+                source_status=source_status,
+                pitstop_status=pitstop_status,
                 pdf_path=str(artifacts.pdf_path) if artifacts.pdf_path else None,
                 preview_paths=[str(path) for path in artifacts.preview_paths],
                 processing_errors=artifacts.errors,
+                pitstop=pitstop,
+                current_pdf_revision=artifacts.current_pdf_revision,
+                current_pdf_sha256=artifacts.current_pdf_sha256,
             )
             run["orders"][context.key_for(order)] = dto
             self._update_counts(run)
+            if pitstop:
+                pitstop_event = (
+                    "pitstop.check_completed"
+                    if pitstop.get("execution_status") == "completed"
+                    else "pitstop.check_failed"
+                )
+                self._save_and_emit_locked(
+                    run,
+                    pitstop_event,
+                    {
+                        "order_id": order.order_id,
+                        "status": status,
+                        "source_status": source_status,
+                        "pitstop_status": pitstop_status,
+                        "check_id": pitstop.get("check_id"),
+                        "order": dto,
+                    },
+                )
             self._save_and_emit_locked(
                 run,
                 "order.completed",
@@ -769,6 +813,14 @@ def _completed_order_status(
 ) -> str:
     if artifacts.errors or not order.passed:
         return "error"
+    if artifacts.pitstop:
+        if artifacts.pitstop.get("execution_status") != "completed":
+            return "error"
+        verdict = artifacts.pitstop.get("verdict")
+        if verdict == "error":
+            return "error"
+        if verdict == "warning":
+            return "warning"
     if order.warnings or any(item.warnings for item in order.files):
         return "warning"
     return "passed"
