@@ -211,10 +211,15 @@ export const useChecksStore = defineStore("checks", {
         return result;
       }
       this.conflictPrompt = null;
+      const completedIds = new Set(result
+        .filter((item) => item.status === "prepared")
+        .map((item) => String(item.order_id)));
+      const terminalStatus = this._terminalStatusForAction(action);
+      // The API response confirms that the files have already been moved.
+      // Update the active queue immediately instead of waiting for a second
+      // orders request, which can briefly return a stale run snapshot.
+      this._markOrdersTerminal(completedIds, terminalStatus);
       if (action === "reject") {
-        const completedIds = new Set(result
-          .filter((item) => item.status === "prepared")
-          .map((item) => String(item.order_id)));
         completedIds.forEach((id) => {
           delete this.returnComments[id];
           delete this.returnDesign[id];
@@ -226,7 +231,23 @@ export const useChecksStore = defineStore("checks", {
       // Print/reject preparation changes order actions only. Keep the active
       // run object intact so its verification progress cannot jump or reset.
       await this.refreshOrders(run_id);
+      // Do not let a cached/stale orders response put a completed order back
+      // into the active work queue.
+      this._markOrdersTerminal(completedIds, terminalStatus);
       return result;
+    },
+    _markOrdersTerminal(orderIds, status) {
+      orderIds.forEach((id) => {
+        const index = this.orders.findIndex(
+          (order) => String(order.order_id ?? order.id) === id
+        );
+        if (index >= 0) {
+          this.orders.splice(index, 1, { ...this.orders[index], status });
+        }
+      });
+    },
+    _terminalStatusForAction(action) {
+      return action === "print" ? "accepted_for_print" : "returned_for_rework";
     },
   },
 });

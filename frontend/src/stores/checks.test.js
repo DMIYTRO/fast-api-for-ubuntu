@@ -159,6 +159,27 @@ describe("checks store", () => {
     expect(getRun).not.toHaveBeenCalled();
   });
 
+  it("removes successfully returned orders from the active queue even after a stale refresh", async () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1" };
+    store.orders = [{ order_id: "100", status: "error" }];
+    store.selected = ["100"];
+    vi.spyOn(api, "prepareReject").mockResolvedValue({
+      items: [{ order_id: "100", status: "prepared" }],
+    });
+    // A delayed persistence read may still have the old status, but the
+    // successful action response must keep this order out of the work queue.
+    vi.spyOn(api, "orders").mockResolvedValue({
+      items: [{ order_id: "100", status: "error" }],
+    });
+
+    await store.act("reject", "Исправить макет.");
+
+    expect(store.orders[0].status).toBe("returned_for_rework");
+    expect(store.filteredOrders).toEqual([]);
+    expect(store.selected).toEqual([]);
+  });
+
   it("keeps failed rework orders selected so they can be retried", async () => {
     const store = useChecksStore();
     store.activeRun = { id: "run-1" };
