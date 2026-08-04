@@ -99,6 +99,23 @@ class BlockingAdapter(FakeAdapter):
         return super().process_order(order)
 
 
+class ParallelBlockingAdapter(FakeAdapter):
+    def __init__(self, orders):
+        super().__init__(orders)
+        self.processing_started = threading.Event()
+        self.release_processing = threading.Event()
+        self._started_order_ids = set()
+        self._started_lock = threading.Lock()
+
+    def process_order(self, order):
+        with self._started_lock:
+            self._started_order_ids.add(order.order_id)
+            if len(self._started_order_ids) == 2:
+                self.processing_started.set()
+        self.release_processing.wait(timeout=2)
+        return super().process_order(order)
+
+
 class PitStopBlockingAdapter(FakeAdapter):
     pitstop_enabled = True
 
@@ -245,6 +262,20 @@ class RunCoordinatorTests(unittest.TestCase):
         self.assertFalse(final["passed"])
         event_types = [event.type for event in self.coordinator.events(run_id)]
         self.assertIn("pitstop.check_completed", event_types)
+
+    def test_independent_orders_process_in_parallel(self):
+        adapter = ParallelBlockingAdapter([make_order("first"), make_order("second")])
+        self.adapters["parallel"] = adapter
+
+        run_id = self.submit("parallel")["id"]
+
+        self.assertTrue(adapter.processing_started.wait(timeout=2))
+        adapter.release_processing.set()
+        completed = self.coordinator.wait_for(run_id, {"completed"}, timeout=2)
+        self.assertEqual(completed["processed_orders"], 2)
+
+        event_types = [event.type for event in self.coordinator.events(run_id)]
+        self.assertEqual(event_types.count("order.completed"), 2)
 
     def test_rejection_completes_order_as_error_and_cannot_be_repeated(self):
         self.adapters["reject"] = FakeAdapter(

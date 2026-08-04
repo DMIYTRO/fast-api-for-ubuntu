@@ -1,5 +1,7 @@
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -62,6 +64,16 @@ class BatchProcessor:
         self.unparsed: list[FileCheck] = []
         self.unsupported: list[FileCheck] = []
         self.scanned_order_count = 0
+
+    @staticmethod
+    def _preview_worker_count(item_count: int) -> int:
+        """Return a bounded, operator-configurable preview concurrency level."""
+        configured = os.environ.get("IMAGE_MAGIC_PREVIEW_WORKERS", "2")
+        try:
+            requested = int(configured)
+        except ValueError:
+            requested = 2
+        return max(1, min(item_count, requested, os.cpu_count() or 1))
 
     def scan(self) -> list[Path]:
         if not self.input_dir.is_dir():
@@ -755,15 +767,22 @@ class BatchProcessor:
         """Генерирует превью с рамками для всех передаваемых PDF файлов."""
         results = []
         pdf_map = pdf_page_names_map or {}
-        for pdf_path in pdf_paths:
+        def create_one(pdf_path: Path) -> tuple[Path, list[Path], str | None]:
             try:
-                page_names = pdf_map.get(pdf_path)
                 previews = self.generate_pdf_previews(
-                    pdf_path, preview_dir, page_names=page_names
+                    pdf_path, preview_dir, page_names=pdf_map.get(pdf_path)
                 )
-                results.append((pdf_path, previews, None))
+                return pdf_path, previews, None
             except Exception as exc:
-                results.append((pdf_path, [], str(exc)))
+                return pdf_path, [], str(exc)
+
+        with ThreadPoolExecutor(
+            max_workers=self._preview_worker_count(len(pdf_paths)),
+            thread_name_prefix="image-magic-preview",
+        ) as executor:
+            # executor.map preserves the input order, which is part of the
+            # API consumed by the adapter and UI.
+            results.extend(executor.map(create_one, pdf_paths))
         return results
 
     def generate_previews_for_files(
@@ -777,8 +796,7 @@ class BatchProcessor:
         not depend on a successfully assembled production PDF.  A source file
         can therefore still be reviewed when it fails prepress validation.
         """
-        results: list[tuple[FileCheck, list[Path], str | None]] = []
-        for file_check in files:
+        def create_one(file_check: FileCheck) -> tuple[FileCheck, list[Path], str | None]:
             try:
                 if file_check.path.suffix.lower() == ".pdf":
                     page_count = file_check.page_count or 1
@@ -806,7 +824,14 @@ class BatchProcessor:
                         bleed_mm=1.0,
                     )
                     previews = [preview_path]
-                results.append((file_check, previews, None))
+                return file_check, previews, None
             except Exception as exc:
-                results.append((file_check, [], str(exc)))
+                return file_check, [], str(exc)
+
+        results: list[tuple[FileCheck, list[Path], str | None]] = []
+        with ThreadPoolExecutor(
+            max_workers=self._preview_worker_count(len(files)),
+            thread_name_prefix="image-magic-preview",
+        ) as executor:
+            results.extend(executor.map(create_one, files))
         return results

@@ -107,26 +107,36 @@ class BatchProcessorAdapter:
 
     def process_order(self, order: OrderCheck) -> OrderArtifacts:
         result = OrderArtifacts()
+        source_previews_created = False
+
+        def create_source_previews() -> None:
+            """Create fallback previews once, only when they are needed."""
+            nonlocal source_previews_created
+            if source_previews_created or not self.options.generate_previews:
+                return
+            source_previews_created = True
+            preview_results = self.processor.generate_previews_for_files(
+                order.files, self.preview_dir
+            )
+            for file_check, previews, preview_error in preview_results:
+                result.preview_paths.extend(previews)
+                if preview_error:
+                    logger.error(
+                        "file.preview_failed order_id=%s file=%s error=%s",
+                        order.order_id,
+                        file_check.path.name,
+                        preview_error,
+                    )
+                    result.errors.append(
+                        f"Превью {file_check.path.name}: {preview_error}"
+                    )
+
         try:
-            # Previews are review artifacts, not production artifacts.  Make
-            # them for every readable source file, even when the order is
-            # invalid, PDF creation is disabled, or another file fails.
-            if self.options.generate_previews:
-                preview_results = self.processor.generate_previews_for_files(
-                    order.files, self.preview_dir
-                )
-                for file_check, previews, preview_error in preview_results:
-                    result.preview_paths.extend(previews)
-                    if preview_error:
-                        logger.error(
-                            "file.preview_failed order_id=%s file=%s error=%s",
-                            order.order_id,
-                            file_check.path.name,
-                            preview_error,
-                        )
-                        result.errors.append(
-                            f"Превью {file_check.path.name}: {preview_error}"
-                        )
+            # Always make source previews first.  They are immediately useful
+            # to the operator and remain available in Previews/ even after a
+            # revision-bound PitStop preview is created in Previews/Final/.
+            # The actual ImageMagick work is parallelized by BatchProcessor.
+            create_source_previews()
 
             if not order.passed:
                 if self.options.copy_failures:
@@ -144,6 +154,7 @@ class BatchProcessorAdapter:
             pdf_results = self.processor.create_pdfs([order])
             if not pdf_results:
                 result.errors.append("BatchProcessor не вернул результат создания PDF")
+                create_source_previews()
                 return result
             _, pdf_path, pdf_error = pdf_results[0]
             if pdf_error:
@@ -198,10 +209,13 @@ class BatchProcessorAdapter:
                             result.errors.append(
                                 f"Производственное превью: {preview_error}"
                             )
+                        if not previews:
+                            create_source_previews()
                     else:
                         result.errors.append(
                             "BatchProcessor не вернул производственное превью"
                         )
+                        create_source_previews()
         except Exception as exc:
             # ImageMagick/Ghostscript/programming failures terminate this order,
             # never the worker or the web process.
@@ -209,6 +223,14 @@ class BatchProcessorAdapter:
                 "order.processing_failed order_id=%s", order.order_id
             )
             result.errors.append(f"{type(exc).__name__}: {exc}")
+            # If PDF/PitStop processing failed before revision-bound previews
+            # were available, still leave the operator a visual fallback.
+            try:
+                create_source_previews()
+            except Exception as preview_exc:
+                result.errors.append(
+                    f"Превью исходников: {type(preview_exc).__name__}: {preview_exc}"
+                )
         return result
 
     @staticmethod
