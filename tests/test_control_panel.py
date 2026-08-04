@@ -153,7 +153,7 @@ class ControlPanelTests(unittest.TestCase):
     def test_spa_is_public_but_api_and_files_require_authentication(self):
         home = self.client.get("/")
         self.assertEqual(home.status_code, 200)
-        self.assertIn("Image Magic", home.text)
+        self.assertIn("PrePress Flow", home.text)
 
         for path in ("/api/config", "/api/checks", "/api/files/missing/source"):
             response = self.client.get(path)

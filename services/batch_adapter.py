@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import hashlib
 import logging
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Sequence
 
 from config.profiles import get_profile
 from processing.batch_processor import BatchProcessor
@@ -16,6 +16,7 @@ from services.pitstop import (
     PitStopExecutionStatus,
     PitStopService,
 )
+from services.postpress import normalize_postpress
 
 
 logger = logging.getLogger("image_magic.processing")
@@ -66,6 +67,7 @@ class BatchProcessorAdapter:
         *,
         processor_factory: Callable[..., BatchProcessor] = BatchProcessor,
         pitstop_service: PitStopService | None = None,
+        order_info_fetcher: Callable[[Sequence[str]], list[dict[str, Any]]] | None = None,
     ) -> None:
         self.options = options
         self.input_dir = Path(options.input_path)
@@ -73,6 +75,7 @@ class BatchProcessorAdapter:
         self.preview_dir = self.input_dir / "Previews"
         self.troubles_dir = self.input_dir / "Troubles"
         self.pitstop_service = pitstop_service
+        self.order_info_fetcher = order_info_fetcher
         self.processor = processor_factory(
             self.input_dir,
             self.pdf_dir,
@@ -84,10 +87,87 @@ class BatchProcessorAdapter:
         return self.pitstop_service is not None
 
     def scan_and_inspect(self) -> list[OrderCheck]:
-        return self.processor.inspect_orders()
+        return list(self._enrich_postpress(self.processor.inspect_orders()))
 
     def iter_inspect_orders(self):
-        return self.processor.iter_inspect_orders()
+        # Sborka accepts several order IDs in one orderinfo request. Buffering
+        # keeps network work off the image-processing path without making one
+        # request per order.
+        batch: list[OrderCheck] = []
+        for order in self.processor.iter_inspect_orders():
+            batch.append(order)
+            if len(batch) >= 50:
+                yield from self._enrich_postpress(batch)
+                batch = []
+        if batch:
+            yield from self._enrich_postpress(batch)
+
+    def _enrich_postpress(self, orders: list[OrderCheck]):
+        if self.order_info_fetcher is None:
+            yield from orders
+            return
+        try:
+            records = self.order_info_fetcher([item.order_id for item in orders])
+            by_id = {
+                str(item["id"]): item
+                for item in self._order_info_records(records)
+                if item.get("id") is not None
+            }
+            for order in orders:
+                record = by_id.get(order.order_id)
+                if record is not None:
+                    order.postpress = normalize_postpress(record.get("post_text"))
+        except Exception as exc:
+            # Metadata failure must never block artwork validation.
+            logger.warning("sborka.orderinfo_failed error=%s", exc)
+        yield from orders
+
+    @staticmethod
+    def _order_info_records(records: Sequence[dict[str, Any]]):
+        """Flatten Sborka order sets so each scanned suborder keeps its metadata."""
+        for record in records:
+            yield record
+            sets = record.get("sets_array")
+            if isinstance(sets, list):
+                yield from BatchProcessorAdapter._order_info_records(
+                    [item for item in sets if isinstance(item, dict)]
+                )
+
+    @staticmethod
+    def _fold_overlay(order: OrderCheck) -> dict[str, object] | None:
+        """Convert normalized Sborka metadata into renderer-only settings."""
+        fold = (order.postpress or {}).get("fold")
+        if not isinstance(fold, dict) or fold.get("needs_confirmation"):
+            return None
+        fold_type = fold.get("type")
+        if fold_type not in {"half-fold", "c-fold", "z-fold"}:
+            return None
+        count = 1 if fold_type == "half-fold" else fold.get("count")
+        if not isinstance(count, int) or count < 1:
+            return None
+        return {"type": fold_type, "count": count, "confirmed": True}
+
+    @classmethod
+    def _fold_overlays_for_files(cls, order: OrderCheck) -> dict[Path, dict[str, object]]:
+        overlay = cls._fold_overlay(order)
+        return {item.path: overlay for item in order.files} if overlay else {}
+
+    @classmethod
+    def _fold_overlay_for_pdf(cls, order: OrderCheck) -> dict[str, object] | None:
+        overlay = cls._fold_overlay(order)
+        if overlay is None:
+            return None
+        ordered = sorted(
+            order.files,
+            key=lambda item: 0 if item.parsed and item.parsed.side == "face" else 1,
+        )
+        if ordered and ordered[0].parsed:
+            overlay["span_mm"] = ordered[0].parsed.width_mm
+        overlay["page_sides"] = {
+            index: (item.parsed.side if item.parsed else "face")
+            for index, item in enumerate(ordered, start=1)
+        }
+        return overlay
 
     @property
     def total_orders(self) -> int:
@@ -115,9 +195,17 @@ class BatchProcessorAdapter:
             if source_previews_created or not self.options.generate_previews:
                 return
             source_previews_created = True
-            preview_results = self.processor.generate_previews_for_files(
-                order.files, self.preview_dir
-            )
+            fold_overlays = self._fold_overlays_for_files(order)
+            if fold_overlays:
+                preview_results = self.processor.generate_previews_for_files(
+                    order.files,
+                    self.preview_dir,
+                    fold_overlays_by_file=fold_overlays,
+                )
+            else:
+                preview_results = self.processor.generate_previews_for_files(
+                    order.files, self.preview_dir
+                )
             for file_check, previews, preview_error in preview_results:
                 result.preview_paths.extend(previews)
                 if preview_error:
@@ -194,12 +282,15 @@ class BatchProcessorAdapter:
                         / order.aggregate_id
                         / "r0001"
                     )
-                    preview_results = self.processor.generate_previews_for_all(
-                        [pdf_path],
-                        production_dir,
-                        pdf_page_names_map={
+                    preview_options = {
+                        "pdf_page_names_map": {
                             pdf_path: self._production_page_names(order)
-                        },
+                        }
+                    }
+                    if overlay := self._fold_overlay_for_pdf(order):
+                        preview_options["fold_overlays_by_pdf"] = {pdf_path: overlay}
+                    preview_results = self.processor.generate_previews_for_all(
+                        [pdf_path], production_dir, **preview_options
                     )
                     if preview_results:
                         _, previews, preview_error = preview_results[0]

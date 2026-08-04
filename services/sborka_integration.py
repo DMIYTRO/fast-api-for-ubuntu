@@ -78,6 +78,39 @@ def build_sender(
     return send
 
 
+def build_order_info_fetcher(
+    api_dir: Path, *, timeout: int = 20
+) -> Callable[[Sequence[str]], list[dict[str, Any]]] | None:
+    """Build a batch ``orderinfo`` reader from the optional Sborka checkout."""
+    key_path = api_dir / "sborka_api_key.txt"
+    if not (api_dir / "sborka_orderinfo.py").is_file() or not key_path.is_file():
+        logger.info("sborka orderinfo disabled: credentials or script missing")
+        return None
+    module = _load_module(api_dir, "sborka_orderinfo.py", "image_magic_sborka_orderinfo")
+    assert module is not None
+
+    def fetch(order_ids: Sequence[str]) -> list[dict[str, Any]]:
+        if not order_ids:
+            return []
+        try:
+            status, body = module.fetch_order_info(list(order_ids), timeout=timeout)
+        except Exception as exc:
+            raise SborkaIntegrationError(f"Ошибка получения данных заказа Sborka: {exc}") from exc
+        if status < 200 or status >= 300:
+            raise SborkaIntegrationError(f"Sborka вернула HTTP {status}: {body or '(пустой ответ)'}")
+        try:
+            payload: Any = json.loads(body) if body else []
+        except json.JSONDecodeError as exc:
+            raise SborkaIntegrationError("Sborka вернула некорректный JSON orderinfo") from exc
+        if isinstance(payload, dict):
+            payload = payload.get("orders") or payload.get("data") or []
+        if not isinstance(payload, list):
+            raise SborkaIntegrationError("Sborka вернула неожиданный формат orderinfo")
+        return [item for item in payload if isinstance(item, dict)]
+
+    return fetch
+
+
 def build_rework_sender(
     api_dir: Path,
     *,

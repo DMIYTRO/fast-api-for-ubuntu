@@ -54,6 +54,27 @@ const dpi = (file) => {
 const color = (file) => file?.colorspace || file?.color_space || "—";
 const format = (file) => file?.format || file?.actual_format || "—";
 const rotation = (file) => file ? `${file.rotation_degrees || 0}°` : "—";
+const fold = computed(() => props.order?.postpress?.fold || null);
+const foldCount = computed(() => {
+  const count = Number(fold.value?.count);
+  return Number.isFinite(count) && count > 0 ? count : "?";
+});
+const foldLabel = computed(() => {
+  if (!fold.value) return "";
+  const labels = {
+    "half-fold": "пополам",
+    "c-fold": "намотка",
+    "z-fold": "гармошка",
+  };
+  const operation = fold.value.operation || "Сгиб";
+  return fold.value.label || `${operation}: ${labels[fold.value.type] || "схема"} · ${foldCount.value}`;
+});
+const foldSupported = computed(() => {
+  if (!fold.value) return false;
+  if (typeof fold.value.supported === "boolean") return fold.value.supported;
+  return ["half-fold", "c-fold", "z-fold"].includes(fold.value.type);
+});
+const foldTitle = computed(() => foldSupported.value ? foldLabel.value : `${foldLabel.value}. Схема фальцовки требует настройки`);
 
 async function decide(value) {
   busy.value = true;
@@ -65,7 +86,17 @@ async function decide(value) {
   <article class="order-card order-card-wide" :class="[`order-${order.status}`, { selected }]">
     <header class="order-head">
       <label class="select-order"><input type="checkbox" :checked="selected" @change="$emit('toggle')"><span></span></label>
-      <div><p class="eyebrow">Заказ</p><h3>№ {{ id }}</h3><small>Клиент {{ order.customer_id || "—" }}</small></div>
+      <div>
+        <p class="eyebrow">Заказ</p><h3>№ {{ id }}</h3>
+        <small class="customer-line">
+          <span>Клиент {{ order.customer_id || "—" }}</span>
+          <span v-if="fold" class="fold-indicator" :class="{ unsupported: !foldSupported }" :title="foldTitle" :aria-label="foldTitle">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3v14m14-14v14M3 5h14M3 15h14M10 3v14M7.5 8.5 10 11l2.5-2.5" /></svg>
+            <b>{{ foldLabel }}</b>
+            <i v-if="!foldSupported" aria-hidden="true">!</i>
+          </span>
+        </small>
+      </div>
       <div class="order-meta">
         <span>Красочность <b>{{ colorMode }}</b></span>
         <span>Макет <b>{{ declaredSize }}</b></span>

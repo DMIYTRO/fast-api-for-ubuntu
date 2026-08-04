@@ -41,6 +41,7 @@ class OrderData(TypedDict, total=False):
     warnings: list[str]
     pdf_path: str | None
     preview_paths: list[str]
+    postpress: dict[str, Any]
 
 
 class RunData(TypedDict, total=False):

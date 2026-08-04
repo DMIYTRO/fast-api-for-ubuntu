@@ -141,6 +141,23 @@ class SqlRunRepositoryTests(unittest.TestCase):
             self.assertEqual(file_record.source_path, "/orders/input/order-face.jpg")
             self.assertEqual(file_record.status, "waiting_confirmation")
 
+    def test_round_trip_preserves_postpress_metadata(self):
+        run = sample_run()
+        run["orders"]["25506185"]["postpress"] = {
+            "raw": "Сгиб: 2 намотка",
+            "fold": {
+                "type": "c-fold",
+                "count": 2,
+                "needs_confirmation": False,
+            },
+        }
+        self.repository.create_run(run)
+
+        self.assertEqual(
+            self.repository.get_run("run-1")["orders"]["25506185"]["postpress"],
+            run["orders"]["25506185"]["postpress"],
+        )
+
     def test_round_trip_persists_current_pdf_and_latest_pitstop_check(self):
         expected = sample_run(status="completed")
         order = expected["orders"]["25506185"]

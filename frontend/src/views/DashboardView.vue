@@ -78,7 +78,7 @@ onBeforeUnmount(() => {
       </section>
       <section v-else class="empty-state surface"><div>⌁</div><h2>{{ checks.orders.length ? "Ничего не найдено" : "Заказы появятся здесь" }}</h2><p>{{ checks.orders.length ? "Измените фильтр или поисковый запрос." : "Первые карточки появятся ещё до завершения проверки." }}</p></section>
     </template>
-    <section v-else-if="!checks.loading" class="first-run surface"><div class="first-icon">✦</div><p class="eyebrow">Можно начинать</p><h1>Проверьте первую папку с макетами</h1><p>Выберите папку и профиль печати. Имя файла должно содержать клиента и заказ, например <code>(12690-25506185)_offset-face.jpg</code>.</p><button class="button primary" @click="checks.drawerOpen = true">Начать первую проверку</button></section>
+    <section v-else-if="!checks.loading" class="first-run surface"><div class="first-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="square" stroke-linejoin="miter"><path d="M6 9V3h12v6" /><path d="M6 18H4V10h16v8h-2" /><path d="M6 14h12v7H6z" /><path d="M17 12h.01" /></svg></div><p class="eyebrow">Можно начинать</p><h1>Проверьте первую папку с макетами</h1><p>Выберите папку и профиль печати. Имя файла должно содержать клиента и заказ, например <code>(12690-25506185)_offset-face.jpg</code>.</p><button class="button primary" @click="checks.drawerOpen = true">Начать первую проверку</button></section>
     <div v-else class="loading-page"><span class="spinner"></span> Загружаем рабочий пульт…</div>
   </main>
   <StartCheckPanel :open="checks.drawerOpen" :config="checks.config" :busy="checks.loading" @close="checks.drawerOpen = false" @start="checks.start" />

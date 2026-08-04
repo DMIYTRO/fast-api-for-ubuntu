@@ -49,7 +49,11 @@ from services.pitstop import (
     SSHSettings,
     SSHTransport,
 )
-from services.sborka_integration import build_rework_sender, build_sender
+from services.sborka_integration import (
+    build_order_info_fetcher,
+    build_rework_sender,
+    build_sender,
+)
 from services.ftp_preview_uploader import build_ftp_preview_uploader
 from services.repository import InMemoryRunRepository, RunRepository
 
@@ -346,9 +350,32 @@ def _pitstop_adapter_factory(settings: Settings):
             profiles=catalog,
             transport=transport,
         )
-        return BatchProcessorAdapter(options, pitstop_service=service)
+        return BatchProcessorAdapter(
+            options,
+            pitstop_service=service,
+            order_info_fetcher=(
+                build_order_info_fetcher(
+                    settings.sborka_api_dir,
+                    timeout=settings.sborka_timeout_seconds,
+                )
+                if settings.sborka_enabled
+                else None
+            ),
+        )
 
     return factory
+
+
+def _default_adapter_factory(settings: Settings):
+    """Construct the regular adapter with optional Sborka metadata enrichment."""
+    fetcher = (
+        build_order_info_fetcher(
+            settings.sborka_api_dir, timeout=settings.sborka_timeout_seconds
+        )
+        if settings.sborka_enabled
+        else None
+    )
+    return lambda options: BatchProcessorAdapter(options, order_info_fetcher=fetcher)
 
 
 def create_app(
@@ -374,6 +401,8 @@ def create_app(
         coordinator_options["adapter_factory"] = adapter_factory
     elif settings.pitstop_enabled:
         coordinator_options["adapter_factory"] = _pitstop_adapter_factory(settings)
+    else:
+        coordinator_options["adapter_factory"] = _default_adapter_factory(settings)
     coordinator = RunCoordinator(repository, **coordinator_options)
     auth_service = AuthService(settings)
     protected = require_session(settings, auth_service)

@@ -17,10 +17,17 @@ async function submit() {
 <template>
   <main class="login-page">
     <section class="login-card">
-      <div class="logo-mark" aria-hidden="true">✦</div>
+      <div class="logo-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="square" stroke-linejoin="miter">
+          <path d="M6 9V3h12v6" />
+          <path d="M6 18H4V10h16v8h-2" />
+          <path d="M6 14h12v7H6z" />
+          <path d="M17 12h.01" />
+        </svg>
+      </div>
       <p class="eyebrow">Система допечатной проверки</p>
-      <h1>Image Magic</h1>
-      <p class="muted">Введите пароль, чтобы открыть рабочий пульт.</p>
+      <h1>PrePress Flow</h1>
+      <p class="muted">Введите пароль, чтобы открыть рабочую область.</p>
       <form @submit.prevent="submit">
         <label for="password">Пароль</label>
         <input id="password" v-model="password" type="password" autocomplete="current-password" autofocus required>

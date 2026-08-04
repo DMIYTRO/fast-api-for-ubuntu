@@ -55,7 +55,7 @@ const decorateOrders = (data, runId) => list(data).map((order) => decorateOrder(
 export const useChecksStore = defineStore("checks", {
   state: () => ({
     runs: [], activeRun: null, orders: [], config: null, loading: false, error: "",
-    connection: "closed", selected: [], filter: localStorage.getItem("im-filter") || "all",
+    connection: "closed", selected: [], filter: localStorage.getItem("im-filter") || "passed",
     search: "", events: [], drawerOpen: false, stopEvents: null, actionResults: {}, returnComments: {}, returnDesign: {}, conflictPrompt: null,
   }),
   getters: {

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+from typing import Mapping, Optional
 
 from core.inspector import count_frames, inspect_file
 from core.pdf_inspector import inspect_pdf
@@ -698,8 +699,9 @@ class BatchProcessor:
         safe_zone_mm: float | None = None,
         bleed_mm: float | None = None,
         page_names: Optional[list[str]] = None,
+        fold_overlay: Mapping[str, object] | None = None,
     ) -> list[Path]:
-        """Рендерит страницы PDF и генерирует превью с рамками (1 мм зелёная наружная, 4 мм красная внутренняя)."""
+        """Render PDF previews with standard frames or confirmed fold guides."""
         safe_zone_mm = self.profile.safe_zone_mm if safe_zone_mm is None else safe_zone_mm
         # Линия реза на превью исторически имеет толщину 1 мм; это не вылет.
         bleed_mm = 1.0 if bleed_mm is None else bleed_mm
@@ -745,6 +747,7 @@ class BatchProcessor:
                     preview_filename = f"{pdf_path.stem}_page{idx}_preview.png"
 
                 output_preview_path = preview_dir / preview_filename
+                page_overlay = self._overlay_for_page(fold_overlay, idx)
                 generate_preview(
                     input_path=str(rendered_page),
                     output_preview_path=str(output_preview_path),
@@ -753,6 +756,7 @@ class BatchProcessor:
                     h_px=meta.height_px,
                     safe_zone_mm=safe_zone_mm,
                     bleed_mm=bleed_mm,
+                    fold_overlay=page_overlay,
                 )
                 created_previews.append(output_preview_path)
 
@@ -763,14 +767,19 @@ class BatchProcessor:
         pdf_paths: list[Path],
         preview_dir: Path,
         pdf_page_names_map: Optional[dict[Path, list[str]]] = None,
+        fold_overlays_by_pdf: Optional[dict[Path, Mapping[str, object]]] = None,
     ) -> list[tuple[Path, list[Path], str | None]]:
         """Генерирует превью с рамками для всех передаваемых PDF файлов."""
         results = []
         pdf_map = pdf_page_names_map or {}
+        overlays_map = fold_overlays_by_pdf or {}
         def create_one(pdf_path: Path) -> tuple[Path, list[Path], str | None]:
             try:
                 previews = self.generate_pdf_previews(
-                    pdf_path, preview_dir, page_names=pdf_map.get(pdf_path)
+                    pdf_path,
+                    preview_dir,
+                    page_names=pdf_map.get(pdf_path),
+                    fold_overlay=overlays_map.get(pdf_path),
                 )
                 return pdf_path, previews, None
             except Exception as exc:
@@ -789,6 +798,7 @@ class BatchProcessor:
         self,
         files: list[FileCheck],
         preview_dir: Path,
+        fold_overlays_by_file: Optional[dict[Path, Mapping[str, object]]] = None,
     ) -> list[tuple[FileCheck, list[Path], str | None]]:
         """Generate previews directly from every available source file.
 
@@ -796,8 +806,11 @@ class BatchProcessor:
         not depend on a successfully assembled production PDF.  A source file
         can therefore still be reviewed when it fails prepress validation.
         """
+        overlays_map = fold_overlays_by_file or {}
+
         def create_one(file_check: FileCheck) -> tuple[FileCheck, list[Path], str | None]:
             try:
+                overlay = self._overlay_for_file(overlays_map.get(file_check.path), file_check)
                 if file_check.path.suffix.lower() == ".pdf":
                     page_count = file_check.page_count or 1
                     page_names = (
@@ -809,7 +822,10 @@ class BatchProcessor:
                         ]
                     )
                     previews = self.generate_pdf_previews(
-                        file_check.path, preview_dir, page_names=page_names
+                        file_check.path,
+                        preview_dir,
+                        page_names=page_names,
+                        fold_overlay=overlay,
                     )
                 else:
                     meta = inspect_file(str(file_check.path))
@@ -822,6 +838,7 @@ class BatchProcessor:
                         h_px=meta.height_px,
                         safe_zone_mm=self.profile.safe_zone_mm,
                         bleed_mm=1.0,
+                        fold_overlay=overlay,
                     )
                     previews = [preview_path]
                 return file_check, previews, None
@@ -835,3 +852,37 @@ class BatchProcessor:
         ) as executor:
             results.extend(executor.map(create_one, files))
         return results
+
+    @staticmethod
+    def _overlay_for_page(
+        overlay: Mapping[str, object] | None,
+        page_number: int,
+    ) -> dict[str, object] | None:
+        """Return a page-specific overlay without mutating caller-owned data."""
+        if overlay is None:
+            return None
+        resolved = dict(overlay)
+        page_sides = resolved.pop("page_sides", None)
+        if isinstance(page_sides, Mapping):
+            side = page_sides.get(page_number, page_sides.get(str(page_number)))
+            if side is not None:
+                resolved["side"] = side
+        return resolved
+
+    @staticmethod
+    def _overlay_for_file(
+        overlay: Mapping[str, object] | None,
+        file_check: FileCheck,
+    ) -> dict[str, object] | None:
+        resolved = BatchProcessor._overlay_for_page(overlay, 1)
+        if resolved is None:
+            return None
+        if file_check.parsed:
+            resolved.setdefault("side", file_check.parsed.side or "face")
+            span = (
+                file_check.parsed.width_mm
+                if resolved.get("axis", "width") == "width"
+                else file_check.parsed.height_mm
+            )
+            resolved.setdefault("span_mm", span)
+        return resolved

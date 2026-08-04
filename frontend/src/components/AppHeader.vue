@@ -6,7 +6,17 @@ const labels = { queued: "В очереди", running: "Проверка идё�
 
 <template>
   <header class="app-header">
-    <div class="brand"><span class="brand-symbol">✦</span><span>Image Magic</span></div>
+    <div class="brand">
+      <span class="brand-symbol" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="square" stroke-linejoin="miter">
+          <path d="M6 9V3h12v6" />
+          <path d="M6 18H4V10h16v8h-2" />
+          <path d="M6 14h12v7H6z" />
+          <path d="M17 12h.01" />
+        </svg>
+      </span>
+      <span>PrePress Flow</span>
+    </div>
     <div class="header-context">
       <div class="path-label"><small>Рабочая папка</small><strong :title="path">{{ path || "Не выбрана" }}</strong></div>
       <span class="status-pill" :class="`status-${status || 'idle'}`">

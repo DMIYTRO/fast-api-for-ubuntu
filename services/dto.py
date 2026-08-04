@@ -129,6 +129,8 @@ def order_check_to_dto(
         "preview_paths": list(preview_paths or []),
         "processing_errors": list(processing_errors or []),
     }
+    if value.postpress is not None:
+        result["postpress"] = value.postpress
     if current_pdf_revision is not None:
         result["current_pdf_revision"] = current_pdf_revision
     if current_pdf_sha256 is not None:
