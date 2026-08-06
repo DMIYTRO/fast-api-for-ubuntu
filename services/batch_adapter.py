@@ -220,13 +220,8 @@ class BatchProcessorAdapter:
                     )
 
         try:
-            # Always make source previews first.  They are immediately useful
-            # to the operator and remain available in Previews/ even after a
-            # revision-bound PitStop preview is created in Previews/Final/.
-            # The actual ImageMagick work is parallelized by BatchProcessor.
-            create_source_previews()
-
             if not order.passed:
+                create_source_previews()
                 if self.options.copy_failures:
                     copies = self.processor.copy_failed_to_troubles(
                         [order], self.troubles_dir
@@ -237,6 +232,7 @@ class BatchProcessorAdapter:
                 return result
 
             if not self.options.create_pdfs:
+                create_source_previews()
                 return result
 
             pdf_results = self.processor.create_pdfs([order])
@@ -252,6 +248,7 @@ class BatchProcessorAdapter:
                     pdf_error,
                 )
                 result.errors.append(f"PDF: {pdf_error}")
+                create_source_previews()
                 if self.options.copy_failures:
                     copies = self.processor.copy_pdf_failure_to_troubles(
                         order, self.troubles_dir, pdf_error
@@ -307,6 +304,10 @@ class BatchProcessorAdapter:
                             "BatchProcessor не вернул производственное превью"
                         )
                         create_source_previews()
+            else:
+                # Without PitStop there is no production PDF revision to
+                # render, so source previews are the single compact variant.
+                create_source_previews()
         except Exception as exc:
             # ImageMagick/Ghostscript/programming failures terminate this order,
             # never the worker or the web process.

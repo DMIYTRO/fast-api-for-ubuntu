@@ -1,7 +1,12 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from core.preview_generator import FoldOverlay, _fold_draw_commands, generate_preview
+from core.preview_generator import (
+    PREVIEW_MAX_PIXELS,
+    FoldOverlay,
+    _fold_draw_commands,
+    generate_preview,
+)
 from processing.batch_processor import BatchProcessor
 from processing.models import FileCheck, ParsedFilename
 
@@ -32,6 +37,7 @@ def test_confirmed_fold_replaces_both_standard_preview_frames(tmp_path: Path) ->
     assert "line 294.00,0 294.00,600" in command
     assert "line 594.00,0 594.00,600" in command
     assert "rectangle 47.00,47 247.00,553" in command
+    assert ["-resize", f"{PREVIEW_MAX_PIXELS}x{PREVIEW_MAX_PIXELS}>"] == command[-3:-1]
 
 
 def test_unconfirmed_or_unsupported_fold_keeps_existing_frames(tmp_path: Path) -> None:

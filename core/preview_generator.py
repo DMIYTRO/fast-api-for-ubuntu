@@ -10,6 +10,8 @@ from core.tool_runner import run_command
 
 
 SUPPORTED_FOLD_TYPES = frozenset({"half-fold", "c-fold", "z-fold"})
+# A single compact preview is used by both the operator workspace and history.
+PREVIEW_MAX_PIXELS = 480
 
 
 @dataclass(frozen=True)
@@ -197,6 +199,9 @@ def generate_preview(
             "-fill", "none",
             "-draw", f"rectangle {gx1},{gy1} {gx2},{gy2}",
         ])
+    # Keep previews compact at the source.  This avoids a separate web
+    # thumbnail being rendered later and is sufficient for the current UI.
+    cmd.extend(["-resize", f"{PREVIEW_MAX_PIXELS}x{PREVIEW_MAX_PIXELS}>"])
     cmd.append(output_preview_path)
     run_command(cmd, check=True)
     return output_preview_path

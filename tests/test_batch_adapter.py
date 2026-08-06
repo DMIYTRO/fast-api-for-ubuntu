@@ -102,12 +102,7 @@ def test_valid_order_runs_pdf_then_pitstop_then_production_preview(tmp_path: Pat
 
     artifacts = adapter.process_order(order)
 
-    assert processor.calls == [
-        "source_preview",
-        "pdf",
-        "pitstop",
-        "production_preview",
-    ]
+    assert processor.calls == ["pdf", "pitstop", "production_preview"]
     assert artifacts.pitstop["verdict"] == "warning"
     assert artifacts.current_pdf_revision == 1
     assert artifacts.current_pdf_sha256 == "a" * 64
