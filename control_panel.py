@@ -55,6 +55,7 @@ from services.sborka_integration import (
     build_sender,
 )
 from services.ftp_preview_uploader import build_ftp_preview_uploader
+from services.return_preview import CUSTOM_PREVIEWS_RELATIVE_PATH, custom_return_preview_path
 from services.repository import InMemoryRunRepository, RunRepository
 
 try:
@@ -144,6 +145,7 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
     orders = run.get("orders") or {}
     values = list(orders.values()) if isinstance(orders, dict) else list(orders)
     run_id = str(run.get("id") or "")
+    input_path = Path((run.get("options") or {}).get("input_path", ""))
     for order in values:
         order_id = str(order.get("order_id") or order.get("id") or "")
         order["html_url"] = f"/runs/{run_id}/report"
@@ -157,6 +159,10 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
             }
         if order.get("pdf_path"):
             order["pdf_url"] = f"/api/orders/{order_id}/pdf?run_id={run_id}"
+        if input_path and custom_return_preview_path(order_id, input_path=input_path):
+            order["custom_preview_url"] = (
+                f"/api/checks/{run_id}/orders/{order_id}/return-preview"
+            )
         pitstop = order.get("pitstop") or {}
         check_id = str(pitstop.get("check_id") or "")
         if check_id:
@@ -729,6 +735,79 @@ def create_app(
                 previews[0] if previews else None,
             )
         return FileResponse(_safe_result_path(run, preview))
+
+    @application.get(
+        "/api/checks/{run_id}/orders/{order_id}/return-preview",
+        dependencies=[Depends(protected)],
+    )
+    def uploaded_return_preview(
+        request: Request, run_id: str, order_id: str
+    ) -> FileResponse:
+        run, _ = _find_order(_get_coordinator(request), order_id, run_id)
+        preview = custom_return_preview_path(
+            order_id, input_path=Path(run["options"]["input_path"])
+        )
+        if preview is None:
+            raise APIError(
+                404,
+                "preview_not_found",
+                "Пользовательское превью не загружено.",
+            )
+        return FileResponse(preview)
+
+    @application.post(
+        "/api/checks/{run_id}/orders/{order_id}/return-preview",
+        dependencies=[Depends(protected)],
+    )
+    async def upload_return_preview(
+        request: Request, run_id: str, order_id: str
+    ) -> dict[str, str]:
+        """Store a small operator preview that takes precedence on FTP return."""
+        run, _ = _find_order(_get_coordinator(request), order_id, run_id)
+        maximum_size = 1024 * 1024
+        try:
+            content_length = int(request.headers.get("content-length", "0"))
+        except ValueError:
+            content_length = 0
+        if content_length > maximum_size:
+            raise APIError(
+                413, "preview_too_large", "Размер превью не должен превышать 1 МБ."
+            )
+        content = bytearray()
+        async for chunk in request.stream():
+            content.extend(chunk)
+            if len(content) > maximum_size:
+                raise APIError(
+                    413,
+                    "preview_too_large",
+                    "Размер превью не должен превышать 1 МБ.",
+                )
+        if not content:
+            raise APIError(400, "preview_empty", "Выберите файл превью.")
+        if content.startswith(b"\x89PNG\r\n\x1a\n"):
+            suffix = ".png"
+        elif content.startswith(b"\xff\xd8\xff"):
+            suffix = ".jpg"
+        else:
+            raise APIError(
+                415,
+                "preview_invalid_format",
+                "Можно загрузить только JPEG или PNG-превью.",
+            )
+        directory = Path(run["options"]["input_path"]) / CUSTOM_PREVIEWS_RELATIVE_PATH
+        directory.mkdir(parents=True, exist_ok=True)
+        for other_suffix in (".png", ".jpg"):
+            (directory / f"{order_id}_return-preview{other_suffix}").unlink(
+                missing_ok=True
+            )
+        target = directory / f"{order_id}_return-preview{suffix}"
+        temporary = target.with_suffix(f"{suffix}.uploading")
+        temporary.write_bytes(content)
+        os.replace(temporary, target)
+        return {
+            "filename": target.name,
+            "url": f"/api/checks/{run_id}/orders/{order_id}/return-preview",
+        }
 
     @application.get(
         "/api/orders/{order_id}/pdf", dependencies=[Depends(protected)]

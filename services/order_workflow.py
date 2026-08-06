@@ -21,7 +21,7 @@ from server.models import OrderAction, OrderResult
 from .coordinator import RunCoordinator
 from .domain import validate_operator_transition
 from .file_lifecycle import FileConflictError, FileLifecycle, FileLifecycleError
-from .return_preview import prepare_return_preview_name
+from .return_preview import custom_return_preview_path, prepare_return_preview_name
 
 
 logger = logging.getLogger("image_magic.order_workflow")
@@ -118,19 +118,25 @@ class OrderWorkflowService:
 
     @staticmethod
     def _return_preview_upload_paths(
-        input_path: Path, transition: Any, preview_name: str
+        input_path: Path, transition: Any, preview_name: str, order_id: str
     ) -> list[Path]:
         """Find the previews after a return transition for one batch upload."""
         paths = [
             Path(path) for path in transition.preview_paths if Path(path).is_file()
         ]
         if preview_name and not any(path.name == preview_name for path in paths):
+            custom_preview = custom_return_preview_path(
+                order_id, input_path=input_path
+            )
             collage = input_path / "Previews" / "Return" / preview_name
-            if not collage.is_file():
+            if custom_preview is not None and custom_preview.name == preview_name:
+                paths.append(custom_preview)
+            elif not collage.is_file():
                 raise FileLifecycleError(
                     f"Не найдено превью для загрузки: {preview_name}"
                 )
-            paths.append(collage)
+            else:
+                paths.append(collage)
         return paths
 
     @staticmethod
@@ -460,6 +466,7 @@ class OrderWorkflowService:
                                     Path(run["options"]["input_path"]),
                                     transition,
                                     return_preview_name or "",
+                                    order_id,
                                 )
                                 if upload_paths:
                                     self.preview_uploader(upload_paths)

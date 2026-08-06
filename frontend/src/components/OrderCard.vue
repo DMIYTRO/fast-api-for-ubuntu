@@ -1,15 +1,19 @@
 <script setup>
 import { computed, ref } from "vue";
+import { api } from "../services/api.js";
 import PreviewViewer from "./PreviewViewer.vue";
 import FileParameters from "./FileParameters.vue";
 import CorrectionDecision from "./CorrectionDecision.vue";
 import ReturnReasons from "./ReturnReasons.vue";
 import PitStopReport from "./PitStopReport.vue";
 
-const props = defineProps({ order: Object, selected: Boolean, reasons: Array, paidDesign: { type: Boolean, default: true }, designCost: { type: String, default: "0" } });
+const props = defineProps({ order: Object, runId: String, selected: Boolean, reasons: Array, paidDesign: { type: Boolean, default: true }, designCost: { type: String, default: "0" } });
 const emit = defineEmits(["toggle", "decide", "return-comment", "return-design", "return-cost"]);
 const expanded = ref(false);
 const busy = ref(false);
+const uploadInput = ref(null);
+const uploadError = ref("");
+const uploadingPreview = ref(false);
 const id = computed(() => props.order.order_id ?? props.order.id);
 const files = computed(() => props.order.files || props.order.file_results || []);
 const face = computed(() => files.value.find((file) => String(file.side || file.parsed?.side).toLowerCase() === "face") || files.value[0]);
@@ -80,6 +84,26 @@ async function decide(value) {
   busy.value = true;
   try { await emit("decide", value); } finally { busy.value = false; }
 }
+async function uploadPreview(file) {
+  uploadError.value = "";
+  if (!file) return;
+  if (!["image/jpeg", "image/png"].includes(file.type)) {
+    uploadError.value = "Можно загрузить только JPEG или PNG.";
+    return;
+  }
+  if (file.size > 1024 * 1024) {
+    uploadError.value = "Размер превью не должен превышать 1 МБ.";
+    return;
+  }
+  uploadingPreview.value = true;
+  try {
+    const result = await api.uploadReturnPreview(props.runId, id.value, file);
+    props.order.custom_preview_url = result.url;
+  } catch (error) { uploadError.value = error.message; }
+  finally { uploadingPreview.value = false; }
+}
+function onDrop(event) { uploadPreview(event.dataTransfer?.files?.[0]); }
+function choosePreview() { uploadInput.value?.click(); }
 </script>
 
 <template>
@@ -119,6 +143,13 @@ async function decide(value) {
       <section class="preview-column">
         <p class="section-title">Превью макетов</p>
         <PreviewViewer :files="files" />
+        <div class="custom-preview" @dragover.prevent @drop.prevent="onDrop">
+          <input ref="uploadInput" type="file" accept="image/jpeg,image/png" hidden @change="uploadPreview($event.target.files?.[0])">
+          <button type="button" class="button secondary small" :disabled="uploadingPreview" @click="choosePreview">{{ uploadingPreview ? "Загрузка…" : "Загрузить превью для возврата" }}</button>
+          <span>JPEG или PNG, до 1 МБ. Можно перетащить файл сюда.</span>
+          <a v-if="order.custom_preview_url" :href="order.custom_preview_url" target="_blank">Пользовательское превью выбрано для FTP ↗</a>
+          <small v-if="uploadError" class="form-error">{{ uploadError }}</small>
+        </div>
         <div class="frame-legend">
           <span><i class="legend-green"></i>Зелёный — край реза</span>
           <span><i class="legend-red"></i>Красный — безопасная зона</span>

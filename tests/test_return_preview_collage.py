@@ -7,10 +7,30 @@ import tempfile
 import unittest
 
 from services.return_preview import (
+    CUSTOM_PREVIEWS_RELATIVE_PATH,
     RETURN_PREVIEWS_RELATIVE_PATH,
     ReturnPreviewCollageError,
+    custom_return_preview_path,
     create_return_preview_collage,
+    prepare_return_preview_name,
 )
+
+
+class CustomReturnPreviewTests(unittest.TestCase):
+    def test_uploaded_preview_has_priority_over_generated_previews(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            input_path = Path(temporary_directory)
+            custom_path = input_path / CUSTOM_PREVIEWS_RELATIVE_PATH / "1001_return-preview.jpg"
+            custom_path.parent.mkdir(parents=True)
+            custom_path.write_bytes(b"\xff\xd8\xffcustom")
+
+            self.assertEqual(
+                custom_return_preview_path("1001", input_path=input_path), custom_path
+            )
+            self.assertEqual(
+                prepare_return_preview_name("1001", input_path=input_path),
+                custom_path.name,
+            )
 
 
 @unittest.skipUnless(shutil.which("magick"), "ImageMagick is required")

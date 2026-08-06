@@ -355,6 +355,36 @@ class ControlPanelTests(unittest.TestCase):
             b"preview-image",
         )
 
+    def test_operator_can_upload_small_return_preview(self):
+        self.adapter_type = OneOrderAdapter
+        self.login()
+        run_id = self.client.post(
+            "/api/checks",
+            json={"input_path": str(self.root), "direction": "digital"},
+        ).json()["id"]
+        self.client.app.state.coordinator.wait_for(run_id, timeout=2)
+
+        response = self.client.post(
+            f"/api/checks/{run_id}/orders/1001/return-preview",
+            content=b"\x89PNG\r\n\x1a\npreview",
+            headers={"content-type": "image/png"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["filename"], "1001_return-preview.png")
+        self.assertEqual(
+            self.client.get(response.json()["url"]).content,
+            b"\x89PNG\r\n\x1a\npreview",
+        )
+        order = self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]
+        self.assertEqual(order["custom_preview_url"], response.json()["url"])
+
+        too_large = self.client.post(
+            f"/api/checks/{run_id}/orders/1001/return-preview",
+            content=b"\x89PNG\r\n\x1a\n" + b"x" * (1024 * 1024),
+            headers={"content-type": "image/png"},
+        )
+        self.assertEqual(too_large.status_code, 413)
+
     def test_pitstop_report_paths_are_replaced_with_protected_api_urls(self):
         self.adapter_type = PitStopOrderAdapter
         self.login()

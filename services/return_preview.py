@@ -21,6 +21,20 @@ class ReturnPreviewNotFoundError(RuntimeError):
 
 PROCESSED_PREVIEWS_RELATIVE_PATH = Path("Previews") / "Processed"
 RETURN_PREVIEWS_RELATIVE_PATH = Path("Previews") / "Return"
+CUSTOM_PREVIEWS_RELATIVE_PATH = Path("Previews") / "Custom"
+
+
+def custom_return_preview_path(order_id: str, *, input_path: Path) -> Path | None:
+    """Return an operator-provided preview, which always wins over generated ones."""
+    normalized_order_id = str(order_id).strip()
+    if not normalized_order_id or Path(normalized_order_id).name != normalized_order_id:
+        raise ValueError("Номер заказа не должен быть пустым или содержать путь.")
+    directory = Path(input_path) / CUSTOM_PREVIEWS_RELATIVE_PATH
+    for suffix in (".png", ".jpg"):
+        candidate = directory / f"{normalized_order_id}_return-preview{suffix}"
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 class ReturnPreviewCollageError(RuntimeError):
@@ -110,6 +124,9 @@ def prepare_return_preview_name(
     files: Iterable[dict] | None = None,
 ) -> str:
     """Select one preview or create a face/back collage for return to Sborka."""
+    custom_preview = custom_return_preview_path(order_id, input_path=input_path)
+    if custom_preview is not None:
+        return custom_preview.name
     preview_dir = input_path / PROCESSED_PREVIEWS_RELATIVE_PATH
     candidates: dict[str, Path] = {}
     for preview_path in preview_paths or ():
