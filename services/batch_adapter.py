@@ -329,7 +329,7 @@ class BatchProcessorAdapter:
     def _production_page_names(order: OrderCheck) -> list[str]:
         if len(order.files) == 1 and order.files[0].page_count == 2:
             stem = order.files[0].path.stem
-            return [f"{stem}_page1", f"{stem}_page2"]
+            return [f"{stem}_face", f"{stem}_back"]
         ordered = sorted(
             order.files,
             key=lambda item: 0 if item.parsed and item.parsed.side == "face" else 1,

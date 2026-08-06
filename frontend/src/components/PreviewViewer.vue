@@ -6,6 +6,22 @@ const rotation = ref({});
 const bySide = computed(() => {
   const files = props.files || [];
   const sideOf = (file) => String(file.side || file.parsed?.side || "").toLowerCase();
+  const duplexPdf = files.find((file) =>
+    Number(file.page_count) === 2 && Array.isArray(file.preview_paths) && file.preview_paths.length >= 2
+  );
+  if (duplexPdf) {
+    const page = (number, side) => ({
+      ...duplexPdf,
+      id: `${duplexPdf.id}:${side}`,
+      side,
+      filename: `${duplexPdf.filename || duplexPdf.name} — ${side}`,
+      preview_url: `${previewUrl(duplexPdf)}?page=${number}`,
+    });
+    return [
+      { side: "face", file: page(1, "face") },
+      { side: "back", file: page(2, "back") },
+    ];
+  }
   const face = files.find((file) => sideOf(file) === "face") || files[0] || null;
   const back = files.find((file) => sideOf(file) === "back") || null;
   return [

@@ -141,3 +141,18 @@ def test_two_page_pdf_generates_one_preview_per_page(tmp_path: Path) -> None:
         "back_preview.png",
     ]
     assert all(path.is_file() and path.stat().st_size > 0 for path in previews)
+
+
+def test_complete_duplex_pdf_uses_face_and_back_preview_names(tmp_path: Path) -> None:
+    source = tmp_path / "job_(90x50)_4-4_(1-205)_input.pdf"
+    _make_pdf(source, 2)
+    processor = _processor(tmp_path)
+    order = processor.inspect_orders()[0]
+
+    with patch.object(processor, "generate_pdf_previews", return_value=[]) as generate:
+        processor.generate_previews_for_files(order.files, tmp_path / "Previews")
+
+    assert generate.call_args.kwargs["page_names"] == [
+        "job_(90x50)_4-4_(1-205)_input_face",
+        "job_(90x50)_4-4_(1-205)_input_back",
+    ]

@@ -722,9 +722,17 @@ def create_app(
     @application.get(
         "/api/files/{file_id}/preview", dependencies=[Depends(protected)]
     )
-    def preview_file(request: Request, file_id: str) -> FileResponse:
+    def preview_file(
+        request: Request, file_id: str, page: int | None = None
+    ) -> FileResponse:
         run, item = _find_file(_get_coordinator(request), file_id)
-        preview = item.get("preview_path")
+        previews_for_file = item.get("preview_paths") or []
+        if page is not None:
+            if page < 1 or page > len(previews_for_file):
+                raise APIError(404, "preview_not_found", "Превью страницы не найдено.")
+            preview = previews_for_file[page - 1]
+        else:
+            preview = item.get("preview_path")
         if not preview:
             order_id = item.get("parsed", {}).get("order_id") if item.get("parsed") else None
             _, order = _find_order(_get_coordinator(request), str(order_id), run["id"])

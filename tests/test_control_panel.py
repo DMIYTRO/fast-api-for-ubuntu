@@ -116,6 +116,36 @@ class PitStopOrderAdapter(OneOrderAdapter):
         return artifacts
 
 
+class DuplexPdfAdapter(OneOrderAdapter):
+    def __init__(self, options):
+        super().__init__(options)
+        item = self.order.files[0]
+        self.source = self.input_dir / "sample.pdf"
+        self.source.write_bytes(b"source-pdf")
+        item.path = self.source
+        item.page_count = 2
+        item.parsed = ParsedFilename(
+            customer_id="42",
+            order_id="1001",
+            width_mm=90,
+            height_mm=50,
+            front_colors=4,
+            back_colors=4,
+            side="",
+        )
+
+    def process_order(self, order):
+        pdf = self.input_dir / "PDF" / "sample.pdf"
+        face = self.input_dir / "Previews" / "sample_face_preview.png"
+        back = self.input_dir / "Previews" / "sample_back_preview.png"
+        pdf.parent.mkdir(exist_ok=True)
+        face.parent.mkdir(exist_ok=True)
+        pdf.write_bytes(b"%PDF-test")
+        face.write_bytes(b"face-preview")
+        back.write_bytes(b"back-preview")
+        return OrderArtifacts(pdf_path=pdf, preview_paths=[face, back])
+
+
 class ControlPanelTests(unittest.TestCase):
     def setUp(self):
         self.temporary_directory = tempfile.TemporaryDirectory(
@@ -177,6 +207,35 @@ class ControlPanelTests(unittest.TestCase):
         logout = self.client.post("/api/auth/logout")
         self.assertEqual(logout.status_code, 204)
         self.assertEqual(self.client.get("/api/config").status_code, 401)
+
+    def test_two_page_pdf_serves_individual_face_and_back_previews(self):
+        self.login()
+        self.adapter_type = DuplexPdfAdapter
+        response = self.client.post(
+            "/api/checks",
+            json={
+                "input_path": str(self.root),
+                "direction": "digital",
+                "create_pdfs": True,
+                "generate_previews": True,
+                "copy_failures": False,
+            },
+        )
+        self.assertEqual(response.status_code, 202)
+        run_id = response.json()["id"]
+        self.client.app.state.coordinator.wait_for(run_id, timeout=2)
+
+        order = self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]
+        file = order["files"][0]
+        self.assertEqual(len(file["preview_paths"]), 2)
+        self.assertEqual(
+            self.client.get(f"/api/files/{file['id']}/preview?page=1").content,
+            b"face-preview",
+        )
+        self.assertEqual(
+            self.client.get(f"/api/files/{file['id']}/preview?page=2").content,
+            b"back-preview",
+        )
 
     def test_http_journal_does_not_store_passwords(self):
         secret = "do-not-write-this-password"

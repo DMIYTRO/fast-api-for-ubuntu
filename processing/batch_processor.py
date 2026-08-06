@@ -813,14 +813,24 @@ class BatchProcessor:
                 overlay = self._overlay_for_file(overlays_map.get(file_check.path), file_check)
                 if file_check.path.suffix.lower() == ".pdf":
                     page_count = file_check.page_count or 1
-                    page_names = (
-                        [file_check.path.stem]
-                        if page_count == 1
-                        else [
+                    if page_count == 2 and file_check.parsed.back_colors > 0:
+                        # One two-page PDF is a complete duplex layout.  Give
+                        # its previews semantic names so every downstream
+                        # consumer (the UI and Sborka return collage) can
+                        # distinguish the face from the back.
+                        page_names = [
+                            f"{file_check.path.stem}_face",
+                            f"{file_check.path.stem}_back",
+                        ]
+                        if overlay is not None:
+                            overlay["page_sides"] = {1: "face", 2: "back"}
+                    elif page_count == 1:
+                        page_names = [file_check.path.stem]
+                    else:
+                        page_names = [
                             f"{file_check.path.stem}_page{page_number}"
                             for page_number in range(1, page_count + 1)
                         ]
-                    )
                     previews = self.generate_pdf_previews(
                         file_check.path,
                         preview_dir,
