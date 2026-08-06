@@ -67,13 +67,23 @@ _OPERATOR_TRANSITIONS = {
 }
 
 
-def validate_operator_transition(current: str, target: str) -> None:
+def validate_operator_transition(
+    current: str, target: str, *, confirm_failed_processing: bool = False
+) -> None:
     """Reject state changes that cannot be initiated by an operator."""
     try:
         current_status = OrderStatus(current)
         target_status = OrderStatus(target)
     except ValueError as exc:
         raise ValueError(f"неизвестный статус перехода: {current} → {target}") from exc
+    # An operator may deliberately take responsibility for an unsuccessfully
+    # checked layout, but only through the explicit confirmed workflow.
+    if (
+        confirm_failed_processing
+        and current_status is OrderStatus.ERROR
+        and target_status is OrderStatus.ACCEPTED_FOR_PRINT
+    ):
+        return
     if target_status not in _OPERATOR_TRANSITIONS.get(current_status, set()):
         raise ValueError(
             f"недопустимый переход заказа: {current_status.value} → "

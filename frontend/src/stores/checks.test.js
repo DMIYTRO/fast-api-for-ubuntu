@@ -108,6 +108,20 @@ describe("checks store", () => {
     expect(store.canPrint).toBe(false);
   });
 
+  it("permits confirmed print only when every selected order is passed or has an error", () => {
+    const store = useChecksStore();
+    store.orders = [
+      { order_id: "100", status: "passed" },
+      { order_id: "200", status: "error" },
+      { order_id: "300", status: "processing" },
+    ];
+    store.selected = ["100", "200"];
+    expect(store.canForcePrint).toBe(true);
+
+    store.selected.push("300");
+    expect(store.canForcePrint).toBe(false);
+  });
+
   it("blocks print while PitStop is running or after a technical failure", () => {
     const store = useChecksStore();
     store.orders = [{
@@ -276,5 +290,23 @@ describe("checks store", () => {
     expect(result.map((item) => item.status)).toEqual(["prepared", "error"]);
     expect(store.selected).toEqual(["200"]);
     expect(store.returnComments).toEqual({ "200": "Причина 2" });
+  });
+
+  it("sends explicit confirmation when printing an order with an error", async () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1" };
+    store.orders = [{ order_id: "100", status: "error" }];
+    store.selected = ["100"];
+    const print = vi.spyOn(api, "preparePrint").mockResolvedValue({
+      items: [{ order_id: "100", status: "prepared" }],
+    });
+    vi.spyOn(api, "orders").mockResolvedValue({ items: store.orders });
+
+    await store.act("force-print", "");
+
+    expect(print).toHaveBeenCalledWith({
+      order_ids: ["100"], run_id: "run-1", conflict_strategy: "fail", confirm_failed_processing: true,
+    });
+    expect(store.orders[0].status).toBe("accepted_for_print");
   });
 });

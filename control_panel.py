@@ -781,6 +781,7 @@ def create_app(
                 design=payload.design,
                 design_cost=payload.design_cost,
                 conflict_strategy=payload.conflict_strategy,
+                confirm_failed_processing=payload.confirm_failed_processing,
             ),
             action,
         )

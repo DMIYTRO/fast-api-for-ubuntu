@@ -35,6 +35,7 @@ class OrderActionCommand:
     design: bool = True
     design_cost: str = "0"
     conflict_strategy: str = "fail"
+    confirm_failed_processing: bool = False
 
 
 class OrderWorkflowService:
@@ -239,8 +240,14 @@ class OrderWorkflowService:
                     and order.get("status")
                     not in {"accepted_for_print", "returned_for_rework"}
                     and not (
-                        order.get("status") in {"passed", "warning"}
-                        and pitstop_ready
+                        (
+                            order.get("status") in {"passed", "warning"}
+                            and pitstop_ready
+                        )
+                        or (
+                            command.confirm_failed_processing
+                            and order.get("status") == "error"
+                        )
                     )
                 ):
                     results.append(
@@ -317,7 +324,9 @@ class OrderWorkflowService:
                         continue
                     try:
                         validate_operator_transition(
-                            str(order.get("status", "")), expected_status
+                            str(order.get("status", "")),
+                            expected_status,
+                            confirm_failed_processing=command.confirm_failed_processing,
                         )
                     except ValueError as exc:
                         results.append(

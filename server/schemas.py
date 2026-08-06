@@ -46,3 +46,4 @@ class OrderActionRequest(BaseModel):
     design: bool = True
     design_cost: str = "0"
     conflict_strategy: Literal["fail", "replace", "rename"] = "fail"
+    confirm_failed_processing: bool = False

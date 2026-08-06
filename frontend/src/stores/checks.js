@@ -27,6 +27,7 @@ export const isOrderPrintable = (order) => {
   if (["error", "failed", "rejected", "technical_error"].includes(verdict)) return false;
   return executionStatus === "completed" && ["passed", "warning", "ok", "success"].includes(verdict);
 };
+export const isOrderForcePrintable = (order) => order?.status === "error";
 const decorateOrder = (order, runId) => {
   if (!order) return order;
   const orderId = String(order.order_id ?? order.id ?? "");
@@ -74,6 +75,10 @@ export const useChecksStore = defineStore("checks", {
     },
     selectedOrders: (state) => state.orders.filter((order) => state.selected.includes(String(order.order_id ?? order.id))),
     canPrint() { return this.selectedOrders.length > 0 && this.selectedOrders.every(isOrderPrintable); },
+    canForcePrint() {
+      return this.selectedOrders.some(isOrderForcePrintable)
+        && this.selectedOrders.every((order) => isOrderPrintable(order) || isOrderForcePrintable(order));
+    },
   },
   actions: {
     setFilter(value) { this.filter = value; localStorage.setItem("im-filter", value); },
@@ -213,8 +218,14 @@ export const useChecksStore = defineStore("checks", {
     async act(action, comment, conflictStrategy = "fail") {
       const order_ids = [...this.selected];
       const run_id = this.activeRun?.id;
-      const responses = action === "print"
-        ? [await api.preparePrint({ order_ids, run_id, conflict_strategy: conflictStrategy })]
+      const isPrint = ["print", "force-print"].includes(action);
+      const responses = isPrint
+        ? [await api.preparePrint({
+          order_ids,
+          run_id,
+          conflict_strategy: conflictStrategy,
+          confirm_failed_processing: action === "force-print",
+        })]
         : await Promise.all(order_ids.map((orderId) => api.prepareReject({
           order_ids: [orderId],
           run_id,
@@ -275,7 +286,7 @@ export const useChecksStore = defineStore("checks", {
       });
     },
     _terminalStatusForAction(action) {
-      return action === "print" ? "accepted_for_print" : "returned_for_rework";
+      return ["print", "force-print"].includes(action) ? "accepted_for_print" : "returned_for_rework";
     },
     _dropSelectionWhenPrintBecomesBlocked(id, previous, updated) {
       if (isOrderPrintable(previous) && !isOrderPrintable(updated)) {

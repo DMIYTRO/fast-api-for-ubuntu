@@ -37,12 +37,13 @@ logger = logging.getLogger("image_magic.worker")
 
 def _order_worker_count() -> int:
     """Return a bounded worker count for independent order processing."""
-    configured = os.environ.get("IMAGE_MAGIC_ORDER_WORKERS", "8")
+    available = os.cpu_count() or 1
+    configured = os.environ.get("IMAGE_MAGIC_ORDER_WORKERS", str(available))
     try:
         requested = int(configured)
     except ValueError:
-        requested = 8
-    return max(1, min(requested, os.cpu_count() or 1))
+        requested = available
+    return max(1, min(requested, available))
 
 
 class RunNotFoundError(KeyError):

@@ -222,6 +222,23 @@ class OrderWorkflowTests(unittest.TestCase):
         self.assertIn("недопустимый переход", repeated["items"][0]["message"])
         self.assertEqual(BlockingLifecycle.calls, ["print", "reject"])
 
+    def test_error_order_requires_confirmation_before_print(self):
+        self.order["status"] = "error"
+        BlockingLifecycle.release.set()
+
+        rejected = self.service.prepare(self.command, "print")
+        confirmed = self.service.prepare(
+            OrderActionCommand(
+                ("1001",), run_id="run-1", confirm_failed_processing=True
+            ),
+            "print",
+        )
+
+        self.assertEqual(rejected["items"][0]["status"], "rejected")
+        self.assertEqual(confirmed["items"][0]["status"], "prepared")
+        self.assertEqual(BlockingLifecycle.calls, ["print"])
+        self.assertEqual(self.coordinator.transitions, ["accepted_for_print"])
+
     def test_reject_is_rejected_after_rework_without_moving_files(self):
         self.order["status"] = "returned_for_rework"
 

@@ -1,0 +1,46 @@
+@baseUrl = http://127.0.0.1:8016
+@runId = <ID_ПРОВЕРКИ>
+@orderId = <НОМЕР_ЗАКАЗА>
+
+# Сначала авторизуйтесь. Пароль не храните в этом файле:
+# POST {{baseUrl}}/api/auth/login
+# Content-Type: application/json
+#
+# {
+#   "password": "<ПАРОЛЬ>"
+# }
+
+### Информация о заказе
+GET {{baseUrl}}/api/checks/{{runId}}/orders/{{orderId}}
+
+### Отправить успешно проверенный заказ в печать
+POST {{baseUrl}}/api/orders/prepare-print
+Content-Type: application/json
+
+{
+  "run_id": "{{runId}}",
+  "order_ids": ["{{orderId}}"]
+}
+
+### Отправить заказ с ошибкой в работу после подтверждения оператора
+# Используйте только для заказа со статусом "error" и при осознанном решении.
+POST {{baseUrl}}/api/orders/prepare-print
+Content-Type: application/json
+
+{
+  "run_id": "{{runId}}",
+  "order_ids": ["{{orderId}}"],
+  "confirm_failed_processing": true
+}
+
+### Вернуть заказ на доработку
+POST {{baseUrl}}/api/orders/prepare-reject
+Content-Type: application/json
+
+{
+  "run_id": "{{runId}}",
+  "order_ids": ["{{orderId}}"],
+  "comment": "Укажите причину возврата.",
+  "design": true,
+  "design_cost": "0"
+}
