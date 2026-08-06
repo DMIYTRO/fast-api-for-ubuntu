@@ -3,10 +3,16 @@ import { computed, ref } from "vue";
 const props = defineProps({ files: Array });
 const zoomed = ref(null);
 const rotation = ref({});
-const previewFiles = computed(() => (props.files || []).map((file, index) => ({
-  file,
-  label: String(file.side || "").toLowerCase() || `Файл ${index + 1}`,
-})));
+const bySide = computed(() => {
+  const files = props.files || [];
+  const sideOf = (file) => String(file.side || file.parsed?.side || "").toLowerCase();
+  const face = files.find((file) => sideOf(file) === "face") || files[0] || null;
+  const back = files.find((file) => sideOf(file) === "back") || null;
+  return [
+    { side: "face", file: face },
+    ...(back ? [{ side: "back", file: back }] : []),
+  ];
+});
 const previewUrl = (file) => file?.preview_url || (file?.id ? `/api/files/${encodeURIComponent(file.id)}/preview` : "");
 function rotate(file) { rotation.value[file.id] = ((rotation.value[file.id] || 0) + 90) % 360; }
 function imageTransform(file) {
@@ -17,14 +23,14 @@ function imageTransform(file) {
 </script>
 
 <template>
-  <div class="preview-pair" :class="{ single: previewFiles.length === 1 }">
-    <div v-for="{ label, file } in previewFiles" :key="file.id" class="preview-cell">
-      <div class="preview-label"><b>{{ label }}</b><button title="Повернуть" @click="rotate(file)">↻</button></div>
+  <div class="preview-pair" :class="{ single: bySide.length === 1 }">
+    <div v-for="{ side, file } in bySide" :key="side" class="preview-cell">
+      <div class="preview-label"><b>{{ side === "face" ? "Face" : "Back" }}</b><button v-if="file" title="Повернуть" @click="rotate(file)">↻</button></div>
       <button v-if="file && previewUrl(file)" class="preview-image" @click="zoomed = file">
-        <img :src="previewUrl(file)" :alt="`${label}: ${file.filename}`" :style="{ transform: imageTransform(file) }">
+        <img :src="previewUrl(file)" :alt="`${side}: ${file.filename}`" :style="{ transform: imageTransform(file) }">
       </button>
-      <div v-else class="preview-empty">Превью отсутствует</div>
-      <div class="preview-filename" :title="file.filename">{{ file.filename }}</div>
+      <div v-else class="preview-empty">{{ file ? "Превью отсутствует" : "Нет файла" }}</div>
+      <div v-if="file" class="preview-filename" :title="file.filename">{{ file.filename }}</div>
     </div>
   </div>
   <Teleport to="body"><div v-if="zoomed" class="lightbox" @click.self="zoomed = null"><button class="icon-button" @click="zoomed = null">×</button><img :src="previewUrl(zoomed)" :alt="zoomed.filename"></div></Teleport>
