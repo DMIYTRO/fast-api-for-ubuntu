@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
@@ -13,6 +15,9 @@ from .models import PitStopCheckResult, PitStopExecutionStatus
 from .parser import PitStopReportError, parse_pitstop_report
 from .paths import SharedPathError, mac_shared_path_to_windows
 from .transport import PitStopTransport, PitStopTransportError
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +98,10 @@ class PitStopService:
                 job_id=job_id,
             )
 
+        # The parsed result is persisted in the application database.  JSON and
+        # XML are only the transport artifacts required by PitStop, so retaining
+        # them for every successful order needlessly grows output_report.
+        self._remove_successful_report_dir(report_dir)
         return PitStopCheckResult(
             status=PitStopExecutionStatus.COMPLETED,
             profile_id=profile_id,
@@ -100,8 +109,6 @@ class PitStopService:
             checked_at=checked_at,
             input_sha256=input_sha256,
             report=report,
-            report_json_path=report_json,
-            report_xml_path=report_xml if report_xml.exists() else None,
             job_id=job_id,
         )
 
@@ -111,6 +118,17 @@ class PitStopService:
             mac_shared_root=self._settings.mac_shared_root,
             windows_shared_root=self._settings.windows_shared_root,
         )
+
+    @staticmethod
+    def _remove_successful_report_dir(report_dir: Path) -> None:
+        try:
+            shutil.rmtree(report_dir)
+        except OSError:
+            # A failed cleanup must not turn a completed preflight into an
+            # operator-visible failure. The next run will use another job dir.
+            logger.warning(
+                "Не удалось удалить временный отчёт PitStop: %s", report_dir
+            )
 
 
 def _sha256(path: Path) -> str:

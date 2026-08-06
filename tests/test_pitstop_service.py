@@ -55,7 +55,9 @@ class PitStopServiceTests(unittest.TestCase):
 
             self.assertEqual(result.status, PitStopExecutionStatus.COMPLETED)
             self.assertEqual(result.report.counts.warnings, 1)
-            self.assertTrue(result.report_json_path.exists())
+            self.assertIsNone(result.report_json_path)
+            self.assertIsNone(result.report_xml_path)
+            self.assertEqual(list(report_root.iterdir()), [])
             command, timeout = transport.commands[0]
             self.assertIn("-reportJSON", command)
             self.assertIn("-reportXML", command)
