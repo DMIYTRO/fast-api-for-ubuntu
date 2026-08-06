@@ -3,6 +3,7 @@ import unittest
 import os
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
@@ -413,6 +414,26 @@ class ControlPanelTests(unittest.TestCase):
             self.client.get(prepared_item["previews"][0]["url"]).content,
             b"preview-image",
         )
+        thumbnail = self.root / "output_report" / "history_thumbnails" / "test.webp"
+        thumbnail.parent.mkdir(parents=True)
+        thumbnail.write_bytes(b"thumbnail-image")
+        with self.client.app.state.database.session_factory() as session:
+            file = session.scalar(select(FileResult).where(FileResult.order_result_id == order.id))
+            self.assertIsNotNone(file)
+            source_version = Path(file.preview_path).stat().st_mtime_ns
+        self.assertEqual(
+            prepared_item["previews"][0]["thumbnail_url"],
+            f"/api/order-history/{prepared_item['id']}/previews/0/thumbnail?v={source_version}",
+        )
+        with patch("control_panel.get_history_thumbnail", return_value=thumbnail) as create_thumbnail:
+            thumbnail_response = self.client.get(prepared_item["previews"][0]["thumbnail_url"])
+        self.assertEqual(thumbnail_response.status_code, 200)
+        self.assertEqual(thumbnail_response.content, b"thumbnail-image")
+        self.assertEqual(
+            thumbnail_response.headers["cache-control"],
+            "private, max-age=31536000, immutable",
+        )
+        create_thumbnail.assert_called_once()
 
         failed_history = self.client.get("/api/order-history", params={"status": "failed"})
         self.assertEqual(failed_history.status_code, 200)

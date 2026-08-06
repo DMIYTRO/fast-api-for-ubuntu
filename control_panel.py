@@ -23,6 +23,7 @@ from sqlalchemy import desc, func, select
 
 from config.profiles import DEFAULT_DIRECTION, PROFILES
 from core.return_reasons import load_return_reasons
+from core.preview_thumbnail import get_history_thumbnail
 from server.auth import AuthService, create_auth_router, require_session
 from server.database import Database, configure_database, get_db, upgrade_database
 from server.errors import APIError, error_payload, install_error_handlers
@@ -853,16 +854,24 @@ def create_app(
             items = []
             for item in actions:
                 order = item.order_result
-                previews = [
-                    {
-                        "side": file.side,
-                        "url": f"/api/order-history/{item.id}/previews/{index}",
-                    }
-                    for index, file in enumerate(order.files)
-                    if _safe_history_preview_path(
+                previews = []
+                for index, file in enumerate(order.files):
+                    source = _safe_history_preview_path(
                         order.run.input_path, file.preview_path
-                    ) is not None
-                ]
+                    )
+                    if source is None:
+                        continue
+                    preview_url = f"/api/order-history/{item.id}/previews/{index}"
+                    previews.append(
+                        {
+                            "side": file.side,
+                            "url": preview_url,
+                            # The source mtime makes the long-lived immutable
+                            # browser cache safe when an operator replaces a
+                            # generated preview at the same path.
+                            "thumbnail_url": f"{preview_url}/thumbnail?v={source.stat().st_mtime_ns}",
+                        }
+                    )
                 items.append(
                     {
                         "id": item.id,
@@ -903,6 +912,37 @@ def create_app(
             if target is None:
                 raise APIError(404, "preview_not_found", "Превью не найдено.")
             return FileResponse(target)
+
+    @application.get(
+        "/api/order-history/{action_id}/previews/{file_index}/thumbnail",
+        dependencies=[Depends(protected)],
+    )
+    def order_history_preview_thumbnail(
+        request: Request, action_id: int, file_index: int
+    ) -> FileResponse:
+        with request.app.state.database.session_factory() as session:
+            action = session.get(OrderAction, action_id)
+            if action is None:
+                raise APIError(404, "history_not_found", "Запись истории не найдена.")
+            files = list(action.order_result.files)
+            if file_index < 0 or file_index >= len(files):
+                raise APIError(404, "preview_not_found", "Превью не найдено.")
+            root = Path(action.order_result.run.input_path).resolve()
+            source = _safe_history_preview_path(root, files[file_index].preview_path)
+            if source is None:
+                raise APIError(404, "preview_not_found", "Превью не найдено.")
+            try:
+                thumbnail = get_history_thumbnail(source, run_root=root)
+            except FileNotFoundError as exc:
+                raise APIError(503, "thumbnail_unavailable", "Миниатюра превью временно недоступна.") from exc
+            except Exception:
+                logger.exception("history.thumbnail_failed action_id=%s file_index=%s", action_id, file_index)
+                raise APIError(503, "thumbnail_unavailable", "Не удалось создать миниатюру превью.")
+            return FileResponse(
+                thumbnail,
+                media_type="image/webp",
+                headers={"Cache-Control": "private, max-age=31536000, immutable"},
+            )
 
     @application.get(
         "/api/checks/{run_id}/export.json", dependencies=[Depends(protected)]

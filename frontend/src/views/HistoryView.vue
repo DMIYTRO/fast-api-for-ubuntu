@@ -41,7 +41,7 @@ onMounted(load);
     <p v-if="error" class="page-error">{{ error }}</p>
     <section v-if="items.length" class="history-list">
       <article v-for="item in items" :key="item.id" class="history-item surface">
-        <div v-if="item.previews.length" class="history-previews"><figure v-for="(preview, index) in item.previews" :key="preview.url" class="history-preview"><a :href="preview.url" target="_blank" :title="`Открыть превью заказа ${item.order_id}`"><img :src="preview.url" :alt="`Превью ${preview.side || index + 1} заказа ${item.order_id}`"></a><figcaption>{{ preview.side === "face" ? "Лицо" : preview.side === "back" ? "Оборот" : `Макет ${index + 1}` }}</figcaption></figure></div>
+        <div v-if="item.previews.length" class="history-previews"><figure v-for="(preview, index) in item.previews" :key="preview.url" class="history-preview"><a :href="preview.url" target="_blank" :title="`Открыть превью заказа ${item.order_id}`"><img :src="preview.thumbnail_url" loading="lazy" decoding="async" :alt="`Превью ${preview.side || index + 1} заказа ${item.order_id}`"></a><figcaption>{{ preview.side === "face" ? "Лицо" : preview.side === "back" ? "Оборот" : `Макет ${index + 1}` }}</figcaption></figure></div>
         <div v-else class="history-preview"><span>Нет превью</span></div>
         <div class="history-data"><strong>№ {{ item.order_id }}</strong><span>Клиент: {{ item.customer_id || "—" }}</span><span :class="`history-action ${item.action}`">{{ label[item.action] }}</span><span v-if="item.status === 'failed'" class="history-status failed">Операция не выполнена</span><small>{{ formatDate(item.created_at) }}</small><p v-if="item.comment">{{ item.comment }}</p></div>
       </article>
