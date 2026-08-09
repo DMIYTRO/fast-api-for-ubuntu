@@ -1,3 +1,4 @@
+from pathlib import Path
 """
 Ядро визуальной разметки и генерации превью изображений.
 """
@@ -204,4 +205,9 @@ def generate_preview(
     cmd.extend(["-resize", f"{PREVIEW_MAX_PIXELS}x{PREVIEW_MAX_PIXELS}>"])
     cmd.append(output_preview_path)
     run_command(cmd, check=True)
+    try:
+        from control_panel import get_cached_preview_path
+        get_cached_preview_path(Path(output_preview_path))
+    except Exception:
+        pass
     return output_preview_path
