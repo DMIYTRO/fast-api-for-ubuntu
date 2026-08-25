@@ -1,6 +1,7 @@
-# Установка и тестирование Image Magic Batch Processor
+# Установка, запуск и тестирование Image Magic
 
-Этот документ содержит полный список зависимостей и порядок запуска пакетного обработчика на другом компьютере.
+Этот документ описывает консольный обработчик, локальный веб-сервис и
+production-схему с systemd и Nginx.
 
 ## 1. Что необходимо перенести
 
@@ -61,7 +62,7 @@ brew install python imagemagick ghostscript
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 cd frontend
-npm install
+npm ci
 npm run build
 cd ..
 ```
@@ -76,11 +77,10 @@ gs --version
 
 ### Подготовка веб-сервиса
 
-Для текущего тестового сервера задан постоянный пароль: `111`.
-После тестового этапа задайте `IMAGE_MAGIC_PASSWORD_HASH` и удалите этот fallback.
-
 ```bash
 .venv/bin/alembic upgrade head
+.venv/bin/python manage.py set-password
+export IMAGE_MAGIC_PASSWORD_HASH='ХЕШ_ИЗ_ПРЕДЫДУЩЕЙ_КОМАНДЫ'
 .venv/bin/python control_panel.py
 ```
 
@@ -94,13 +94,23 @@ gs --version
 tail -f logs/image-magic.log
 ```
 Доступные рабочие каталоги ограничиваются `IMAGE_MAGIC_ALLOWED_ROOTS`.
+Пароль в открытом виде в коде, Git или unit-файле хранить нельзя.
 
 ## 4. Установка на Ubuntu/Debian
 
 ```bash
 sudo apt update
-sudo apt install python3 imagemagick ghostscript
-python3 -m pip install -r requirements.txt
+sudo apt install python3 python3-venv imagemagick ghostscript nginx
+
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+
+cd frontend
+npm ci
+npm run build
+cd ..
+
+.venv/bin/alembic upgrade head
 ```
 
 Проверка:
@@ -112,6 +122,53 @@ gs --version
 ```
 
 На некоторых версиях Linux команда ImageMagick может называться `identify`, а не `magick`. Чтение метаданных поддерживает оба варианта, но создание PDF требует команды `magick`. Для полного цикла рекомендуется ImageMagick 7.
+
+### Production на Ubuntu-сервере
+
+Текущая схема проекта на `10.20.2.104`:
+
+```text
+клиент -> Nginx :80 -> Uvicorn/FastAPI :8000 -> control_panel:app
+```
+
+Файлы конфигурации:
+
+```text
+/etc/systemd/system/fastapi-app.service
+/etc/nginx/sites-available/fastapi-app
+/etc/nginx/sites-enabled/fastapi-app
+```
+
+После обновления Python-кода, frontend или миграций:
+
+```bash
+git status --short
+git pull --ff-only origin main
+
+cd frontend
+npm ci
+npm run build
+cd ..
+
+.venv/bin/alembic upgrade head
+sudo systemctl restart fastapi-app
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Проверка:
+
+```bash
+systemctl status fastapi-app --no-pager
+systemctl status nginx --no-pager
+curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/login
+curl -fsS -o /dev/null -w '%{http_code}\n' http://10.20.2.104/login
+journalctl -u fastapi-app -n 100 --no-pager
+```
+
+Рабочая страница: `http://10.20.2.104/login?next=/`. Порт `8006` используется
+только при ручном локальном запуске `control_panel.py`; production-сервис
+слушает порт `8000` за Nginx.
 
 ## 5. Подготовка тестовой папки
 

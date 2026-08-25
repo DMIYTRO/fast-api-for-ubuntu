@@ -54,11 +54,27 @@ CMYK остаётся рекомендуемой моделью для печа�
 
 PyMuPDF объединяет уже созданные PDF-страницы прямым копированием через `insert_pdf()` без растеризации, изменения размеров или преобразования цветов. Ghostscript сохраняется для контрольной проверки открытия и рендеринга итогового PDF.
 
-## Структура проекта
+## Архитектура и структура проекта
+
+Веб-сервис состоит из Vue-интерфейса, FastAPI-приложения и фонового обработчика:
 
 ```text
-Image-Magic/
-├── process_orders.py               # Полный пакетный процесс
+Браузер
+  -> Nginx :80 (production)
+  -> Uvicorn/FastAPI :8000
+  -> сервисы обработки
+  -> ImageMagick, Ghostscript, PitStop и Sborka
+  -> SQLite и рабочие папки заказов
+```
+
+При локальной разработке Nginx не требуется: `control_panel.py` запускает
+FastAPI напрямую на `127.0.0.1:8006`.
+
+```text
+v2-web-platform-FastApi/
+├── control_panel.py                # FastAPI, API и раздача собранного frontend
+├── process_orders.py               # Консольный пакетный процесс
+├── frontend/src/                   # Vue 3, Pinia и клиент API
 ├── processing/
 │   ├── batch_processor.py          # Проверка заказов и создание PDF
 │   ├── filename_parser.py          # Разбор имён файлов
@@ -71,18 +87,29 @@ Image-Magic/
 │   ├── preview_generator.py        # Превью и контрольные рамки
 │   ├── report_builder.py           # HTML-отчёт
 │   └── history_db.py               # SQLite-аудит
+├── services/                       # Запуски, действия, файлы, Sborka и PitStop
+├── server/                         # Настройки, авторизация, БД и API-модели
+├── alembic/                        # Миграции базы данных
 ├── tests/                          # Автоматические тесты
 ├── requirements.txt
 └── INSTALL_AND_TEST.md             # Подробная установка и проверка
 ```
 
-## Установка
+## Первичная установка
 
-На macOS:
+Для веб-сервиса нужен Python 3.10+, Node.js 20+, ImageMagick и Ghostscript.
+После установки системных программ выполните из корня проекта:
 
 ```bash
-brew install python imagemagick ghostscript
-python3 -m pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+
+cd frontend
+npm ci
+npm run build
+cd ..
+
+.venv/bin/alembic upgrade head
 ```
 
 Проверка зависимостей:
@@ -93,36 +120,91 @@ magick -version
 gs --version
 ```
 
-## Запуск
+## Локальный запуск веб-сервиса
+
+Создайте хеш пароля и сохраните его только в переменной окружения:
 
 ```bash
-python3 process_orders.py --input "/путь/к/папке/с/макетами"
-```
-
-### Веб-интерфейс и API
-
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-cd frontend && npm install && npm run build && cd ..
-
-.venv/bin/alembic upgrade head
 .venv/bin/python manage.py set-password
 export IMAGE_MAGIC_PASSWORD_HASH='ХЕШ_ИЗ_ПРЕДЫДУЩЕЙ_КОМАНДЫ'
 .venv/bin/python control_panel.py
 ```
 
-После запуска доступны:
+Локальный адрес: `http://127.0.0.1:8006/login`. Остановка — `Ctrl+C`.
 
-- `http://127.0.0.1:8006/login` — вход с паролем, заданным при установке;
-- `http://127.0.0.1:8006/` — единый рабочий пульт;
+При необходимости задайте рабочие каталоги перед запуском:
+
+```bash
+export IMAGE_MAGIC_ALLOWED_ROOTS="/папка/с/заказами"
+export IMAGE_MAGIC_INPUT_DIR="/папка/с/заказами/входящие"
+```
+
+Несколько разрешённых корней разделяются `:` на Linux/macOS. Относительный
+путь пользователя разрешается внутри `IMAGE_MAGIC_INPUT_DIR`, а выход за
+пределы `IMAGE_MAGIC_ALLOWED_ROOTS` блокируется.
+
+## Production на сервере `10.20.2.104`
+
+Рабочий адрес проекта: `http://10.20.2.104/login?next=/`.
+
+Production запускается не командой `control_panel.py`, а systemd-сервисом:
+
+```text
+/etc/systemd/system/fastapi-app.service
+  -> uvicorn control_panel:app --host 0.0.0.0 --port 8000
+
+/etc/nginx/sites-enabled/fastapi-app
+  -> proxy_pass http://127.0.0.1:8000
+```
+
+Nginx принимает запросы на порту `80`, передаёт их FastAPI на порт `8000` и
+сохраняет исходные заголовки клиента. Тайм-аут чтения `300s` позволяет
+выполнять долгие проверки и поддерживать SSE-соединение с прогрессом.
+
+Обновление уже установленного сервера выполняется из корня проекта:
+
+```bash
+git pull --ff-only origin main
+
+cd frontend
+npm ci
+npm run build
+cd ..
+
+.venv/bin/alembic upgrade head
+sudo systemctl restart fastapi-app
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Не запускайте `git pull` при наличии незакоммиченных изменений на сервере:
+сначала проверьте `git status --short`. Пароли, SSH-ключи и API-токены нельзя
+хранить в репозитории или передавать в командной строке deployment-скриптов.
+
+Проверка production:
+
+```bash
+systemctl is-active fastapi-app
+systemctl is-active nginx
+curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/login
+curl -fsS -o /dev/null -w '%{http_code}\n' http://10.20.2.104/login
+journalctl -u fastapi-app -n 100 --no-pager
+```
+
+## Веб-интерфейс и API
+
+В локальном режиме замените `http://10.20.2.104` на
+`http://127.0.0.1:8006`. Основные адреса:
+
+- `http://10.20.2.104/login?next=/` — вход в production;
+- `http://10.20.2.104/` — единый рабочий пульт;
 - `POST /api/checks` — запустить фоновую проверку папки;
 - `GET /api/checks` — список запусков;
 - `GET /api/checks/{id}` — состояние и результаты запуска;
 - `GET /api/checks/{id}/events` — поток событий SSE;
 - `POST /api/checks/{id}/cancel` — отменить проверку;
 - `GET /runs/{id}/report` — интерактивный отчёт;
-- `http://127.0.0.1:8006/docs` — интерактивная документация API.
+- `/docs` — интерактивная документация API.
 
 Все API-маршруты, исходники, PDF и превью защищены серверной сессией.
 Сессии и результаты сохраняются в `image_magic.db`; незавершённый запуск
@@ -192,18 +274,15 @@ export IMAGE_MAGIC_LOG_HEARTBEAT_SECONDS="60"
 Значение `1` отключает соответствующую параллельность. Число потоков для
 заказов не может превышать число доступных экземпляру ядер.
 
-По умолчанию панель работает с папками внутри проекта. Рабочие пути можно
-настроить переменными окружения:
+В production рабочие корни задаются переменными окружения systemd-сервиса.
+Исходные файлы не изменяются; результаты создаются в `PDF`, `Previews`,
+`Troubles`, `Processed` и `output_report` внутри выбранной папки.
+
+## Консольная обработка без веб-интерфейса
 
 ```bash
-export IMAGE_MAGIC_ALLOWED_ROOTS="/папка/с/заказами"
-export IMAGE_MAGIC_INPUT_DIR="/папка/с/заказами/входящие"
-.venv/bin/python control_panel.py
+.venv/bin/python process_orders.py --input "/путь/к/папке/с/макетами"
 ```
-
-Несколько разрешённых корней разделяются системным разделителем путей
-(`:` на macOS/Linux). Исходные файлы не изменяются; результаты создаются в
-`PDF`, `Previews`, `Troubles` и `output_report` внутри выбранной папки.
 
 Направление выбирается параметром профиля:
 

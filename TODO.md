@@ -1,9 +1,9 @@
-# Image Magic — TODO и команды
+# Image Magic — быстрые команды
 
 ## Быстрый запуск веб-интерфейса
 
 ```bash
-cd "/Users/admin/Documents/Image Magic"
+cd "/home/ubuntu/v2-web-platform-FastApi"
 
 .venv/bin/python manage.py set-password
 export IMAGE_MAGIC_PASSWORD_HASH='ХЕШ_ИЗ_ПРЕДЫДУЩЕЙ_КОМАНДЫ'
@@ -15,13 +15,32 @@ export IMAGE_MAGIC_PASSWORD_HASH='ХЕШ_ИЗ_ПРЕДЫДУЩЕЙ_КОМАНД�
 
 Остановить сервер: `Ctrl+C`.
 
+## Production на `10.20.2.104`
+
+Адрес интерфейса: <http://10.20.2.104/login?next=/>
+
+```bash
+cd "/home/ubuntu/v2-web-platform-FastApi"
+git status --short
+
+sudo systemctl restart fastapi-app
+sudo nginx -t
+sudo systemctl reload nginx
+
+systemctl is-active fastapi-app
+systemctl is-active nginx
+```
+
+Production работает по схеме `Nginx :80 -> Uvicorn :8000`. Локальный порт
+`8006` к Nginx не относится.
+
 ## Пересборка интерфейса после изменений
 
 ```bash
-cd "/Users/admin/Documents/Image Magic/frontend"
+cd "/home/ubuntu/v2-web-platform-FastApi/frontend"
 npm run build
 
-cd "/Users/admin/Documents/Image Magic"
+cd "/home/ubuntu/v2-web-platform-FastApi"
 export IMAGE_MAGIC_PASSWORD_HASH='ХЕШ_ИЗ_ПРЕДЫДУЩЕЙ_КОМАНДЫ'
 .venv/bin/python control_panel.py
 ```
@@ -29,13 +48,13 @@ export IMAGE_MAGIC_PASSWORD_HASH='ХЕШ_ИЗ_ПРЕДЫДУЩЕЙ_КОМАНД�
 ## Первичная установка
 
 ```bash
-cd "/Users/admin/Documents/Image Magic"
+cd "/home/ubuntu/v2-web-platform-FastApi"
 
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 
 cd frontend
-npm install
+npm ci
 npm run build
 cd ..
 
