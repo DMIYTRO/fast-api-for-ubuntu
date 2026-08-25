@@ -121,23 +121,24 @@ class OrderWorkflowService:
         input_path: Path, transition: Any, preview_name: str, order_id: str
     ) -> list[Path]:
         """Find the previews after a return transition for one batch upload."""
-        paths = [
-            Path(path) for path in transition.preview_paths if Path(path).is_file()
-        ]
-        if preview_name and not any(path.name == preview_name for path in paths):
+        paths = [Path(path) for path in transition.preview_paths if Path(path).is_file()]
+        matching = [path for path in paths if path.name == preview_name]
+        if matching:
+            return matching
+        if preview_name:
             custom_preview = custom_return_preview_path(
                 order_id, input_path=input_path
             )
             collage = input_path / "Previews" / "Return" / preview_name
             if custom_preview is not None and custom_preview.name == preview_name:
-                paths.append(custom_preview)
+                return [custom_preview]
             elif not collage.is_file():
                 raise FileLifecycleError(
                     f"Не найдено превью для загрузки: {preview_name}"
                 )
             else:
-                paths.append(collage)
-        return paths
+                return [collage]
+        raise FileLifecycleError("Не сформировано превью для возврата в Sborka.")
 
     @staticmethod
     def _remove_uploaded_previews(paths: list[Path]) -> None:
@@ -354,13 +355,14 @@ class OrderWorkflowService:
                                 files=previous_order.get("files"),
                             )
                         except Exception as exc:
-                            logger.warning(
-                                "return.preview_unavailable run_id=%s order_id=%s error=%s",
-                                run["id"],
-                                order_id,
-                                exc,
+                            results.append(
+                                {
+                                    "order_id": order_id,
+                                    "status": "error",
+                                    "message": str(exc),
+                                }
                             )
-                            return_preview_name = ""
+                            continue
                     action_record = OrderAction(
                         order_result_id=stored.id,
                         action=action,
@@ -483,8 +485,6 @@ class OrderWorkflowService:
                                 prepress_result, ensure_ascii=False
                             )
                         session.commit()
-                        if upload_paths:
-                            self._remove_uploaded_previews(upload_paths)
                         results.append(
                             {
                                 "order_id": order_id,

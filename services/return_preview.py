@@ -62,9 +62,28 @@ def create_return_preview_collage(
     if not normalized_order_id or Path(normalized_order_id).name != normalized_order_id:
         raise ValueError("Номер заказа не должен быть пустым или содержать путь.")
 
-    face = Path(face_preview_path)
-    back = Path(back_preview_path)
-    missing = [str(item) for item in (face, back) if not item.is_file()]
+    return create_return_preview_sheet(
+        order_id,
+        input_path=input_path,
+        preview_paths=(face_preview_path, back_preview_path),
+    )
+
+
+def create_return_preview_sheet(
+    order_id: str,
+    *,
+    input_path: Path,
+    preview_paths: Iterable[Path],
+) -> Path:
+    """Create one deterministic Sborka preview from ordered pages/sides."""
+    normalized_order_id = str(order_id).strip()
+    if not normalized_order_id or Path(normalized_order_id).name != normalized_order_id:
+        raise ValueError("Номер заказа не должен быть пустым или содержать путь.")
+
+    previews = [Path(item) for item in preview_paths]
+    if not previews:
+        raise ReturnPreviewCollageError("Не переданы файлы превью для коллажа.")
+    missing = [str(item) for item in previews if not item.is_file()]
     if missing:
         raise ReturnPreviewCollageError(
             "Не найдены файлы превью для коллажа: " + ", ".join(missing)
@@ -92,8 +111,7 @@ def create_return_preview_collage(
 
     command = [
         magick,
-        *side_arguments(face),
-        *side_arguments(back),
+        *(argument for path in previews for argument in side_arguments(path)),
         "-background",
         "white",
         "+smush",
@@ -192,7 +210,14 @@ def prepare_return_preview_name(
         raise ReturnPreviewNotFoundError(
             f"Не найдено сформированное превью для заказа №{order_id} в {preview_dir}"
         )
-    raise ReturnPreviewNotFoundError(
-        f"Для заказа №{order_id} найдено несколько превью без пары face/back: "
-        f"{', '.join(sorted(candidates))}."
-    )
+    ordered = [candidates[name] for name in sorted(candidates, key=_preview_sort_key)]
+    return create_return_preview_sheet(
+        order_id,
+        input_path=input_path,
+        preview_paths=ordered,
+    ).name
+
+
+def _preview_sort_key(filename: str) -> tuple[int, str]:
+    match = re.search(r"(?:page|стр(?:аница)?)[_-]?(\d+)", filename, re.IGNORECASE)
+    return (int(match.group(1)) if match else 0, filename.lower())

@@ -8,7 +8,6 @@ import asyncio
 import json
 import logging
 import os
-import hashlib
 from pathlib import Path, PureWindowsPath
 import resource
 import shutil
@@ -24,7 +23,6 @@ from sqlalchemy import desc, func, select
 
 from config.profiles import DEFAULT_DIRECTION, PROFILES
 from core.return_reasons import load_return_reasons
-from core.tool_runner import run_command
 from server.auth import AuthService, create_auth_router, require_session
 from server.database import Database, configure_database, get_db, upgrade_database
 from server.errors import APIError, error_payload, install_error_handlers
@@ -69,7 +67,8 @@ except ImportError:  # The in-memory fallback keeps development imports usable.
 PROJECT_DIR = Path(__file__).resolve().parent
 FRONTEND_DIST = PROJECT_DIR / "frontend" / "dist"
 LEGACY_UI_PATH = PROJECT_DIR / "web_ui" / "control-panel.html"
-DEFAULT_PORT = 8000
+DEFAULT_HOST = os.environ.get("IMAGE_MAGIC_HOST", "127.0.0.1")
+DEFAULT_PORT = int(os.environ.get("IMAGE_MAGIC_PORT", "8006"))
 logger = logging.getLogger("image_magic.web")
 
 
@@ -84,146 +83,6 @@ def _configured_roots() -> tuple[Path, ...]:
 
 
 ALLOWED_ROOTS = _configured_roots()
-
-PREVIEW_CACHE_DIR = Path(
-    os.environ.get("IMAGE_MAGIC_PREVIEW_CACHE_DIR", "/var/cache/fastapi-previews")
-).expanduser().resolve()
-
-
-def get_cached_preview_path(source_path: Path) -> Path:
-    """Return a path to a cached local copy of a preview file on internal storage.
-
-    If source_path is PNG, converts/compresses it to an optimized JPEG file
-    in PREVIEW_CACHE_DIR, reducing file size by 4.5x for near-instant loading.
-    """
-    if not source_path or not source_path.is_file():
-        return source_path
-
-    try:
-        PREVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        stat = source_path.stat()
-        key_raw = f"{source_path.resolve()}_{stat.st_mtime_ns}_{stat.st_size}"
-        cache_key = hashlib.md5(key_raw.encode("utf-8")).hexdigest()
-        
-        suffix = source_path.suffix.lower()
-        if suffix in (".png", ".tiff", ".tif"):
-            cached_file = PREVIEW_CACHE_DIR / f"{cache_key}.jpg"
-            if cached_file.is_file() and cached_file.stat().st_size > 0:
-                return cached_file
-
-            temp_cached = PREVIEW_CACHE_DIR / f"{cache_key}.tmp.{os.getpid()}.jpg"
-            magick = shutil.which("magick") or shutil.which("convert")
-            if magick:
-                try:
-                    run_command([magick, str(source_path), "-quality", "82", str(temp_cached)], check=True)
-                    if temp_cached.is_file() and temp_cached.stat().st_size > 0:
-                        os.replace(temp_cached, cached_file)
-                        return cached_file
-                except Exception as exc:
-                    logger.warning("JPEG compression fallback for %s: %s", source_path, exc)
-
-        cached_file = PREVIEW_CACHE_DIR / f"{cache_key}{suffix}"
-        if cached_file.is_file() and cached_file.stat().st_size == stat.st_size:
-            return cached_file
-
-        temp_cached = PREVIEW_CACHE_DIR / f"{cache_key}.tmp.{os.getpid()}"
-        shutil.copyfile(source_path, temp_cached)
-        os.replace(temp_cached, cached_file)
-        return cached_file
-    except Exception as exc:
-        logger.warning("Failed to cache preview locally for %s: %s", source_path, exc)
-        return source_path
-
-    try:
-        PREVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        stat = source_path.stat()
-        key_raw = f"{source_path.resolve()}_{stat.st_mtime_ns}_{stat.st_size}"
-        cache_key = hashlib.md5(key_raw.encode("utf-8")).hexdigest()
-        
-        suffix = source_path.suffix.lower()
-        print(f"DEBUG: suffix={suffix}")
-        if suffix in (".png", ".tiff", ".tif"):
-            cached_file = PREVIEW_CACHE_DIR / f"{cache_key}.jpg"
-            if cached_file.is_file() and cached_file.stat().st_size > 0:
-                print(f"DEBUG: returning existing jpg {cached_file}")
-                return cached_file
-
-            temp_cached = PREVIEW_CACHE_DIR / f"{cache_key}.tmp.{os.getpid()}.jpg"
-            magick = shutil.which("magick") or shutil.which("convert")
-            print(f"DEBUG: magick={magick}")
-            if magick:
-                try:
-                    print(f"DEBUG: running magick on {source_path}")
-                    run_command([magick, str(source_path), "-quality", "82", str(temp_cached)], check=True)
-                    print(f"DEBUG: temp_cached exists={temp_cached.is_file()}")
-                    if temp_cached.is_file() and temp_cached.stat().st_size > 0:
-                        os.replace(temp_cached, cached_file)
-                        print(f"DEBUG: converted and returning jpg {cached_file}")
-                        return cached_file
-                except Exception as exc:
-                    print(f"DEBUG: magick exc={exc}")
-                    logger.warning("JPEG compression fallback for %s: %s", source_path, exc)
-
-        cached_file = PREVIEW_CACHE_DIR / f"{cache_key}{suffix}"
-        print(f"DEBUG: falling back to raw {cached_file}")
-        if cached_file.is_file() and cached_file.stat().st_size == stat.st_size:
-            return cached_file
-
-        temp_cached = PREVIEW_CACHE_DIR / f"{cache_key}.tmp.{os.getpid()}"
-        shutil.copyfile(source_path, temp_cached)
-        os.replace(temp_cached, cached_file)
-        return cached_file
-    except Exception as exc:
-        logger.warning("Failed to cache preview locally for %s: %s", source_path, exc)
-        return source_path
-
-    try:
-        PREVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        stat = source_path.stat()
-        key_raw = f"{source_path.resolve()}_{stat.st_mtime_ns}_{stat.st_size}"
-        cache_key = hashlib.md5(key_raw.encode("utf-8")).hexdigest()
-        
-        suffix = source_path.suffix.lower()
-        if suffix in (".png", ".tiff", ".tif"):
-            cached_file = PREVIEW_CACHE_DIR / f"{cache_key}.jpg"
-            if cached_file.is_file() and cached_file.stat().st_size > 0:
-                return cached_file
-
-            temp_cached = PREVIEW_CACHE_DIR / f"{cache_key}.tmp.{os.getpid()}.jpg"
-            magick = shutil.which("magick") or shutil.which("convert")
-            if magick:
-                try:
-                    run_command([magick, str(source_path), "-quality", "82", str(temp_cached)], check=True)
-                    if temp_cached.is_file() and temp_cached.stat().st_size > 0:
-                        os.replace(temp_cached, cached_file)
-                        return cached_file
-                except Exception as exc:
-                    logger.warning("JPEG compression fallback for %s: %s", source_path, exc)
-
-        cached_file = PREVIEW_CACHE_DIR / f"{cache_key}{suffix}"
-        if cached_file.is_file() and cached_file.stat().st_size == stat.st_size:
-            return cached_file
-
-        temp_cached = PREVIEW_CACHE_DIR / f"{cache_key}.tmp.{os.getpid()}"
-        shutil.copyfile(source_path, temp_cached)
-        os.replace(temp_cached, cached_file)
-        return cached_file
-    except Exception as exc:
-        logger.warning("Failed to cache preview locally for %s: %s", source_path, exc)
-        return source_path
-
-def serve_cached_preview_response(source_path: Path) -> FileResponse:
-    """Cache the preview file locally and return FileResponse with X-Accel-Redirect for Nginx."""
-    cached_path = get_cached_preview_path(source_path)
-    if _is_inside(cached_path, PREVIEW_CACHE_DIR):
-        rel = cached_path.relative_to(PREVIEW_CACHE_DIR)
-        return FileResponse(
-            cached_path,
-            headers={"X-Accel-Redirect": f"/internal-cache/{rel}"}
-        )
-    return FileResponse(cached_path)
-
-
 DEFAULT_INPUT_DIR = Path(
     os.environ.get("IMAGE_MAGIC_INPUT_DIR", PROJECT_DIR / "input_files")
 ).expanduser().resolve()
@@ -884,7 +743,7 @@ def create_app(
                 (path for path in previews if side and side in Path(path).stem),
                 previews[0] if previews else None,
             )
-        return serve_cached_preview_response(_safe_result_path(run, preview))
+        return FileResponse(_safe_result_path(run, preview))
 
     @application.get(
         "/api/checks/{run_id}/orders/{order_id}/return-preview",
@@ -903,7 +762,7 @@ def create_app(
                 "preview_not_found",
                 "Пользовательское превью не загружено.",
             )
-        return serve_cached_preview_response(preview)
+        return FileResponse(preview)
 
     @application.post(
         "/api/checks/{run_id}/orders/{order_id}/return-preview",
@@ -1029,7 +888,10 @@ def create_app(
     def prepare_reject(
         request: Request, payload: OrderActionRequest
     ) -> dict[str, Any]:
-        return request.app.state.order_workflow.submit(
+        # Return the final result to the dashboard.  Returning ``pending`` here
+        # made the UI refresh before the Sborka request and file transition
+        # finished, leaving stale orders selected on completed runs.
+        return request.app.state.order_workflow.prepare(
             OrderActionCommand(
                 order_ids=tuple(payload.order_ids),
                 run_id=payload.run_id,
@@ -1136,7 +998,7 @@ def create_app(
             )
             if target is None:
                 raise APIError(404, "preview_not_found", "Превью не найдено.")
-            return serve_cached_preview_response(target)
+            return FileResponse(target)
 
     @application.get(
         "/api/checks/{run_id}/export.json", dependencies=[Depends(protected)]
@@ -1179,4 +1041,4 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=DEFAULT_PORT)
+    uvicorn.run(app, host=DEFAULT_HOST, port=DEFAULT_PORT)

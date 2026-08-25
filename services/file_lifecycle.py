@@ -174,6 +174,12 @@ class FileLifecycle:
         for source, destination in planned:
             target = destination
             reused = False
+            # An already processed order can legitimately point at the final
+            # destination.  Treat that move as a no-op: with the replace
+            # strategy, unlinking the destination would also delete source.
+            if source.resolve() == destination.resolve():
+                resolved.append((source, destination, True))
+                continue
             if destination.exists():
                 if reuse_identical and filecmp.cmp(source, destination, shallow=False):
                     reused = True
@@ -188,6 +194,9 @@ class FileLifecycle:
         completed: list[tuple[Path, Path, bool]] = []
         try:
             for source, destination, reused in resolved:
+                if source.resolve() == destination.resolve():
+                    completed.append((source, destination, True))
+                    continue
                 if destination.exists():
                     if reused:
                         # An earlier check may already have copied this same

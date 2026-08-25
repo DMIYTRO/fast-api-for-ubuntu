@@ -165,6 +165,11 @@ def build_rework_sender(
             raise SborkaIntegrationError(
                 f"Sborka вернула HTTP {status}: {body or '(пустой ответ)'}"
             )
+        if not body.strip():
+            raise SborkaIntegrationError(
+                "Sborka вернула пустой ответ на возврат заказа; "
+                "статус заказа не подтверждён."
+            )
         try:
             response: Any = json.loads(body) if body else {}
         except json.JSONDecodeError:

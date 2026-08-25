@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import shutil
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
@@ -46,9 +47,18 @@ class PitStopService:
         self._settings = settings
         self._profiles = profiles
         self._transport = transport
+        # PitStopServerCLI is not reliable when several report-only jobs are
+        # started through the same server installation at once.  Serialize
+        # calls inside the worker process so a batch cannot produce transient
+        # exit-code 1 failures for otherwise valid PDFs.
+        self._execution_lock = threading.Lock()
 
     def check_pdf(self, input_pdf: Path, *, profile_id: str) -> PitStopCheckResult:
         """Run a profile without an output argument and parse JSON/XML artifacts."""
+        with self._execution_lock:
+            return self._check_pdf(input_pdf, profile_id=profile_id)
+
+    def _check_pdf(self, input_pdf: Path, *, profile_id: str) -> PitStopCheckResult:
         input_pdf = input_pdf.expanduser().resolve(strict=False)
         if not input_pdf.is_file() or input_pdf.suffix.lower() != ".pdf":
             raise ValueError(f"PDF для проверки не найден: {input_pdf}")
