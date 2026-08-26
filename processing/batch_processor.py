@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from typing import Mapping, Optional
 
-from core.inspector import count_frames, inspect_file
+from core.inspector import count_frames, inspect_file, inspect_tiff_structure
 from core.pdf_inspector import inspect_pdf
 from core.pdf_exporter import convert_image_to_pdf, merge_pdfs_with_pymupdf
 from core.preview_generator import generate_preview
@@ -127,12 +127,32 @@ class BatchProcessor:
                     if path.suffix.lower() == ".pdf":
                         self._inspect_pdf_file(check)
                         continue
-                    frame_count = count_frames(str(path))
-                    if frame_count != 1:
-                        check.errors.append(
-                            f"файл содержит {frame_count} страниц/изображений; разрешён только одностраничный файл"
-                        )
-                        continue
+                    if path.suffix.lower() in {".tif", ".tiff"}:
+                        structure = inspect_tiff_structure(str(path))
+                        check.tiff_page_count = structure.page_count
+                        check.has_unflattened_layers = structure.has_unflattened_layers
+                        check.has_alpha = structure.has_alpha
+                        check.channels = structure.channels
+                        if structure.has_alpha:
+                            check.errors.append(
+                                "TIFF содержит альфа-канал; перед отправкой удалите прозрачность"
+                            )
+                        if structure.has_unflattened_layers:
+                            check.errors.append(
+                                "TIFF содержит несведённые слои; перед отправкой сведите изображение"
+                            )
+                        if structure.page_count > 1:
+                            check.errors.append(
+                                f"TIFF содержит {structure.page_count} страниц; "
+                                "разрешён только одностраничный файл"
+                            )
+                    else:
+                        frame_count = count_frames(str(path))
+                        if frame_count != 1:
+                            check.errors.append(
+                                f"файл содержит {frame_count} страниц/изображений; разрешён только одностраничный файл"
+                            )
+                            continue
                     meta = inspect_file(str(path))
                     check.actual_width_mm = meta.width_mm
                     check.actual_height_mm = meta.height_mm

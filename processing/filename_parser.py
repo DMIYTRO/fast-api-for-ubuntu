@@ -4,9 +4,19 @@ from pathlib import Path
 from .models import ParsedFilename
 
 
-SIZE_RE = re.compile(r"_\((\d+(?:[.,]\d+)?)\s*[xх]\s*(\d+(?:[.,]\d+)?)\)_", re.IGNORECASE)
-COLORS_RE = re.compile(r"_(\d+)-(\d+)_")
-ORDER_RE = re.compile(r"_\((\d+)-(\d+)\)(?:_|$)")
+SIZE_RE = re.compile(
+    r"_\((\d+(?:[.,]\d+)?)\s*[xх]\s*(\d+(?:[.,]\d+)?)\)(?=[_*])",
+    re.IGNORECASE,
+)
+COLORS_RE = re.compile(r"[_*](\d+)-(\d+)(?=_)")
+ORDER_RE = re.compile(r"[_*]\((\d+)-{1,2}(\d+)\)(?=_|$)")
+# Some production names omit the closing parenthesis, but retain the final
+# side marker.  Keep this fallback narrow so arbitrary numbers in a filename
+# are not mistaken for an order identifier.
+UNCLOSED_ORDER_RE = re.compile(
+    r"[_*]\((\d+)-{1,2}(\d+)(?=_[^()]*?(?:_|-)(?:face|back)$)",
+    re.IGNORECASE,
+)
 SIDE_RE = re.compile(r"(?:_|-)(face|back)$", re.IGNORECASE)
 
 
@@ -15,7 +25,7 @@ def parse_filename(path: Path) -> ParsedFilename:
     stem = path.stem
     size_match = SIZE_RE.search(stem)
     colors_match = COLORS_RE.search(stem)
-    order_match = ORDER_RE.search(stem)
+    order_match = ORDER_RE.search(stem) or UNCLOSED_ORDER_RE.search(stem)
     side_match = SIDE_RE.search(stem)
 
     missing = []

@@ -9,6 +9,44 @@ from processing.filename_parser import parse_filename
 
 
 class OrderIdentityTests(unittest.TestCase):
+    def test_parses_production_filename_variants(self):
+        names = (
+            "08_NP_Bezlam_80_ofset_(90x90)*4-4_T5000*"
+            "(1069-25694739)_offset-face.tif",
+            "08_NP_Bezlam_80_ofset_(90x90)*4-4_T5000*"
+            "(1069--25694739)_offset-face.tif",
+            "08_NP_Bezlam_80_ofset_(90x90)*4-4_T5000*"
+            "(1069-25694739_offset-face.tif",
+        )
+
+        for name in names:
+            with self.subTest(name=name):
+                parsed = parse_filename(Path(name))
+                self.assertEqual(
+                    (
+                        parsed.customer_id,
+                        parsed.order_id,
+                        parsed.width_mm,
+                        parsed.height_mm,
+                        parsed.front_colors,
+                        parsed.back_colors,
+                        parsed.side,
+                    ),
+                    ("1069", "25694739", 90.0, 90.0, 4, 4, "face"),
+                )
+
+    def test_does_not_accept_ambiguous_order_numbers(self):
+        invalid_names = (
+            "job_(90x90)*4-4*(1069---25694739)_offset-face.tif",
+            "job_(90x90)*4-4*(1069-25694739_offset.tif",
+            "job_(90x90)*4-4_1069-25694739_offset-face.tif",
+        )
+
+        for name in invalid_names:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, "номер клиента"):
+                    parse_filename(Path(name))
+
     def test_side_less_one_sided_jpg_is_treated_as_face(self):
         for colors in ("1-0", "4-0", "5-0"):
             parsed = parse_filename(

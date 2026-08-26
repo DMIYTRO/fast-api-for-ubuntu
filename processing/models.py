@@ -27,6 +27,10 @@ class FileCheck:
     height_px: Optional[int] = None
     actual_format: Optional[str] = None
     colorspace: Optional[str] = None
+    has_alpha: Optional[bool] = None
+    has_unflattened_layers: Optional[bool] = None
+    channels: Optional[str] = None
+    tiff_page_count: Optional[int] = None
     size_mb: float = 0.0
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -41,7 +45,7 @@ class FileCheck:
     rotation_degrees: int = 0
     orientation_verified: bool = False
     # PDF-specific facts.  These are optional so existing image workflows and
-    # callers constructing FileCheck directly remain compatible.
+    # direct FileCheck callers stay compatible.
     page_count: Optional[int] = None
     pdf_pages: tuple[object, ...] = ()
     pdf_colorspaces: tuple[str, ...] = ()

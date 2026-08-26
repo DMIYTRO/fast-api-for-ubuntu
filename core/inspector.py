@@ -26,6 +26,22 @@ class ImageMetadata:
     size_mb: float
 
 
+@dataclass(frozen=True)
+class TiffStructure:
+    """Structural properties of a TIFF, separated from its decoded scenes.
+
+    ImageMagick exposes Photoshop layers as images in the same sequence as
+    real TIFF pages.  ``page_count`` therefore deliberately ignores those
+    layers, while the remaining fields describe the Photoshop document and
+    its flattened composite independently.
+    """
+
+    page_count: int
+    has_unflattened_layers: bool
+    has_alpha: bool
+    channels: str
+
+
 def _identify_command() -> list[str]:
     magick_cmd = shutil.which("magick")
     if magick_cmd:
@@ -41,6 +57,64 @@ def count_frames(image_path: str) -> int:
     cmd = _identify_command() + ["-format", "%p\n", image_path]
     result = run_command(cmd, capture_output=True, text=True, errors="replace", check=True)
     return len([line for line in result.stdout.splitlines() if line.strip()])
+
+
+def inspect_tiff_structure(image_path: str) -> TiffStructure:
+    """Inspect TIFF pages, Photoshop layers, and composite alpha separately.
+
+    The TIFF coder's ``ignore-layers`` define prevents embedded Photoshop
+    layers from inflating the number of decoded images.  The channel mnemonic
+    for the first resulting image describes the flattened composite: e.g.
+    ``srgb``/``cmyk`` without alpha and ``srgba``/``cmyka`` with alpha.
+    """
+    composite_cmd = _identify_command() + [
+        "-define",
+        "tiff:ignore-layers=true",
+        "-format",
+        "%p\t%[channels]\n",
+        image_path,
+    ]
+    composite_result = run_command(
+        composite_cmd,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=True,
+    )
+    composite_lines = [
+        line.strip() for line in composite_result.stdout.splitlines() if line.strip()
+    ]
+    if not composite_lines:
+        raise ValueError("TIFF не содержит доступных изображений")
+
+    first_fields = composite_lines[0].split("\t", maxsplit=1)
+    channels = first_fields[1].strip() if len(first_fields) == 2 else ""
+    channel_mnemonic = channels.split(maxsplit=1)[0].lower() if channels else ""
+
+    layers_cmd = _identify_command() + [
+        "-format",
+        "%[tiff:has-layers]\n",
+        image_path,
+    ]
+    layers_result = run_command(
+        layers_cmd,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=True,
+    )
+    has_unflattened_layers = any(
+        value.strip().lower() in {"true", "1", "yes"}
+        for value in layers_result.stdout.splitlines()
+    )
+
+    return TiffStructure(
+        page_count=len(composite_lines),
+        has_unflattened_layers=has_unflattened_layers,
+        has_alpha=channel_mnemonic.endswith("a"),
+        channels=channels,
+    )
+
 
 def inspect_file(image_path: str) -> ImageMetadata:
     """Извлекает метаданные из графического файла, включая ICC-профиль."""
