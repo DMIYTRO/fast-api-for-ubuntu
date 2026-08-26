@@ -60,6 +60,10 @@ class Settings:
     pitstop_mac_shared_root: Path = Path("/Users/admin")
     pitstop_windows_shared_root: str = r"C:\Mac\Home"
     pitstop_profiles: tuple[tuple[str, str, str], ...] = ()
+    callas_cli_path: Path = PROJECT_DIR / "tools" / "callas_pdfToolboxCLI_x64_Linux_17-0-682" / "pdfToolbox"
+    callas_cache_dir: Path = PROJECT_DIR / ".callas-cache"
+    callas_enabled: bool = True
+    callas_timeout_seconds: float = 600.0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -196,4 +200,15 @@ class Settings:
                 "IMAGE_MAGIC_PITSTOP_WINDOWS_SHARED_ROOT", r"C:\Mac\Home"
             ).strip(),
             pitstop_profiles=pitstop_profiles,
+            callas_cli_path=Path(os.environ.get(
+                "IMAGE_MAGIC_CALLAS_CLI_PATH",
+                PROJECT_DIR / "tools" / "callas_pdfToolboxCLI_x64_Linux_17-0-682" / "pdfToolbox",
+            )).expanduser().resolve(),
+            callas_cache_dir=Path(os.environ.get(
+                "IMAGE_MAGIC_CALLAS_CACHE_DIR", PROJECT_DIR / ".callas-cache"
+            )).expanduser().resolve(),
+            callas_enabled=_env_bool("IMAGE_MAGIC_CALLAS_ENABLED", True),
+            callas_timeout_seconds=max(1.0, float(os.environ.get(
+                "IMAGE_MAGIC_CALLAS_TIMEOUT_SECONDS", "600"
+            ))),
         )

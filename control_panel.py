@@ -30,6 +30,7 @@ from server.logging_config import configure_logging
 from server.models import OrderAction, OrderResult, PitstopCheck
 from server.schemas import CheckOptions, CorrectionRequest, OrderActionRequest
 from server.settings import Settings
+from core.callas_toolbox import CallasToolbox
 from services import (
     FileLifecycle,
     FileLifecycleError,
@@ -337,6 +338,7 @@ def _pitstop_adapter_factory(settings: Settings):
             connect_timeout_seconds=settings.pitstop_connect_timeout_seconds,
         )
     )
+    callas = CallasToolbox(settings) if settings.callas_enabled else None
 
     def factory(options: ProcessingOptions) -> BatchProcessorAdapter:
         if options.direction not in configured_profiles:
@@ -360,6 +362,8 @@ def _pitstop_adapter_factory(settings: Settings):
         return BatchProcessorAdapter(
             options,
             pitstop_service=service,
+            callas_toolbox=callas,
+            callas_enabled=settings.callas_enabled,
             order_info_fetcher=(
                 build_order_info_fetcher(
                     settings.sborka_api_dir,
@@ -382,7 +386,13 @@ def _default_adapter_factory(settings: Settings):
         if settings.sborka_enabled
         else None
     )
-    return lambda options: BatchProcessorAdapter(options, order_info_fetcher=fetcher)
+    callas = CallasToolbox(settings) if settings.callas_enabled else None
+    return lambda options: BatchProcessorAdapter(
+        options,
+        order_info_fetcher=fetcher,
+        callas_toolbox=callas,
+        callas_enabled=settings.callas_enabled,
+    )
 
 
 def create_app(

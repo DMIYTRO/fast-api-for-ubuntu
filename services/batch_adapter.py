@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from config.profiles import get_profile
+from core.callas_toolbox import CallasToolbox
 from processing.batch_processor import BatchProcessor
 from processing.models import FileCheck, OrderCheck
 from services.pitstop import (
@@ -68,6 +69,8 @@ class BatchProcessorAdapter:
         processor_factory: Callable[..., BatchProcessor] = BatchProcessor,
         pitstop_service: PitStopService | None = None,
         order_info_fetcher: Callable[[Sequence[str]], list[dict[str, Any]]] | None = None,
+        callas_toolbox: CallasToolbox | None = None,
+        callas_enabled: bool = False,
     ) -> None:
         self.options = options
         self.input_dir = Path(options.input_path)
@@ -80,6 +83,8 @@ class BatchProcessorAdapter:
             self.input_dir,
             self.pdf_dir,
             profile=get_profile(options.direction),
+            callas_toolbox=callas_toolbox,
+            callas_enabled=callas_enabled,
         )
 
     @property

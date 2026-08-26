@@ -10,6 +10,7 @@ from typing import Mapping, Optional
 from core.inspector import count_frames, inspect_file, inspect_tiff_structure
 from core.pdf_inspector import inspect_pdf
 from core.pdf_exporter import convert_image_to_pdf, merge_pdfs_with_pymupdf
+from core.callas_toolbox import CallasToolbox
 from core.preview_generator import generate_preview
 from core.resampler import resample_image
 from core.tool_runner import run_command
@@ -54,6 +55,8 @@ class BatchProcessor:
         min_dpi: float | None = None,
         *,
         profile: PrePressProfile = DEFAULT_PROFILE,
+        callas_toolbox: CallasToolbox | None = None,
+        callas_enabled: bool = False,
     ):
         self.input_dir = input_dir
         self.output_dir = output_dir
@@ -62,6 +65,11 @@ class BatchProcessor:
         self.size_extra_mm = profile.size_extra_mm if size_extra_mm is None else size_extra_mm
         self.tolerance_mm = profile.size_tolerance_mm if tolerance_mm is None else tolerance_mm
         self.min_dpi = profile.min_dpi if min_dpi is None else min_dpi
+        # Keep the legacy backend as the default for unit tests and callers
+        # that do not explicitly opt into the external CLI. Production wiring
+        # can inject a configured CallasToolbox and enable it from Settings.
+        self.callas_toolbox = callas_toolbox
+        self.callas_enabled = callas_enabled and callas_toolbox is not None
         self.unparsed: list[FileCheck] = []
         self.unsupported: list[FileCheck] = []
         self.scanned_order_count = 0
@@ -486,7 +494,17 @@ class BatchProcessor:
                     )
 
                     temporary_output = Path(temporary_dir) / "combined.pdf"
-                    merge_pdfs_with_pymupdf(page_pdfs, str(temporary_output))
+                    # A complete PDF is already a production artifact.  Keep
+                    # its bytes intact and only validate a copied temporary
+                    # candidate; re-saving it through PyMuPDF is needlessly
+                    # expensive and may alter metadata/content streams.
+                    if (
+                        len(ordered_files) == 1
+                        and ordered_files[0].path.suffix.lower() == ".pdf"
+                    ):
+                        shutil.copy2(ordered_files[0].path, temporary_output)
+                    else:
+                        self._merge_page_pdfs(page_pdfs, temporary_output)
                     self._validate_created_pdf(
                         temporary_output,
                         page_refs,
@@ -497,6 +515,17 @@ class BatchProcessor:
             except Exception as exc:
                 results.append((order, output_path, str(exc)))
         return results
+
+    def _merge_page_pdfs(self, page_pdfs: list[str], output_path: Path) -> None:
+        """Merge PDFs using callas only for an explicitly opted-in PDF-only batch."""
+        pdf_only = all(Path(path).suffix.lower() == ".pdf" for path in page_pdfs)
+        if self.callas_enabled and self.callas_toolbox is not None and pdf_only:
+            self.callas_toolbox.merge_pdfs(
+                [Path(path) for path in page_pdfs],
+                output_path,
+            )
+            return
+        merge_pdfs_with_pymupdf(page_pdfs, str(output_path))
 
     @staticmethod
     def _ordered_files_for_creation(order: OrderCheck) -> list[FileCheck]:
