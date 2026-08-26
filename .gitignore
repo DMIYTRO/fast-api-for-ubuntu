@@ -31,3 +31,8 @@ frontend/.vite/
 /.env.pitstop
 /credentials-transfer-*/
 *.bak_tmp
+# Callas pdfToolbox CLI is installed locally from the shared distribution;
+# do not commit the vendor binary, license, cache or generated test PDFs.
+/tools/callas_pdfToolboxCLI_x64_Linux_*/
+/.callas-cache/
+/output/callas_roundtrip_test/

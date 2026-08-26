@@ -120,6 +120,64 @@ magick -version
 gs --version
 ```
 
+### Callas pdfToolbox CLI (опционально)
+
+Для автоматической проверки и пересохранения PDF используется Callas
+pdfToolbox CLI 17.0.682. Архив установки берётся из:
+
+```text
+/mnt/shared/soft/callas_pdfToolboxCLI_x64_Linux.tar.gz
+```
+
+Распакуйте его в `tools/` из корня проекта:
+
+```bash
+mkdir -p tools
+tar -xzf /mnt/shared/soft/callas_pdfToolboxCLI_x64_Linux.tar.gz -C tools
+```
+
+Проверьте системные зависимости:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y fontconfig libatomic1
+```
+
+Активация лицензии выполняется с доступной для записи папкой настроек:
+
+```bash
+mkdir -p .callas-cache
+tools/callas_pdfToolboxCLI_x64_Linux_17-0-682/pdfToolbox \
+  --cachefolder="$PWD/.callas-cache" \
+  --activate "/mnt/shared/soft/Activation (1).pdf"
+```
+
+Проверка лицензии:
+
+```bash
+tools/callas_pdfToolboxCLI_x64_Linux_17-0-682/pdfToolbox \
+  --cachefolder="$PWD/.callas-cache" --status
+```
+
+Путь к бинарнику и `--cachefolder` можно переопределить для тестового скрипта
+параметрами `--cli` и `--output`.
+
+#### Тест разделения и объединения PDF
+
+Скрипт `scripts/test_callas_pdf_roundtrip.py` через Callas CLI разделяет PDF
+на отдельные страницы, объединяет страницы обратно и создаёт три варианта
+пересохранения: обычный, оптимизированный и без оптимизации.
+
+Запуск с тестовым входным файлом:
+
+```bash
+python3 scripts/test_callas_pdf_roundtrip.py
+```
+
+Результаты создаются в `output/callas_roundtrip_test/`, а отдельные страницы —
+в его подкаталоге `split/`. Сгенерированные бинарники, лицензия, кэш и PDF
+исключены из Git; в репозитории хранится только скрипт и документация.
+
 ## Локальный запуск веб-сервиса
 
 Создайте хеш пароля и сохраните его только в переменной окружения:
