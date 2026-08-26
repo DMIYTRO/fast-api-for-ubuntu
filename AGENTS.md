@@ -17,6 +17,10 @@ python3 -m venv .venv
 
 Run the web app with `.venv/bin/python control_panel.py`. Apply migrations with `.venv/bin/alembic upgrade head`. Run the batch CLI with `python3 process_orders.py --input "/path/to/artwork"`.
 
+### Production FastAPI Service
+
+The primary production service runs on VM `10.20.2.104` as the systemd unit `fastapi-app`. When a production restart is requested, restart that unit on the VM and verify its new `MainPID`, `ExecMainStartTimestamp`, and `active` status. Never start `.venv/bin/python control_panel.py` or another Uvicorn process in parallel as a substitute for restarting production; this creates a second instance while the UI continues to use the original service. Historical check results remain stored after a restart, so validate changes with a newly created check run rather than an old report.
+
 For the frontend, run `cd frontend && npm install`, then `npm test -- --run` and `npm run build`. Image processing tests require `magick` and `gs` on `PATH`.
 
 ## Coding Style & Naming Conventions
