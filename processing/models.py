@@ -27,6 +27,8 @@ class FileCheck:
     height_px: Optional[int] = None
     actual_format: Optional[str] = None
     colorspace: Optional[str] = None
+    icc_profile_present: Optional[bool] = None
+    icc_profile: Optional[str] = None
     has_alpha: Optional[bool] = None
     has_unflattened_layers: Optional[bool] = None
     channels: Optional[str] = None

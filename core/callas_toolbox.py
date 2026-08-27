@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import subprocess
+import pymupdf
 
 from core.tool_runner import ExternalToolError, run_command
 from server.settings import Settings
@@ -64,4 +65,53 @@ class CallasToolbox:
         result = self._run("--mergepdf", f"--outputfile={output}", *(str(path) for path in resolved))
         if not output.is_file() or output.stat().st_size == 0:
             raise CallasToolboxError(f"callas не создал итоговый PDF: {output}")
+        # Callas preserves page-level provenance metadata from converted TIFF
+        # pages.  Set document-level metadata after the merge so properties of
+        # the final file identify the actual assembly tool unambiguously.
+        temporary = output.with_suffix(output.suffix + ".metadata.tmp")
+        try:
+            document = pymupdf.open(output)
+            metadata = document.metadata
+            metadata.update({
+                "producer": "callas pdfToolbox CLI 17.0.682",
+                "creator": "Image Magic",
+                "subject": "PDF merged by callas pdfToolbox",
+            })
+            document.set_metadata(metadata)
+            document.save(temporary)
+            document.close()
+            temporary.replace(output)
+        except Exception:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            # The Callas operation itself succeeded.  Metadata enrichment is
+            # best-effort so a valid PDF is not rejected by a secondary step.
         return result
+
+    def convert_to_pdf(self, input_path: Path, output_path: Path) -> CallasResult:
+        """Convert a supported raster file to PDF using Callas' native converter."""
+        input_path = Path(input_path).expanduser().resolve()
+        output_path = Path(output_path).expanduser().resolve()
+        if not input_path.is_file():
+            raise CallasToolboxError(f"Растровый файл не найден: {input_path}")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        result = self._run(
+            "--topdf", "--overwrite", f"--outputfile={output_path}", str(input_path)
+        )
+        if not output_path.is_file() or output_path.stat().st_size == 0:
+            raise CallasToolboxError(f"callas не создал PDF из растра: {output_path}")
+        return result
+
+    def save_as_image(self, input_path: Path, output_dir: Path, *, resolution: int = 150) -> CallasResult:
+        """Render one PNG image per PDF page into ``output_dir``."""
+        input_path = Path(input_path).expanduser().resolve()
+        output_dir = Path(output_dir).expanduser().resolve()
+        if not input_path.is_file():
+            raise CallasToolboxError(f"Входной PDF не найден: {input_path}")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return self._run(
+            "--saveasimg", "--imgformat=PNG", f"--resolution={resolution}",
+            f"--outputfolder={output_dir}", str(input_path),
+        )

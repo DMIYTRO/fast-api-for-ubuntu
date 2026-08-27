@@ -35,6 +35,25 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(processor.min_dpi, profile.min_dpi)
         self.assertIn((4, 4), profile.allowed_color_modes)
 
+    def test_resolution_threshold_is_270_dpi(self):
+        profile = get_profile("digital")
+        accepted = evaluate_metadata_rules(
+            profile=profile,
+            size_mb=1,
+            colorspace="CMYK",
+            dpi_x=270,
+            dpi_y=270,
+        )
+        rejected = evaluate_metadata_rules(
+            profile=profile,
+            size_mb=1,
+            colorspace="CMYK",
+            dpi_x=269.9,
+            dpi_y=270,
+        )
+        self.assertFalse(accepted.errors)
+        self.assertTrue(any("270 DPI" in value for value in rejected.errors))
+
     def test_unknown_direction_has_clear_error(self):
         with self.assertRaisesRegex(ValueError, "доступно: digital, offset"):
             get_profile("unknown")

@@ -14,7 +14,7 @@ class PrePressProfile:
     direction: str
     name: str
     target_dpi: float = 300.0
-    min_dpi: float = 300.0
+    min_dpi: float = 270.0
     allowed_colorspaces: tuple[str, ...] = ("CMYK", "COLORSEPARATION")
     max_file_size_mb: float = 2000.0
     safe_zone_mm: float = 4.0

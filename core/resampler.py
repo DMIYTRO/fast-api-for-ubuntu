@@ -2,7 +2,7 @@
 Модуль автоматической коррекции и даунсемплинга макетов (Auto-Resampler Module).
 
 Условия коррекции:
-1. Текущее разрешение < 300 DPI (например, 70 или 150 DPI).
+1. Текущее разрешение < 270 DPI (например, 70 или 150 DPI).
 2. Физический размер файла больше требуемого размера (извлеченного из имени файла или профиля).
 3. При совпадении условий выполняется сжатие/ресемплинг до целевых мм при 300 DPI с фильтром Lanczos.
 """
@@ -31,7 +31,7 @@ def parse_target_dimensions_from_filename(filename: str) -> Optional[Tuple[float
 
     return None
 
-def should_resample(meta: ImageMetadata, target_w_mm: float, target_h_mm: float, min_dpi: float = 280.0) -> bool:
+def should_resample(meta: ImageMetadata, target_w_mm: float, target_h_mm: float, min_dpi: float = 270.0) -> bool:
     """Определяет, требуется ли автоматический даунсемплинг."""
     is_low_dpi = meta.dpi < min_dpi
     is_larger_size = meta.width_mm >= target_w_mm and meta.height_mm >= target_h_mm

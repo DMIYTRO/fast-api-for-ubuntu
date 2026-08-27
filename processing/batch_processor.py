@@ -9,8 +9,13 @@ from typing import Mapping, Optional
 
 from core.inspector import count_frames, inspect_file, inspect_tiff_structure
 from core.pdf_inspector import inspect_pdf
-from core.pdf_exporter import convert_image_to_pdf, merge_pdfs_with_pymupdf
+from core.pdf_exporter import (
+    convert_image_to_pdf,
+    convert_tiff_to_pdf_preserve_cmyk,
+    merge_pdfs_with_pymupdf,
+)
 from core.callas_toolbox import CallasToolbox
+from core.callas_toolbox import CallasToolboxError
 from core.preview_generator import generate_preview
 from core.resampler import resample_image
 from core.tool_runner import run_command
@@ -171,6 +176,10 @@ class BatchProcessor:
                     check.dpi_y = meta.dpi_y
                     check.actual_format = meta.format.upper()
                     check.colorspace = meta.colorspace
+                    check.icc_profile = meta.icc_profile
+                    check.icc_profile_present = (
+                        bool(meta.icc_profile) and meta.icc_profile != "Не внедрен"
+                    )
                     check.size_mb = meta.size_mb
                     self._validate_file(check)
                 except Exception as exc:
@@ -609,12 +618,14 @@ class BatchProcessor:
                 dpi_arg = str(self.min_dpi)
 
             page_path = temporary_dir / f"{page_number}_{ref.expected_side}.pdf"
-            convert_image_to_pdf(
-                source_image_path,
-                str(page_path),
-                dpi=dpi_arg,
-                compression="none",
-            )
+            if item.path.suffix.lower() in {".tif", ".tiff"}:
+                convert_tiff_to_pdf_preserve_cmyk(
+                    source_image_path, str(page_path), dpi=dpi_arg
+                )
+            else:
+                convert_image_to_pdf(
+                    source_image_path, str(page_path), dpi=dpi_arg, compression="none"
+                )
             converted[item.path] = str(page_path)
             page_pdfs.append(str(page_path))
         return page_pdfs
@@ -763,24 +774,29 @@ class BatchProcessor:
 
         with tempfile.TemporaryDirectory(prefix=f".preview_{pdf_path.stem}_") as temp_dir:
             temp_path = Path(temp_dir)
-            page_pattern = temp_path / "page-%03d.png"
-            command = [
-                gs_cmd,
-                "-q",
-                "-dSAFER",
-                "-dBATCH",
-                "-dNOPAUSE",
-                "-sDEVICE=png16m",
-                f"-r{int(render_dpi)}",
-                f"-sOutputFile={page_pattern}",
-                str(pdf_path),
-            ]
-            result = run_command(command, capture_output=True, text=True)
-            if result.returncode != 0:
-                details = (result.stderr or result.stdout).strip()
-                raise ValueError(f"ошибка рендеринга PDF для превью: {details}")
-
-            rendered_pages = sorted(temp_path.glob("page-*.png"))
+            rendered_pages: list[Path] = []
+            if self.callas_enabled and self.callas_toolbox is not None:
+                try:
+                    self.callas_toolbox.save_as_image(pdf_path, temp_path, resolution=int(render_dpi))
+                    rendered_pages = sorted(temp_path.glob("*.png"))
+                    if not rendered_pages:
+                        raise CallasToolboxError("callas не создал изображения preview")
+                except Exception:
+                    rendered_pages = []
+            if not rendered_pages:
+                if not gs_cmd:
+                    raise FileNotFoundError("Ghostscript (`gs`) не найден для рендеринга превью.")
+                page_pattern = temp_path / "page-%03d.png"
+                command = [
+                    gs_cmd, "-q", "-dSAFER", "-dBATCH", "-dNOPAUSE",
+                    "-sDEVICE=png16m", f"-r{int(render_dpi)}",
+                    f"-sOutputFile={page_pattern}", str(pdf_path),
+                ]
+                result = run_command(command, capture_output=True, text=True)
+                if result.returncode != 0:
+                    details = (result.stderr or result.stdout).strip()
+                    raise ValueError(f"ошибка рендеринга PDF для превью: {details}")
+                rendered_pages = sorted(temp_path.glob("page-*.png"))
             if not rendered_pages:
                 raise ValueError("не удалось извлечь страницы из PDF")
 

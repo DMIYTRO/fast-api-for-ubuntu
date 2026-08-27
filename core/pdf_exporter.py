@@ -35,6 +35,23 @@ def convert_image_to_pdf(
     return output_pdf_path
 
 
+def convert_tiff_to_pdf_preserve_cmyk(
+    input_image_path: str,
+    output_pdf_path: str,
+    dpi: Union[float, str] = 300.0,
+) -> str:
+    """Convert TIFF after removing its ICC profile without assigning another."""
+    magick_cmd = shutil.which("magick")
+    if not magick_cmd:
+        raise FileNotFoundError("ImageMagick (`magick`) не найден.")
+    os.makedirs(os.path.dirname(os.path.abspath(output_pdf_path)), exist_ok=True)
+    cmd = [magick_cmd, input_image_path, "+profile", "icc", "-units",
+           "PixelsPerInch", "-density", str(dpi), "-compress", "none",
+           output_pdf_path]
+    run_command(cmd, check=True)
+    return output_pdf_path
+
+
 def merge_pdfs_with_ghostscript(input_pdf_paths: List[str], output_pdf_path: str) -> str:
     """Merge PDF pages with Ghostscript without downsampling or color conversion."""
     if not input_pdf_paths:
