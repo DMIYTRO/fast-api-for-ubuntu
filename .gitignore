@@ -1,6 +1,7 @@
 # Исключаем сгенерированные превью и выходные тяжелые отчеты
 output_real_files/
 output_report/previews/
+/.preview-cache/
 # Результаты обработки и превью не являются входными тестовыми данными.
 /input_files/Processed/
 /input_files/Previews/Processed/
