@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timezone
 import logging
 import os
@@ -38,7 +39,9 @@ logger = logging.getLogger("image_magic.worker")
 def _order_worker_count() -> int:
     """Return a bounded worker count for independent order processing."""
     available = os.cpu_count() or 1
-    configured = os.environ.get("IMAGE_MAGIC_ORDER_WORKERS", str(available))
+    # One worker keeps preview generation in discovery/page order and avoids
+    # multiplying external ImageMagick/Ghostscript processes by CPU count.
+    configured = os.environ.get("IMAGE_MAGIC_ORDER_WORKERS", "1")
     try:
         requested = int(configured)
     except ValueError:
@@ -161,6 +164,7 @@ class RunCoordinator:
 
     def submit(self, options: ProcessingOptions) -> dict[str, Any]:
         run_id = uuid4().hex
+        options = replace(options, run_id=run_id)
         now = _now()
         run: dict[str, Any] = {
             "id": run_id,
@@ -198,8 +202,8 @@ class RunCoordinator:
             )
         return self.get_run(run_id)
 
-    def get_run(self, run_id: str) -> dict[str, Any]:
-        value = self.repository.get_run(run_id)
+    def get_run(self, run_id: str, *, include_orders: bool = True) -> dict[str, Any]:
+        value = self.repository.get_run(run_id, include_orders=include_orders)
         if value is None:
             raise RunNotFoundError(run_id)
         return value
@@ -218,6 +222,18 @@ class RunCoordinator:
     def count_runs(self) -> int:
         return self.repository.count_runs()
 
+    def list_orders_page(
+        self, run_id: str, *, page: int, page_size: int,
+        status: str = "all", search: str = "", active_only: bool = False,
+    ) -> dict[str, Any]:
+        result = self.repository.list_orders_page(
+            run_id, page=page, page_size=page_size, status=status, search=search,
+            active_only=active_only,
+        )
+        if result is None:
+            raise RunNotFoundError(run_id)
+        return result
+
     def get_active_run(self) -> dict[str, Any] | None:
         with self._lock:
             return (
@@ -227,7 +243,7 @@ class RunCoordinator:
             )
 
     def events(self, run_id: str, after_id: int = 0) -> list[RunEvent]:
-        self.get_run(run_id)
+        self.get_run(run_id, include_orders=False)
         return self.repository.list_events(run_id, after_id)
 
     def cancel(self, run_id: str) -> dict[str, Any]:
@@ -478,9 +494,10 @@ class RunCoordinator:
             orders = iter(batch)
 
         inspected = 0
-        processing_futures: list[Future[None]] = []
+        worker_count = _order_worker_count()
+        processing_futures: deque[Future[None]] = deque()
         with ThreadPoolExecutor(
-            max_workers=_order_worker_count(),
+            max_workers=worker_count,
             thread_name_prefix="image-magic-order",
         ) as executor:
             for order in orders:
@@ -574,10 +591,14 @@ class RunCoordinator:
                             },
                         )
                     continue
+                # ThreadPoolExecutor's internal queue is unbounded. Wait for
+                # the oldest order before admitting another into the queue.
+                while len(processing_futures) >= worker_count:
+                    processing_futures.popleft().result()
                 processing_futures.append(executor.submit(self._process_one, run_id, order))
 
-            for future in processing_futures:
-                future.result()
+            while processing_futures:
+                processing_futures.popleft().result()
 
         with self._lock:
             run = self.get_run(run_id)
@@ -604,6 +625,8 @@ class RunCoordinator:
         context = self._contexts[run_id]
         artifacts = context.adapter.process_order(order)
         with self._lock:
+            if context.cancel_requested.is_set():
+                return
             run = self.get_run(run_id)
             status = _completed_order_status(order, artifacts)
             source_status = _inspection_status(order)
@@ -788,7 +811,18 @@ class RunCoordinator:
     def _save_and_emit_locked(
         self, run: dict[str, Any], event_type: str, data: dict[str, Any]
     ) -> RunEvent:
-        event = self.repository.save_run_with_event(run, event_type, data)
+        if event_type.startswith(("order.", "pitstop.")):
+            order_id = str(data.get("order_id") or "")
+            key = _stored_order_key(run, order_id) if order_id else None
+            changed_order_keys = (key,) if key is not None else None
+        elif event_type == "run.cancelled":
+            # Cancellation marks every unfinished order at once.
+            changed_order_keys = None
+        else:
+            changed_order_keys = ()
+        event = self.repository.save_run_with_event(
+            run, event_type, data, changed_order_keys=changed_order_keys
+        )
         self._log_event(event, data)
         return event
 

@@ -5,7 +5,7 @@
 Функции:
 1. Сканирование входной папки с графическими файлами (TIFF, JPEG, PNG, PDF).
 2. Считывание параметров: размер в мм, DPI, цветовая модель, размер файла в МБ.
-3. Валидация по нормам допечатной подготовки (CMYK, 300 DPI, до 2000 МБ).
+    3. Валидация по нормам допечатной подготовки (CMYK, 270 DPI, до 2000 МБ).
 4. Отрисовка превью с виртуальными рамками (1 мм красная - край реза, 4 мм зеленая - безопасная зона).
 5. Сборка статической HTML-страницы отчёта в стиле допечатного модуля.
 """
@@ -237,8 +237,8 @@ def generate_html_report(cards: list) -> str:
                     <tr>
                         <td class="param-title">{dpi_icon} Разрешающая способность, DPI</td>
                         <td class="val-cell">{int(m['dpi'])} DPI</td>
-                        <td class="target-cell">300</td>
-                        <td class="status-cell">{'300 DPI' if card['dpi_ok'] else '<span class="text-danger">требуется 300 DPI</span>'}</td>
+                        <td class="target-cell">270</td>
+                        <td class="status-cell">{'270 DPI' if card['dpi_ok'] else '<span class="text-danger">требуется 270 DPI</span>'}</td>
                     </tr>
                     <tr>
                         <td class="param-title">{cmyk_icon} Цветовая модель</td>

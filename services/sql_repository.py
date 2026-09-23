@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from server.models import (
@@ -25,7 +25,7 @@ from server.models import (
 )
 from server.models import RunEvent as SqlRunEvent
 
-from .repository import RunEvent
+from .repository import TERMINAL_ORDER_STATUSES, RunEvent
 
 
 logger = logging.getLogger("image_magic.repository")
@@ -125,14 +125,15 @@ class SqlRunRepository:
             self._apply_run(session, record, run)
 
     def save_run_with_event(
-        self, run: dict[str, Any], event_type: str, data: dict[str, Any]
+        self, run: dict[str, Any], event_type: str, data: dict[str, Any],
+        *, changed_order_keys: tuple[str, ...] | None = None,
     ) -> RunEvent:
         with self._session_factory() as session, session.begin():
             run_id = str(run["id"])
             record = session.get(CheckRun, run_id)
             if record is None:
                 raise KeyError(run_id)
-            self._apply_run(session, record, run)
+            self._apply_run(session, record, run, changed_order_keys=changed_order_keys)
             session.flush()
             self._apply_correction_audit(session, run_id, event_type, data)
             event_record = SqlRunEvent(
@@ -200,12 +201,48 @@ class SqlRunRepository:
                 )
             )
 
-    def get_run(self, run_id: str) -> dict[str, Any] | None:
+    def get_file_asset(self, file_id: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """Resolve a persisted file through its indexed primary key."""
+        if not file_id.isdecimal():
+            return None
         with self._session_factory() as session:
-            statement = (
-                select(CheckRun)
-                .where(CheckRun.id == run_id)
-                .options(
+            row = session.get(FileResult, int(file_id))
+            if row is None:
+                return None
+            order = row.order_result
+            run = order.run
+            envelope = _json_load(run.options_json, {})
+            metadata = envelope.get(_OPTIONS_MARKER) or {}
+            file_extras = metadata.get("file_extras") or {}
+            composite_key = (
+                f"{order.customer_id}:{order.order_id}"
+                if order.customer_id else order.order_id
+            )
+            extras = (
+                file_extras.get(composite_key)
+                or file_extras.get(order.order_id)
+                or {}
+            )
+            item = deepcopy(extras.get(str(row.id)) or {}) if isinstance(extras, dict) else {}
+            item.update({
+                "id": str(row.id),
+                "path": row.source_path,
+                "preview_path": row.preview_path,
+            })
+            options = envelope.get("options") or envelope
+            return (
+                {"id": run.id, "options": {
+                    "input_path": options.get("input_path") or run.input_path,
+                    "preview_root": options.get("preview_root"),
+                }},
+                item,
+            )
+
+    def get_run(self, run_id: str, *, include_orders: bool = True) -> dict[str, Any] | None:
+        with self._session_factory() as session:
+            statement = select(CheckRun).where(CheckRun.id == run_id)
+            if include_orders:
+                statement = statement.options(
                     selectinload(CheckRun.orders).selectinload(OrderResult.files),
                     selectinload(CheckRun.orders).selectinload(OrderResult.actions),
                     selectinload(CheckRun.orders)
@@ -213,9 +250,8 @@ class SqlRunRepository:
                     .selectinload(PdfRevision.checks)
                     .selectinload(PitstopCheck.issues),
                 )
-            )
             record = session.scalar(statement)
-            return self._run_to_dict(record) if record is not None else None
+            return self._run_to_dict(record, include_orders=include_orders) if record is not None else None
 
     def list_runs(
         self,
@@ -251,6 +287,66 @@ class SqlRunRepository:
             return int(
                 session.scalar(select(func.count()).select_from(CheckRun)) or 0
             )
+
+    def list_orders_page(
+        self, run_id: str, *, page: int, page_size: int,
+        status: str = "all", search: str = "", active_only: bool = False,
+    ) -> dict[str, Any] | None:
+        """Limit the database query before loading files and revision details."""
+        with self._session_factory() as session:
+            run = session.get(CheckRun, run_id)
+            if run is None:
+                return None
+            base = [OrderResult.run_id == run_id]
+            if active_only:
+                base.append(OrderResult.status.not_in(TERMINAL_ORDER_STATUSES))
+            rows = session.execute(
+                select(OrderResult.status, func.count(OrderResult.id))
+                .where(*base).group_by(OrderResult.status)
+            ).all()
+            status_counts = dict(rows)
+            counts = {
+                "all": sum(status_counts.values()),
+                "passed": sum(status_counts.get(name, 0) for name in ("passed", "warning", "completed")),
+                "warning": status_counts.get("warning", 0),
+                "error": sum(status_counts.get(name, 0) for name in ("error", "failed", "technical_error")),
+                "waiting_confirmation": status_counts.get("waiting_confirmation", 0),
+            }
+            criteria = list(base)
+            if status == "passed":
+                criteria.append(OrderResult.status.in_(("passed", "warning", "completed")))
+            elif status == "error":
+                criteria.append(OrderResult.status.in_(("error", "failed", "technical_error")))
+            elif status != "all":
+                criteria.append(OrderResult.status == status)
+            query = search.strip()
+            if query:
+                pattern = f"%{query.replace('%', r'\%').replace('_', r'\_')}%"
+                criteria.append(or_(
+                    OrderResult.order_id.ilike(pattern, escape="\\"),
+                    OrderResult.customer_id.ilike(pattern, escape="\\"),
+                    exists(select(FileResult.id).where(
+                        FileResult.order_result_id == OrderResult.id,
+                        FileResult.filename.ilike(pattern, escape="\\"),
+                    )),
+                ))
+            total = int(session.scalar(select(func.count()).select_from(OrderResult).where(*criteria)) or 0)
+            statement = (
+                select(OrderResult).where(*criteria).order_by(OrderResult.id)
+                .offset((page - 1) * page_size).limit(page_size)
+                .options(
+                    selectinload(OrderResult.files),
+                    selectinload(OrderResult.actions),
+                    selectinload(OrderResult.pdf_revisions)
+                    .selectinload(PdfRevision.checks)
+                    .selectinload(PitstopCheck.issues),
+                )
+            )
+            order_records = list(session.scalars(statement))
+            page_run = self._run_to_dict(run, order_records=order_records)
+            return {"items": list(page_run["orders"].values()), "total": total, "counts": counts,
+                    "input_path": (page_run.get("options") or {}).get("input_path", ""),
+                    "preview_root": (page_run.get("options") or {}).get("preview_root")}
 
     def append_event(
         self, run_id: str, event_type: str, data: dict[str, Any]
@@ -403,7 +499,8 @@ class SqlRunRepository:
         return all(Path(path).exists() for path in paths)
 
     def _apply_run(
-        self, session: Session, record: CheckRun, run: dict[str, Any]
+        self, session: Session, record: CheckRun, run: dict[str, Any],
+        *, changed_order_keys: tuple[str, ...] | None = None,
     ) -> None:
         options = deepcopy(run.get("options") or {})
         record.input_path = str(options.get("input_path", ""))
@@ -417,6 +514,9 @@ class SqlRunRepository:
         record.started_at = _datetime(run.get("started_at"))
         record.finished_at = _datetime(run.get("finished_at"))
         record.error = _optional_str(run.get("error"))
+        if changed_order_keys is not None:
+            self._apply_changed_orders(session, record, run, changed_order_keys)
+            return
         existing_orders = {
             (item.customer_id or "", item.order_id): item for item in record.orders
         }
@@ -441,6 +541,47 @@ class SqlRunRepository:
         record.options_json = _json_dump(
             self._options_envelope(run, file_ids_by_order)
         )
+
+    def _apply_changed_orders(
+        self, session: Session, record: CheckRun, run: dict[str, Any],
+        changed_order_keys: tuple[str, ...],
+    ) -> None:
+        """Persist only affected orders and merge their compatibility metadata."""
+        envelope = _json_load(record.options_json, {})
+        if _OPTIONS_MARKER not in envelope:
+            envelope = {"options": {}, _OPTIONS_MARKER: {}}
+        metadata = envelope[_OPTIONS_MARKER]
+        metadata["run_extras"] = {
+            key: deepcopy(value) for key, value in run.items()
+            if key not in _RUN_STANDARD_KEYS
+        }
+        order_extras = metadata.setdefault("order_extras", {})
+        file_extras = metadata.setdefault("file_extras", {})
+        for aggregate_key in changed_order_keys:
+            order = (run.get("orders") or {}).get(aggregate_key)
+            if order is None:
+                raise KeyError(f"missing changed order: {aggregate_key}")
+            order_id = str(order.get("order_id") or aggregate_key)
+            customer_id = str(order.get("customer_id") or "")
+            order_record = session.scalar(
+                select(OrderResult).where(
+                    OrderResult.run_id == record.id,
+                    OrderResult.order_id == order_id,
+                    func.coalesce(OrderResult.customer_id, "") == customer_id,
+                )
+            )
+            if order_record is None:
+                order_record = OrderResult(run=record, order_id=order_id)
+                session.add(order_record)
+            file_ids = self._apply_order(session, order_record, order)
+            partial = self._options_envelope(
+                {"options": run.get("options"), "orders": {aggregate_key: order}},
+                {aggregate_key: file_ids},
+            )[_OPTIONS_MARKER]
+            order_extras[aggregate_key] = partial["order_extras"][aggregate_key]
+            file_extras[aggregate_key] = partial["file_extras"][aggregate_key]
+        envelope["options"] = deepcopy(run.get("options") or {})
+        record.options_json = _json_dump(envelope)
 
     def _apply_order(
         self,
@@ -689,7 +830,8 @@ class SqlRunRepository:
 
     @staticmethod
     def _run_to_dict(
-        record: CheckRun, *, include_orders: bool = True
+        record: CheckRun, *, include_orders: bool = True,
+        order_records: list[OrderResult] | None = None,
     ) -> dict[str, Any]:
         envelope = _json_load(record.options_json, {})
         if "options" in envelope and _OPTIONS_MARKER in envelope:
@@ -723,7 +865,7 @@ class SqlRunRepository:
             return run
         order_extras = metadata.get("order_extras") or {}
         file_extras = metadata.get("file_extras") or {}
-        for order_record in sorted(record.orders, key=lambda item: item.id):
+        for order_record in sorted(order_records if order_records is not None else record.orders, key=lambda item: item.id):
             composite_key = (
                 f"{order_record.customer_id}:{order_record.order_id}"
                 if order_record.customer_id

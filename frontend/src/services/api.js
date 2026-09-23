@@ -28,7 +28,7 @@ export const api = {
   folders: (path = "") => request(`/api/folders?path=${encodeURIComponent(path)}`),
   runs: () => request("/api/checks"),
   run: (id) => request(`/api/checks/${encodeURIComponent(id)}`),
-  orders: (id) => request(`/api/checks/${encodeURIComponent(id)}/orders`),
+  orders: (id, params = {}) => request(`/api/checks/${encodeURIComponent(id)}/orders?${new URLSearchParams(params)}`),
   order: (runId, orderId) => request(`/api/checks/${encodeURIComponent(runId)}/orders/${encodeURIComponent(orderId)}`),
   start: (body) => request("/api/checks", { method: "POST", body: JSON.stringify(body) }),
   cancel: (id) => request(`/api/checks/${encodeURIComponent(id)}/cancel`, { method: "POST" }),

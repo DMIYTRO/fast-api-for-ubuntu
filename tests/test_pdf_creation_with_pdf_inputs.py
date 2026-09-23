@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pymupdf
 
 from core.inspector import ImageMetadata
+from core.pdf_exporter import merge_pdfs_with_pymupdf
 from processing.batch_processor import BatchProcessor
 
 
@@ -82,6 +83,57 @@ def test_one_page_4_0_pdf_without_side_is_created(tmp_path: Path) -> None:
     assert results[0][2] is None, results[0][2]
     with pymupdf.open(results[0][1]) as document:
         assert document.page_count == 1
+
+
+def test_multiple_ready_pdfs_use_injected_callas_merger(tmp_path: Path) -> None:
+    face = tmp_path / "job_(90x50)_4-4_(1-207)_face.pdf"
+    back = tmp_path / "job_(90x50)_4-4_(1-207)_back.pdf"
+    _make_pdf(face, 1)
+    _make_pdf(back, 1)
+    processor = _processor(tmp_path)
+    calls: list[tuple[list[Path], Path]] = []
+
+    class FakeCallas:
+        def merge_pdfs(self, inputs: list[Path], output: Path):
+            calls.append((inputs, output))
+            from core.pdf_exporter import merge_pdfs_with_pymupdf
+            merge_pdfs_with_pymupdf([str(path) for path in inputs], str(output))
+
+    processor.callas_toolbox = FakeCallas()
+    processor.callas_enabled = True
+    results = processor.create_pdfs(_create_orders(tmp_path, processor))
+
+    assert results[0][2] is None, results[0][2]
+    assert len(calls) == 1
+    assert [path.name for path in calls[0][0]] == [face.name, back.name]
+
+
+def test_multiple_ready_pdfs_use_legacy_merge_when_callas_disabled(tmp_path: Path) -> None:
+    face = tmp_path / "job_(90x50)_4-4_(1-208)_face.pdf"
+    back = tmp_path / "job_(90x50)_4-4_(1-208)_back.pdf"
+    _make_pdf(face, 1)
+    _make_pdf(back, 1)
+    processor = _processor(tmp_path)
+
+    with patch("processing.batch_processor.merge_pdfs_with_pymupdf", wraps=merge_pdfs_with_pymupdf) as merge:
+        results = processor.create_pdfs(_create_orders(tmp_path, processor))
+
+    assert results[0][2] is None, results[0][2]
+    merge.assert_called_once()
+
+
+def test_single_ready_pdf_is_copied_without_resaving_or_merging(tmp_path: Path) -> None:
+    source = tmp_path / "job_(90x50)_4-0_(1-206)_input.pdf"
+    _make_pdf(source, 1)
+    source_bytes = source.read_bytes()
+    processor = _processor(tmp_path)
+
+    with patch("processing.batch_processor.merge_pdfs_with_pymupdf") as merge:
+        results = processor.create_pdfs(_create_orders(tmp_path, processor))
+
+    assert results[0][2] is None, results[0][2]
+    merge.assert_not_called()
+    assert results[0][1].read_bytes() == source_bytes
 
 
 def test_mixed_face_image_and_back_pdf_merges_in_order(tmp_path: Path) -> None:

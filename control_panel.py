@@ -5,12 +5,14 @@ from __future__ import annotations
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 import asyncio
+from hashlib import sha256
 import json
 import logging
 import os
 from pathlib import Path, PureWindowsPath
 import resource
 import shutil
+import tempfile
 import time
 from typing import Any, Literal
 from uuid import uuid4
@@ -23,6 +25,7 @@ from sqlalchemy import desc, func, select
 
 from config.profiles import DEFAULT_DIRECTION, PROFILES
 from core.return_reasons import load_return_reasons
+from core.preview_generator import detailed_preview_path
 from server.auth import AuthService, create_auth_router, require_session
 from server.database import Database, configure_database, get_db, upgrade_database
 from server.errors import APIError, error_payload, install_error_handlers
@@ -30,6 +33,7 @@ from server.logging_config import configure_logging
 from server.models import OrderAction, OrderResult, PitstopCheck
 from server.schemas import CheckOptions, CorrectionRequest, OrderActionRequest
 from server.settings import Settings
+from core.callas_toolbox import CallasToolbox
 from services import (
     FileLifecycle,
     FileLifecycleError,
@@ -56,6 +60,7 @@ from services.sborka_integration import (
 )
 from services.ftp_preview_uploader import build_ftp_preview_uploader
 from services.return_preview import CUSTOM_PREVIEWS_RELATIVE_PATH, custom_return_preview_path
+from services.preview_storage import preview_run_directory
 from services.repository import InMemoryRunRepository, RunRepository
 
 try:
@@ -70,6 +75,39 @@ LEGACY_UI_PATH = PROJECT_DIR / "web_ui" / "control-panel.html"
 DEFAULT_HOST = os.environ.get("IMAGE_MAGIC_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("IMAGE_MAGIC_PORT", "8006"))
 logger = logging.getLogger("image_magic.web")
+PREVIEW_CACHE_DIR = Path(
+    os.environ.get("IMAGE_MAGIC_PREVIEW_CACHE_DIR", PROJECT_DIR / ".preview-cache")
+).expanduser().resolve()
+
+
+def get_cached_preview_path(source_path: Path) -> Path:
+    """Return a local cached copy of a preview, refreshing it when changed."""
+    source = Path(source_path)
+    try:
+        source_stat = source.stat()
+        if not source.is_file():
+            return source
+        key = sha256(str(source.resolve()).encode("utf-8")).hexdigest()
+        cached = PREVIEW_CACHE_DIR / f"{key}{source.suffix.lower()}"
+        try:
+            cached_stat = cached.stat()
+            if cached_stat.st_size == source_stat.st_size and cached_stat.st_mtime_ns == source_stat.st_mtime_ns:
+                return cached
+        except OSError:
+            pass
+        PREVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        fd, temporary_name = tempfile.mkstemp(prefix=f".{key}.", dir=PREVIEW_CACHE_DIR)
+        os.close(fd)
+        temporary = Path(temporary_name)
+        try:
+            shutil.copy2(source, temporary)
+            os.replace(temporary, cached)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return cached
+    except OSError:
+        logger.warning("preview.cache_failed name=%s", source.name, exc_info=True)
+        return source
 
 
 def _configured_roots() -> tuple[Path, ...]:
@@ -94,6 +132,18 @@ def _is_inside(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _preview_root_for_input(
+    settings: Settings, input_dir: Path,
+    share_input_root: Path = Path("/mnt/shared/inputFolders"),
+    share_preview_root: Path = Path("/mnt/shared/Previews"),
+) -> Path | None:
+    if settings.preview_root is not None:
+        return settings.preview_root.expanduser().resolve()
+    if _is_inside(input_dir.resolve(), share_input_root.resolve()):
+        return share_preview_root.resolve()
+    return None
 
 
 def resolve_input_path(
@@ -160,7 +210,12 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
             }
         if order.get("pdf_path"):
             order["pdf_url"] = f"/api/orders/{order_id}/pdf?run_id={run_id}"
-        if input_path and custom_return_preview_path(order_id, input_path=input_path):
+        if input_path and custom_return_preview_path(
+            order_id, input_path=input_path,
+            preview_root=Path((run.get("options") or {})["preview_root"])
+            if (run.get("options") or {}).get("preview_root") else None,
+            run_id=run_id,
+        ):
             order["custom_preview_url"] = (
                 f"/api/checks/{run_id}/orders/{order_id}/return-preview"
             )
@@ -181,7 +236,7 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
                 ),
             }
         for index, item in enumerate(order.get("files") or []):
-            file_id = str(item.get("id") or f"{run_id}:{order_id}:{index}")
+            file_id = str(item.get("file_result_id") or item.get("id") or f"{run_id}:{order_id}:{index}")
             item["id"] = file_id
             item["filename"] = item.get("filename") or item.get("name")
             parsed = item.get("parsed") or {}
@@ -215,15 +270,53 @@ def _safe_result_path(run: dict[str, Any], raw_path: str | None) -> Path:
     return target
 
 
-def _safe_history_preview_path(root_path: str, raw_path: str | None) -> Path | None:
+def _safe_preview_path(run: dict[str, Any], raw_path: str | None) -> Path:
+    """Authorize old input previews and this run's isolated Share previews."""
+    if not raw_path:
+        raise APIError(404, "file_not_ready", "Превью ещё не готово.")
+    target = Path(raw_path).resolve()
+    input_root = Path(run["options"]["input_path"]).resolve()
+    configured = run["options"].get("preview_root")
+    configured_root = Path(configured).resolve() if configured else None
+    share_root = preview_run_directory(configured_root, str(run["id"])).resolve() if configured_root else None
+    allowed = (
+        _is_inside(target, share_root)
+        if configured_root and _is_inside(target, configured_root)
+        else _is_inside(target, input_root)
+    )
+    if not target.is_file() or not allowed:
+        raise APIError(404, "file_not_found", "Превью не найдено.")
+    return target
+
+
+def _safe_history_preview_path(
+    root_path: str, raw_path: str | None,
+    preview_root: str | None = None, run_id: str | None = None,
+) -> Path | None:
     """Return an available history preview only when it remains inside its run."""
     if not raw_path:
         return None
     root = Path(root_path).resolve()
     target = Path(raw_path).resolve()
-    if not _is_inside(target, root) or not target.is_file():
+    configured_root = Path(preview_root).resolve() if preview_root else None
+    share_root = preview_run_directory(configured_root, run_id).resolve() if configured_root and run_id else None
+    allowed = (
+        bool(share_root and _is_inside(target, share_root))
+        if configured_root and _is_inside(target, configured_root)
+        else _is_inside(target, root)
+    )
+    if not target.is_file() or not allowed:
         return None
     return target
+
+
+def _stored_preview_root(run_record: Any) -> str | None:
+    """Read the storage setting saved with the run for historical previews."""
+    try:
+        envelope = json.loads(run_record.options_json or "{}")
+    except (ValueError, TypeError):
+        return None
+    return (envelope.get("options") or envelope).get("preview_root")
 
 
 def _find_order(
@@ -244,6 +337,12 @@ def _find_order(
 def _find_file(
     coordinator: RunCoordinator, file_id: str
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    lookup = getattr(coordinator.repository, "get_file_asset", None)
+    if callable(lookup) and file_id.isdecimal():
+        result = lookup(file_id)
+        if result is not None:
+            return result
+        raise APIError(404, "file_not_found", "Файл не найден.")
     for run in sorted(
         coordinator.list_runs(),
         key=lambda item: item.get("created_at") or "",
@@ -337,6 +436,7 @@ def _pitstop_adapter_factory(settings: Settings):
             connect_timeout_seconds=settings.pitstop_connect_timeout_seconds,
         )
     )
+    callas = CallasToolbox(settings) if settings.callas_enabled else None
 
     def factory(options: ProcessingOptions) -> BatchProcessorAdapter:
         if options.direction not in configured_profiles:
@@ -360,6 +460,8 @@ def _pitstop_adapter_factory(settings: Settings):
         return BatchProcessorAdapter(
             options,
             pitstop_service=service,
+            callas_toolbox=callas,
+            callas_enabled=settings.callas_enabled,
             order_info_fetcher=(
                 build_order_info_fetcher(
                     settings.sborka_api_dir,
@@ -382,7 +484,13 @@ def _default_adapter_factory(settings: Settings):
         if settings.sborka_enabled
         else None
     )
-    return lambda options: BatchProcessorAdapter(options, order_info_fetcher=fetcher)
+    callas = CallasToolbox(settings) if settings.callas_enabled else None
+    return lambda options: BatchProcessorAdapter(
+        options,
+        order_info_fetcher=fetcher,
+        callas_toolbox=callas,
+        callas_enabled=settings.callas_enabled,
+    )
 
 
 def create_app(
@@ -583,9 +691,11 @@ def create_app(
             default_input_dir=_get_default_input(request),
         )
         FileLifecycle(input_dir).initialize()
+        preview_root = _preview_root_for_input(settings, input_dir)
         result = _get_coordinator(request).submit(
             ProcessingOptions(
                 input_path=str(input_dir),
+                preview_root=str(preview_root) if preview_root else None,
                 direction=options.direction,
                 approve_corrections=options.approve_corrections,
                 correction_policy=(
@@ -621,7 +731,11 @@ def create_app(
 
     @application.get("/api/checks/{run_id}", dependencies=[Depends(protected)])
     def get_check(request: Request, run_id: str) -> dict[str, Any]:
-        return _public_run(_get_run_or_404(_get_coordinator(request), run_id))
+        try:
+            run = _get_coordinator(request).get_run(run_id, include_orders=False)
+        except RunNotFoundError as exc:
+            raise APIError(404, "run_not_found", "Запуск проверки не найден.") from exc
+        return _public_run(run)
 
     @application.post(
         "/api/checks/{run_id}/cancel", dependencies=[Depends(protected)]
@@ -635,9 +749,28 @@ def create_app(
     @application.get(
         "/api/checks/{run_id}/orders", dependencies=[Depends(protected)]
     )
-    def list_orders(request: Request, run_id: str) -> dict[str, Any]:
-        run = _get_run_or_404(_get_coordinator(request), run_id)
-        return {"items": _orders_from_run(run)}
+    def list_orders(
+        request: Request, run_id: str,
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=10, ge=1, le=100),
+        status: Literal["all", "passed", "warning", "error", "waiting_confirmation"] = "all",
+        search: str = Query(default="", max_length=200),
+        active_only: bool = False,
+    ) -> dict[str, Any]:
+        try:
+            result = _get_coordinator(request).list_orders_page(
+                run_id, page=page, page_size=page_size, status=status, search=search,
+                active_only=active_only,
+            )
+        except RunNotFoundError as exc:
+            raise APIError(404, "run_not_found", "Запуск проверки не найден.") from exc
+        orders = _orders_from_run({"id": run_id, "orders": result["items"],
+                                   "options": {"input_path": result.get("input_path", ""),
+                                               "preview_root": result.get("preview_root")}})
+        total = result["total"]
+        return {"items": orders, "page": page, "page_size": page_size,
+                "total": total, "total_pages": max(1, (total + page_size - 1) // page_size),
+                "counts": result["counts"]}
 
     @application.get(
         "/api/checks/{run_id}/orders/{order_id}",
@@ -691,7 +824,7 @@ def create_app(
             nonlocal cursor
             heartbeat = 0
             while not await request.is_disconnected():
-                events = coordinator_value.events(run_id, cursor)
+                events = await asyncio.to_thread(coordinator_value.events, run_id, cursor)
                 if events:
                     for event in events:
                         cursor = event.id
@@ -702,7 +835,9 @@ def create_app(
                     if heartbeat >= 15:
                         yield ": keep-alive\n\n"
                         heartbeat = 0
-                run = coordinator_value.get_run(run_id)
+                run = await asyncio.to_thread(
+                    coordinator_value.get_run, run_id, include_orders=False
+                )
                 if run["status"] in {"completed", "failed", "cancelled"} and not events:
                     break
                 await asyncio.sleep(1)
@@ -724,7 +859,8 @@ def create_app(
         "/api/files/{file_id}/preview", dependencies=[Depends(protected)]
     )
     def preview_file(
-        request: Request, file_id: str, page: int | None = None
+        request: Request, file_id: str, page: int | None = None,
+        size: Literal["small", "large"] = "small",
     ) -> FileResponse:
         run, item = _find_file(_get_coordinator(request), file_id)
         previews_for_file = item.get("preview_paths") or []
@@ -743,7 +879,13 @@ def create_app(
                 (path for path in previews if side and side in Path(path).stem),
                 previews[0] if previews else None,
             )
-        return FileResponse(_safe_result_path(run, preview))
+        target = _safe_preview_path(run, preview)
+        if size == "large":
+            detailed = detailed_preview_path(target)
+            if detailed.is_file():
+                target = _safe_preview_path(run, str(detailed))
+        cached_target = get_cached_preview_path(target)
+        return FileResponse(cached_target, headers={"Cache-Control": "private, no-cache"})
 
     @application.get(
         "/api/checks/{run_id}/orders/{order_id}/return-preview",
@@ -754,7 +896,10 @@ def create_app(
     ) -> FileResponse:
         run, _ = _find_order(_get_coordinator(request), order_id, run_id)
         preview = custom_return_preview_path(
-            order_id, input_path=Path(run["options"]["input_path"])
+            order_id, input_path=Path(run["options"]["input_path"]),
+            preview_root=Path(run["options"]["preview_root"])
+            if run["options"].get("preview_root") else None,
+            run_id=run_id,
         )
         if preview is None:
             raise APIError(
@@ -762,7 +907,7 @@ def create_app(
                 "preview_not_found",
                 "Пользовательское превью не загружено.",
             )
-        return FileResponse(preview)
+        return FileResponse(get_cached_preview_path(preview), headers={"Cache-Control": "private, no-cache"})
 
     @application.post(
         "/api/checks/{run_id}/orders/{order_id}/return-preview",
@@ -803,7 +948,15 @@ def create_app(
                 "preview_invalid_format",
                 "Можно загрузить только JPEG или PNG-превью.",
             )
-        directory = Path(run["options"]["input_path"]) / CUSTOM_PREVIEWS_RELATIVE_PATH
+        # The order lookup also validates this external identifier before it
+        # becomes a filename component.
+        if not order_id or Path(order_id).name != order_id:
+            raise APIError(422, "invalid_order_id", "Некорректный номер заказа.")
+        directory = (
+            preview_run_directory(Path(run["options"]["preview_root"]), run_id) / "Custom"
+            if run["options"].get("preview_root")
+            else Path(run["options"]["input_path"]) / CUSTOM_PREVIEWS_RELATIVE_PATH
+        )
         directory.mkdir(parents=True, exist_ok=True)
         for other_suffix in (".png", ".jpg"):
             (directory / f"{order_id}_return-preview{other_suffix}").unlink(
@@ -948,7 +1101,8 @@ def create_app(
                 previews = []
                 for index, file in enumerate(order.files):
                     source = _safe_history_preview_path(
-                        order.run.input_path, file.preview_path
+                        order.run.input_path, file.preview_path,
+                        _stored_preview_root(order.run), order.run.id,
                     )
                     if source is None:
                         continue
@@ -994,11 +1148,12 @@ def create_app(
             if file_index < 0 or file_index >= len(files):
                 raise APIError(404, "preview_not_found", "Превью не найдено.")
             target = _safe_history_preview_path(
-                action.order_result.run.input_path, files[file_index].preview_path
+                action.order_result.run.input_path, files[file_index].preview_path,
+                _stored_preview_root(action.order_result.run), action.order_result.run.id,
             )
             if target is None:
                 raise APIError(404, "preview_not_found", "Превью не найдено.")
-            return FileResponse(target)
+            return FileResponse(get_cached_preview_path(target), headers={"Cache-Control": "private, no-cache"})
 
     @application.get(
         "/api/checks/{run_id}/export.json", dependencies=[Depends(protected)]

@@ -14,6 +14,8 @@ from pathlib import Path
 import shutil
 from typing import Any
 
+from core.preview_generator import detailed_preview_path
+
 
 class FileLifecycleError(RuntimeError):
     """Raised when an order cannot safely be moved to its next state."""
@@ -71,7 +73,10 @@ class FileLifecycle:
         moves = [
             *( (source, self.processed_dir / source.name) for source in sources ),
             (pdf, self.print_pdf_dir / pdf.name),
-            *( (preview, self.processed_preview_dir / preview.name) for preview in previews ),
+            *(
+                (preview, self._preview_destination(preview, "Processed", self.processed_preview_dir))
+                for preview in self._with_detailed_previews(previews)
+            ),
         ]
         completed = self._move_all(moves, conflict_strategy=conflict_strategy)
         return self._transition_from_moves(order, completed)
@@ -86,13 +91,18 @@ class FileLifecycle:
         pdf = self._optional_path(order.get("pdf_path"))
         if pdf:
             candidates.append(pdf)
-        candidates.extend(
-            path for path in (self._optional_path(value) for value in order.get("preview_paths") or []) if path
-        )
+        previews = [
+            path for path in
+            (self._optional_path(value) for value in order.get("preview_paths") or [])
+            if path
+        ]
+        share_previews = self._with_detailed_previews(previews)
+        candidates.extend(share_previews)
         if not candidates:
             raise FileLifecycleError("Для возврата не найдено ни одного файла заказа.")
         completed = self._move_all(
-            ((path, target_dir / path.name) for path in candidates),
+            ((path, self._preview_destination(path, "Return", target_dir)
+              if path in share_previews else target_dir / path.name) for path in candidates),
             reuse_identical=True,
             conflict_strategy=conflict_strategy,
         )
@@ -140,6 +150,25 @@ class FileLifecycle:
         if path is None:
             raise FileLifecycleError(f"Не найден или повреждён {label} заказа.")
         return path
+
+    @staticmethod
+    def _with_detailed_previews(previews: list[Path]) -> list[Path]:
+        """Move a generated detailed image with its compact preview."""
+        paths: list[Path] = []
+        for preview in previews:
+            paths.append(preview)
+            detailed = detailed_preview_path(preview)
+            if detailed.is_file():
+                paths.append(detailed)
+        return paths
+
+    def _preview_destination(self, path: Path, stage: str, legacy_dir: Path) -> Path:
+        """Keep externally stored previews on their volume during transitions."""
+        try:
+            path.resolve().relative_to(self.input_dir)
+        except ValueError:
+            return path.parent / stage / path.name
+        return legacy_dir / path.name
 
     @staticmethod
     def _required_paths(values: list[Any], label: str) -> list[Path]:

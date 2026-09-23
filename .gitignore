@@ -36,4 +36,5 @@ frontend/.vite/
 # do not commit the vendor binary, license, cache or generated test PDFs.
 /tools/callas_pdfToolboxCLI_x64_Linux_*/
 /.callas-cache/
+/.preview-cache/
 /output/callas_roundtrip_test/

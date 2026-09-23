@@ -163,7 +163,7 @@ function choosePreview() { uploadInput.value?.click(); }
             <thead><tr><th>Параметр</th><th>Face</th><th v-if="back">Back</th><th>Норма</th></tr></thead>
             <tbody>
               <tr><th>Размер с вылетами</th><td>{{ size(face) }}</td><td v-if="back">{{ size(back) }}</td><td>{{ expectedSize }}</td></tr>
-              <tr><th>Разрешение</th><td>{{ dpi(face) }}</td><td v-if="back">{{ dpi(back) }}</td><td>≥ 300 DPI</td></tr>
+              <tr><th>Разрешение</th><td>{{ dpi(face) }}</td><td v-if="back">{{ dpi(back) }}</td><td>≥ 270 DPI</td></tr>
               <tr><th>Цветовая модель</th><td>{{ color(face) }}</td><td v-if="back">{{ color(back) }}</td><td>CMYK</td></tr>
               <tr><th>Формат файла</th><td>{{ format(face) }}</td><td v-if="back">{{ format(back) }}</td><td>JPG / JPEG / TIFF / PDF</td></tr>
               <tr><th>Автоповорот</th><td>{{ rotation(face) }}</td><td v-if="back">{{ rotation(back) }}</td><td>Минимальный</td></tr>

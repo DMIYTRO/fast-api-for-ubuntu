@@ -9,8 +9,14 @@ from typing import Mapping, Optional
 
 from core.inspector import count_frames, inspect_file, inspect_tiff_structure
 from core.pdf_inspector import inspect_pdf
-from core.pdf_exporter import convert_image_to_pdf, merge_pdfs_with_pymupdf
-from core.preview_generator import generate_preview
+from core.pdf_exporter import (
+    convert_image_to_pdf,
+    convert_tiff_to_pdf_preserve_cmyk,
+    merge_pdfs_with_pymupdf,
+)
+from core.callas_toolbox import CallasToolbox
+from core.callas_toolbox import CallasToolboxError
+from core.preview_generator import detailed_preview_path, generate_preview
 from core.resampler import resample_image
 from core.tool_runner import run_command
 from config.profiles import DEFAULT_PROFILE, PrePressProfile
@@ -54,6 +60,8 @@ class BatchProcessor:
         min_dpi: float | None = None,
         *,
         profile: PrePressProfile = DEFAULT_PROFILE,
+        callas_toolbox: CallasToolbox | None = None,
+        callas_enabled: bool = False,
     ):
         self.input_dir = input_dir
         self.output_dir = output_dir
@@ -62,6 +70,11 @@ class BatchProcessor:
         self.size_extra_mm = profile.size_extra_mm if size_extra_mm is None else size_extra_mm
         self.tolerance_mm = profile.size_tolerance_mm if tolerance_mm is None else tolerance_mm
         self.min_dpi = profile.min_dpi if min_dpi is None else min_dpi
+        # Keep the legacy backend as the default for unit tests and callers
+        # that do not explicitly opt into the external CLI. Production wiring
+        # can inject a configured CallasToolbox and enable it from Settings.
+        self.callas_toolbox = callas_toolbox
+        self.callas_enabled = callas_enabled and callas_toolbox is not None
         self.unparsed: list[FileCheck] = []
         self.unsupported: list[FileCheck] = []
         self.scanned_order_count = 0
@@ -69,11 +82,11 @@ class BatchProcessor:
     @staticmethod
     def _preview_worker_count(item_count: int) -> int:
         """Return a bounded, operator-configurable preview concurrency level."""
-        configured = os.environ.get("IMAGE_MAGIC_PREVIEW_WORKERS", "2")
+        configured = os.environ.get("IMAGE_MAGIC_PREVIEW_WORKERS", "1")
         try:
             requested = int(configured)
         except ValueError:
-            requested = 2
+            requested = 1
         return max(1, min(item_count, requested, os.cpu_count() or 1))
 
     def scan(self) -> list[Path]:
@@ -163,6 +176,10 @@ class BatchProcessor:
                     check.dpi_y = meta.dpi_y
                     check.actual_format = meta.format.upper()
                     check.colorspace = meta.colorspace
+                    check.icc_profile = meta.icc_profile
+                    check.icc_profile_present = (
+                        bool(meta.icc_profile) and meta.icc_profile != "Не внедрен"
+                    )
                     check.size_mb = meta.size_mb
                     self._validate_file(check)
                 except Exception as exc:
@@ -486,7 +503,17 @@ class BatchProcessor:
                     )
 
                     temporary_output = Path(temporary_dir) / "combined.pdf"
-                    merge_pdfs_with_pymupdf(page_pdfs, str(temporary_output))
+                    # A complete PDF is already a production artifact.  Keep
+                    # its bytes intact and only validate a copied temporary
+                    # candidate; re-saving it through PyMuPDF is needlessly
+                    # expensive and may alter metadata/content streams.
+                    if (
+                        len(ordered_files) == 1
+                        and ordered_files[0].path.suffix.lower() == ".pdf"
+                    ):
+                        shutil.copy2(ordered_files[0].path, temporary_output)
+                    else:
+                        self._merge_page_pdfs(page_pdfs, temporary_output)
                     self._validate_created_pdf(
                         temporary_output,
                         page_refs,
@@ -497,6 +524,17 @@ class BatchProcessor:
             except Exception as exc:
                 results.append((order, output_path, str(exc)))
         return results
+
+    def _merge_page_pdfs(self, page_pdfs: list[str], output_path: Path) -> None:
+        """Merge PDFs using callas only for an explicitly opted-in PDF-only batch."""
+        pdf_only = all(Path(path).suffix.lower() == ".pdf" for path in page_pdfs)
+        if self.callas_enabled and self.callas_toolbox is not None and pdf_only:
+            self.callas_toolbox.merge_pdfs(
+                [Path(path) for path in page_pdfs],
+                output_path,
+            )
+            return
+        merge_pdfs_with_pymupdf(page_pdfs, str(output_path))
 
     @staticmethod
     def _ordered_files_for_creation(order: OrderCheck) -> list[FileCheck]:
@@ -580,12 +618,14 @@ class BatchProcessor:
                 dpi_arg = str(self.min_dpi)
 
             page_path = temporary_dir / f"{page_number}_{ref.expected_side}.pdf"
-            convert_image_to_pdf(
-                source_image_path,
-                str(page_path),
-                dpi=dpi_arg,
-                compression="none",
-            )
+            if item.path.suffix.lower() in {".tif", ".tiff"}:
+                convert_tiff_to_pdf_preserve_cmyk(
+                    source_image_path, str(page_path), dpi=dpi_arg
+                )
+            else:
+                convert_image_to_pdf(
+                    source_image_path, str(page_path), dpi=dpi_arg, compression="none"
+                )
             converted[item.path] = str(page_path)
             page_pdfs.append(str(page_path))
         return page_pdfs
@@ -734,24 +774,29 @@ class BatchProcessor:
 
         with tempfile.TemporaryDirectory(prefix=f".preview_{pdf_path.stem}_") as temp_dir:
             temp_path = Path(temp_dir)
-            page_pattern = temp_path / "page-%03d.png"
-            command = [
-                gs_cmd,
-                "-q",
-                "-dSAFER",
-                "-dBATCH",
-                "-dNOPAUSE",
-                "-sDEVICE=png16m",
-                f"-r{int(render_dpi)}",
-                f"-sOutputFile={page_pattern}",
-                str(pdf_path),
-            ]
-            result = run_command(command, capture_output=True, text=True)
-            if result.returncode != 0:
-                details = (result.stderr or result.stdout).strip()
-                raise ValueError(f"ошибка рендеринга PDF для превью: {details}")
-
-            rendered_pages = sorted(temp_path.glob("page-*.png"))
+            rendered_pages: list[Path] = []
+            if self.callas_enabled and self.callas_toolbox is not None:
+                try:
+                    self.callas_toolbox.save_as_image(pdf_path, temp_path, resolution=int(render_dpi))
+                    rendered_pages = sorted(temp_path.glob("*.png"))
+                    if not rendered_pages:
+                        raise CallasToolboxError("callas не создал изображения preview")
+                except Exception:
+                    rendered_pages = []
+            if not rendered_pages:
+                if not gs_cmd:
+                    raise FileNotFoundError("Ghostscript (`gs`) не найден для рендеринга превью.")
+                page_pattern = temp_path / "page-%03d.png"
+                command = [
+                    gs_cmd, "-q", "-dSAFER", "-dBATCH", "-dNOPAUSE",
+                    "-sDEVICE=png16m", f"-r{int(render_dpi)}",
+                    f"-sOutputFile={page_pattern}", str(pdf_path),
+                ]
+                result = run_command(command, capture_output=True, text=True)
+                if result.returncode != 0:
+                    details = (result.stderr or result.stdout).strip()
+                    raise ValueError(f"ошибка рендеринга PDF для превью: {details}")
+                rendered_pages = sorted(temp_path.glob("page-*.png"))
             if not rendered_pages:
                 raise ValueError("не удалось извлечь страницы из PDF")
 
@@ -777,6 +822,7 @@ class BatchProcessor:
                     safe_zone_mm=safe_zone_mm,
                     bleed_mm=bleed_mm,
                     fold_overlay=page_overlay,
+                    detailed_output_path=str(detailed_preview_path(output_preview_path)),
                 )
                 created_previews.append(output_preview_path)
 
@@ -869,6 +915,7 @@ class BatchProcessor:
                         safe_zone_mm=self.profile.safe_zone_mm,
                         bleed_mm=1.0,
                         fold_overlay=overlay,
+                        detailed_output_path=str(detailed_preview_path(preview_path)),
                     )
                     previews = [preview_path]
                 return file_check, previews, None

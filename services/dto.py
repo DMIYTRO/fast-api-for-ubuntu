@@ -43,6 +43,8 @@ def file_check_to_dto(
         "height_px": value.height_px,
         "actual_format": value.actual_format,
         "colorspace": value.colorspace,
+        "icc_profile_present": value.icc_profile_present,
+        "icc_profile": value.icc_profile,
         "has_alpha": value.has_alpha,
         "has_unflattened_layers": value.has_unflattened_layers,
         "channels": value.channels,

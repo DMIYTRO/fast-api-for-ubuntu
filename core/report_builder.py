@@ -367,7 +367,7 @@ def build_orders_html_report(
         # 2. Разрешение DPI
         face_dpi = f"{face_file.dpi_x:.0f}×{face_file.dpi_y:.0f} DPI" if face_file and face_file.dpi_x else "—"
         back_dpi = f"{back_file.dpi_x:.0f}×{back_file.dpi_y:.0f} DPI" if back_file and back_file.dpi_x else "—"
-        rows_code += render_param_row("Разрешение (DPI)", face_dpi, back_dpi, "≥ 300 DPI")
+        rows_code += render_param_row("Разрешение (DPI)", face_dpi, back_dpi, "≥ 270 DPI")
 
         # 3. Цветность
         face_col = face_file.colorspace if face_file else "—"
