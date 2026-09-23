@@ -1,40 +1,49 @@
-# Repository Guidelines
+# Repository Guide
 
-## Project Structure & Module Organization
+This repository is Image Magic, a prepress order checking and preparation system. Read the nearest scoped `AGENTS.md` before changing code:
 
-`processing/` owns file discovery, validation, grouping, and PDF creation. `core/` wraps ImageMagick, Ghostscript, PDF, preview, and reporting operations. `services/` coordinates runs, order transitions, FTP/Sborka integration, and persistence; `server/` contains FastAPI settings, models, auth, and database setup. The Vue/Pinia dashboard is in `frontend/src/`. Python tests live in `tests/`; Alembic migrations are in `alembic/versions/`.
+- `processing/AGENTS.md` and `core/AGENTS.md`: artwork inspection, policy, image/PDF tools, previews and reports.
+- `services/AGENTS.md` and `server/AGENTS.md`: run orchestration, order lifecycle, API, persistence and integrations.
+- `frontend/AGENTS.md`: Vue/Pinia dashboard.
+- `tests/AGENTS.md`: regression test conventions.
 
-Keep source images untouched. Generated artifacts belong under an input folder's `PDF/`, `Previews/`, `Troubles/`, `Processed/`, or `output_report/` directories.
+## Main areas
 
-## Build, Test, and Development Commands
+- `processing/`: filename parsing, file/order models, profile rules, DPI/size decisions, batch inspection and PDF creation.
+- `core/`: ImageMagick/Ghostscript/Callas/PyMuPDF wrappers, PDF inspection/export, previews and HTML reports.
+- `services/`: background runs, domain transitions, file lifecycle, SQL repositories, PitStop, Sborka and FTP workflows.
+- `server/`: FastAPI settings, authentication, database models/schemas, error handling and logging.
+- `control_panel.py`: FastAPI composition/root wiring and HTTP routes. Prefer implementing behavior in services over adding processing/filesystem logic here.
+- `frontend/src/`: Vue 3, Pinia, router and API client. `frontend/dist/` is generated output.
+- `alembic/versions/`: ordered database migrations. Do not edit an applied migration; add a new migration.
+- `tests/`: Python regression coverage; frontend state/view tests live beside frontend code.
 
-Create the Python environment and install dependencies:
+## Important invariants
 
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-```
+- Preserve original artwork. Put generated files only in designated `PDF/`, `Previews/`, `Troubles/`, `Processed/`, `output_report/` or configured output directories.
+- Respect the configured allowed input roots and path containment checks. Never expose source files, PDFs, previews or reports through unauthenticated routes.
+- Current prepress baseline: minimum effective resolution is 270 DPI; RGB/sRGB may pass with a warning and must not be silently converted to CMYK. Preserve PDF page geometry, color information and ICC metadata where applicable.
+- Corrections must remain proportional; never stretch width and height independently. Orders requiring operator confirmation must remain pending until the explicit decision is recorded.
+- Use injected/fake external transports and shell tools in tests. Never contact production Sborka, FTP or PitStop endpoints from tests.
+- Do not commit credentials, databases, generated PDFs/previews, logs, local tool caches or temporary test artifacts. Check `git status --short` before and after work; the working tree may contain user data.
 
-Run the web app with `.venv/bin/python control_panel.py`. Apply migrations with `.venv/bin/alembic upgrade head`. Run the batch CLI with `python3 process_orders.py --input "/path/to/artwork"`.
+## Development and verification
 
-### Production FastAPI Service
+- Python environment: `.venv/bin/python`; install from `requirements.txt` when needed.
+- Run locally with `.venv/bin/python control_panel.py` (default local port 8006), or use the batch CLI `python3 process_orders.py --input "/path/to/artwork"`.
+- Migrations: `.venv/bin/alembic upgrade head`.
+- Python tests: `.venv/bin/python -m pytest -q`; image-tool tests need `magick` and `gs` on `PATH`.
+- Frontend: `cd frontend && npm ci && npm test -- --run && npm run build`.
+- Run focused checks first. Do not run tests/build unless requested or needed to substantiate a code change.
 
-The primary production service runs on VM `10.20.2.104` as the systemd unit `fastapi-app`. When a production restart is requested, restart that unit on the VM and verify its new `MainPID`, `ExecMainStartTimestamp`, and `active` status. Never start `.venv/bin/python control_panel.py` or another Uvicorn process in parallel as a substitute for restarting production; this creates a second instance while the UI continues to use the original service. Historical check results remain stored after a restart, so validate changes with a newly created check run rather than an old report.
+## Production constraint
 
-For the frontend, run `cd frontend && npm install`, then `npm test -- --run` and `npm run build`. Image processing tests require `magick` and `gs` on `PATH`.
+Production is VM `10.20.2.104`, systemd unit `fastapi-app`. If a production restart is explicitly requested, restart that unit and verify its new `MainPID`, `ExecMainStartTimestamp`, and `active` state. Never start another Uvicorn/control-panel process as a substitute. Validate behavior with a newly created check run; old report history persists across restarts.
 
-## Coding Style & Naming Conventions
+## Style and operator-facing behavior
 
-Use Python 4-space indentation, type hints for service boundaries, `snake_case` functions/modules, and `PascalCase` classes. Keep error messages actionable and in Russian where they are exposed to operators. Vue components use `PascalCase.vue`; Pinia stores and utility modules use lower camel-case APIs. Prefer small services over adding transport or filesystem logic to `control_panel.py`.
+Use Python type hints at service boundaries, 4-space indentation, `snake_case` and `PascalCase` classes. Keep Vue component filenames in `PascalCase.vue`; use lower camel-case store/util APIs. Error messages shown to operators should be actionable and in Russian. Keep commits scoped with concise imperative subjects.
 
-## Testing Guidelines
+## Recent design context
 
-Add focused regression tests beside the relevant behavior: `tests/test_<feature>.py` for Python and `frontend/src/**/*.test.js` for UI state. Use fakes/mocks for FTP, Sborka, and shell tools; do not contact production services during tests. Run targeted tests first, then the full Python suite with `.venv/bin/python -m pytest -q` and frontend tests/build before review.
-
-## Commit & Pull Request Guidelines
-
-Use concise imperative commit subjects, e.g. `Support rework senders` or `Remove obsolete frontend build asset`. Keep commits scoped. PRs should explain operator-visible behavior, list test commands, link relevant issues, and include screenshots for UI changes.
-
-## Security & Configuration
-
-Never commit API keys, passwords, databases, previews, or generated PDFs. Local FTP credentials are stored in ignored `sborka_ftp_credentials.json`; configure production secrets outside tracked files. Avoid logging credentials or full sensitive HTTP responses.
+Latest commit `5398b9d` (`Lower minimum DPI to 270 and preserve PDF color metadata`) set the profile and resampling threshold to 270 DPI, added ICC-profile fields to file results/DTOs, and added TIFF PDF export that removes the embedded ICC profile without assigning a replacement. It also uses Callas for PDF preview rendering when enabled and falls back to Ghostscript. Preserve these behaviors when editing adjacent paths; update regression coverage when changing them.
