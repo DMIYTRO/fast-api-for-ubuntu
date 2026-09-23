@@ -13,6 +13,7 @@ import shutil
 import subprocess
 
 from core.tool_runner import ExternalToolError, run_command
+from services.preview_storage import preview_run_directory
 
 
 class ReturnPreviewNotFoundError(RuntimeError):
@@ -24,16 +25,22 @@ RETURN_PREVIEWS_RELATIVE_PATH = Path("Previews") / "Return"
 CUSTOM_PREVIEWS_RELATIVE_PATH = Path("Previews") / "Custom"
 
 
-def custom_return_preview_path(order_id: str, *, input_path: Path) -> Path | None:
+def custom_return_preview_path(
+    order_id: str, *, input_path: Path,
+    preview_root: Path | None = None, run_id: str | None = None,
+) -> Path | None:
     """Return an operator-provided preview, which always wins over generated ones."""
     normalized_order_id = str(order_id).strip()
     if not normalized_order_id or Path(normalized_order_id).name != normalized_order_id:
         raise ValueError("Номер заказа не должен быть пустым или содержать путь.")
-    directory = Path(input_path) / CUSTOM_PREVIEWS_RELATIVE_PATH
-    for suffix in (".png", ".jpg"):
-        candidate = directory / f"{normalized_order_id}_return-preview{suffix}"
-        if candidate.is_file():
-            return candidate
+    directories = [Path(input_path) / CUSTOM_PREVIEWS_RELATIVE_PATH]
+    if preview_root and run_id:
+        directories.insert(0, preview_run_directory(preview_root, run_id) / "Custom")
+    for directory in directories:
+        for suffix in (".png", ".jpg"):
+            candidate = directory / f"{normalized_order_id}_return-preview{suffix}"
+            if candidate.is_file():
+                return candidate
     return None
 
 
@@ -47,6 +54,8 @@ def create_return_preview_collage(
     input_path: Path,
     face_preview_path: Path,
     back_preview_path: Path,
+    preview_root: Path | None = None,
+    run_id: str | None = None,
 ) -> Path:
     """Create the upload preview for a two-sided order.
 
@@ -66,6 +75,8 @@ def create_return_preview_collage(
         order_id,
         input_path=input_path,
         preview_paths=(face_preview_path, back_preview_path),
+        preview_root=preview_root,
+        run_id=run_id,
     )
 
 
@@ -74,6 +85,8 @@ def create_return_preview_sheet(
     *,
     input_path: Path,
     preview_paths: Iterable[Path],
+    preview_root: Path | None = None,
+    run_id: str | None = None,
 ) -> Path:
     """Create one deterministic Sborka preview from ordered pages/sides."""
     normalized_order_id = str(order_id).strip()
@@ -93,7 +106,10 @@ def create_return_preview_sheet(
     if not magick:
         raise ReturnPreviewCollageError("Не найдена утилита ImageMagick (`magick`).")
 
-    output_dir = Path(input_path) / RETURN_PREVIEWS_RELATIVE_PATH
+    output_dir = (
+        preview_run_directory(preview_root, run_id) / "Return"
+        if preview_root and run_id else Path(input_path) / RETURN_PREVIEWS_RELATIVE_PATH
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{normalized_order_id}_return-preview.png"
 
@@ -140,9 +156,13 @@ def prepare_return_preview_name(
     input_path: Path,
     preview_paths: Iterable[str] | None = None,
     files: Iterable[dict] | None = None,
+    preview_root: Path | None = None,
+    run_id: str | None = None,
 ) -> str:
     """Select one preview or create a face/back collage for return to Sborka."""
-    custom_preview = custom_return_preview_path(order_id, input_path=input_path)
+    custom_preview = custom_return_preview_path(
+        order_id, input_path=input_path, preview_root=preview_root, run_id=run_id
+    )
     if custom_preview is not None:
         return custom_preview.name
     preview_dir = input_path / PROCESSED_PREVIEWS_RELATIVE_PATH
@@ -189,6 +209,8 @@ def prepare_return_preview_name(
             input_path=input_path,
             face_preview_path=face_path,
             back_preview_path=back_path,
+            preview_root=preview_root,
+            run_id=run_id,
         ).name
 
     side_by_filename = {
@@ -202,19 +224,23 @@ def prepare_return_preview_name(
             input_path=input_path,
             face_preview_path=side_by_filename["face"],
             back_preview_path=side_by_filename["back"],
+            preview_root=preview_root,
+            run_id=run_id,
         ).name
 
     if len(candidates) == 1:
         return next(iter(candidates))
     if not candidates:
-        raise ReturnPreviewNotFoundError(
-            f"Не найдено сформированное превью для заказа №{order_id} в {preview_dir}"
-        )
+        # Rework remains valid without a rendered preview; downstream transport
+        # accepts an empty preview name and continues the operator's decision.
+        return ""
     ordered = [candidates[name] for name in sorted(candidates, key=_preview_sort_key)]
     return create_return_preview_sheet(
         order_id,
         input_path=input_path,
         preview_paths=ordered,
+        preview_root=preview_root,
+        run_id=run_id,
     ).name
 
 

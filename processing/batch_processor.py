@@ -16,7 +16,7 @@ from core.pdf_exporter import (
 )
 from core.callas_toolbox import CallasToolbox
 from core.callas_toolbox import CallasToolboxError
-from core.preview_generator import generate_preview
+from core.preview_generator import detailed_preview_path, generate_preview
 from core.resampler import resample_image
 from core.tool_runner import run_command
 from config.profiles import DEFAULT_PROFILE, PrePressProfile
@@ -82,11 +82,11 @@ class BatchProcessor:
     @staticmethod
     def _preview_worker_count(item_count: int) -> int:
         """Return a bounded, operator-configurable preview concurrency level."""
-        configured = os.environ.get("IMAGE_MAGIC_PREVIEW_WORKERS", "2")
+        configured = os.environ.get("IMAGE_MAGIC_PREVIEW_WORKERS", "1")
         try:
             requested = int(configured)
         except ValueError:
-            requested = 2
+            requested = 1
         return max(1, min(item_count, requested, os.cpu_count() or 1))
 
     def scan(self) -> list[Path]:
@@ -822,6 +822,7 @@ class BatchProcessor:
                     safe_zone_mm=safe_zone_mm,
                     bleed_mm=bleed_mm,
                     fold_overlay=page_overlay,
+                    detailed_output_path=str(detailed_preview_path(output_preview_path)),
                 )
                 created_previews.append(output_preview_path)
 
@@ -914,6 +915,7 @@ class BatchProcessor:
                         safe_zone_mm=self.profile.safe_zone_mm,
                         bleed_mm=1.0,
                         fold_overlay=overlay,
+                        detailed_output_path=str(detailed_preview_path(preview_path)),
                     )
                     previews = [preview_path]
                 return file_check, previews, None

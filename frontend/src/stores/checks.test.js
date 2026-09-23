@@ -47,6 +47,32 @@ describe("checks store", () => {
     expect(store.orders).toEqual([]);
   });
 
+  it("requests only the selected page and searches beyond the visible cards", async () => {
+    const store = useChecksStore();
+    vi.spyOn(api, "run").mockResolvedValue({ id: "run-1", status: "completed" });
+    const orders = vi.spyOn(api, "orders").mockImplementation(async (_id, params) => ({
+      items: [{ order_id: params.search ? "last" : String(params.page), status: "passed" }],
+      total: params.search ? 1 : 25,
+      total_pages: params.search ? 1 : 3,
+      counts: { all: 25, passed: 25 },
+    }));
+
+    await store.selectRun("run-1");
+    expect(store.orders.map((order) => order.order_id)).toEqual(["1"]);
+    expect(orders).toHaveBeenCalledWith("run-1", {
+      page: 1, page_size: 10, status: "passed", search: "", active_only: true,
+    });
+    store.setPage(2);
+    await vi.waitFor(() => expect(store.orders.map((order) => order.order_id)).toEqual(["2"]));
+    store.setSearch("art-last.jpg");
+    await vi.waitFor(() => expect(store.orders.map((order) => order.order_id)).toEqual(["last"]));
+    expect(store.page).toBe(1);
+    expect(store.total).toBe(1);
+    expect(orders).toHaveBeenCalledWith("run-1", {
+      page: 1, page_size: 10, status: "passed", search: "art-last.jpg", active_only: true,
+    });
+  });
+
   it("updates only the order named by an SSE event", () => {
     const store = useChecksStore();
     store.activeRun = { id: "run-1", progress: 0 };

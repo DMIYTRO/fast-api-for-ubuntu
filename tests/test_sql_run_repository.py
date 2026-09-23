@@ -579,6 +579,34 @@ class SqlRunRepositoryTests(unittest.TestCase):
         self.assertEqual(page[0]["orders"], {})
         self.assertEqual(self.repository.count_runs(), 3)
 
+    def test_order_pages_search_and_counts_cover_the_entire_run(self):
+        run = sample_run()
+        original = next(iter(run["orders"].values()))
+        run["orders"] = {}
+        for index in range(105):
+            order = deepcopy(original)
+            order_id = f"{index:04d}"
+            order["order_id"] = order_id
+            order["status"] = "warning" if index % 2 else "passed"
+            order["files"][0]["path"] = f"/orders/input/art-{order_id}.jpg"
+            order["files"][0]["name"] = f"art-{order_id}.jpg"
+            run["orders"][order_id] = order
+        self.repository.create_run(run)
+
+        first = self.repository.list_orders_page("run-1", page=1, page_size=10, active_only=True)
+        last = self.repository.list_orders_page("run-1", page=11, page_size=10, active_only=True)
+        self.assertEqual(first["total"], 105)
+        self.assertEqual(first["counts"]["all"], 105)
+        self.assertEqual(first["counts"]["warning"], 52)
+        self.assertEqual([item["order_id"] for item in first["items"]], [f"{i:04d}" for i in range(10)])
+        self.assertEqual([item["order_id"] for item in last["items"]], [f"{i:04d}" for i in range(100, 105)])
+        self.assertEqual(self.repository.list_orders_page("run-1", page=12, page_size=10)["items"], [])
+        found = self.repository.list_orders_page("run-1", page=1, page_size=10, search="art-0102")
+        self.assertEqual([item["order_id"] for item in found["items"]], ["0102"])
+        warnings = self.repository.list_orders_page("run-1", page=1, page_size=50, status="warning")
+        self.assertEqual(warnings["total"], 52)
+        self.assertEqual(len(warnings["items"]), 50)
+
     def test_events_survive_repository_recreation_and_support_last_event_id(self):
         run = sample_run(status="completed")
         self.repository.create_run(run)

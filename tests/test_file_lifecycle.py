@@ -41,6 +41,21 @@ class FileLifecycleTests(unittest.TestCase):
             transition.preview_paths, [str(self.root / "Previews" / "Processed" / "face.png")]
         )
 
+    def test_accept_for_print_moves_detailed_preview_with_thumbnail(self):
+        detailed = self.preview.with_name("face_large.png")
+        detailed.write_bytes(b"detailed")
+
+        transition = FileLifecycle(self.root).accept_for_print(self.order)
+
+        self.assertFalse(detailed.exists())
+        self.assertEqual(
+            (self.root / "Previews" / "Processed" / detailed.name).read_bytes(),
+            b"detailed",
+        )
+        self.assertEqual(len(transition.preview_paths), 1)
+        FileLifecycle.rollback(transition)
+        self.assertEqual(detailed.read_bytes(), b"detailed")
+
     def test_accept_for_print_can_replace_existing_conflicting_targets(self):
         processed_source = self.root / "Processed" / "face.jpg"
         processed_pdf = self.root / "PDF" / "Print" / "1001.pdf"

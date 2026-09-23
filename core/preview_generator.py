@@ -11,8 +11,13 @@ from core.tool_runner import run_command
 
 
 SUPPORTED_FOLD_TYPES = frozenset({"half-fold", "c-fold", "z-fold"})
-# A single compact preview is used by both the operator workspace and history.
 PREVIEW_MAX_PIXELS = 480
+DETAIL_PREVIEW_MAX_PIXELS = 1600
+
+
+def detailed_preview_path(preview_path: Path) -> Path:
+    """Keep the detailed image beside its compact counterpart."""
+    return preview_path.with_name(f"{preview_path.stem}_large{preview_path.suffix}")
 
 
 @dataclass(frozen=True)
@@ -146,6 +151,7 @@ def generate_preview(
     safe_zone_mm: float = 4.0,
     bleed_mm: float = 1.0,
     fold_overlay: FoldOverlay | Mapping[str, object] | None = None,
+    detailed_output_path: str | None = None,
 ) -> str:
     """Render a preview with either regular frames or confirmed fold guides."""
     magick_cmd = shutil.which("magick")
@@ -200,14 +206,22 @@ def generate_preview(
             "-fill", "none",
             "-draw", f"rectangle {gx1},{gy1} {gx2},{gy2}",
         ])
-    # Keep previews compact at the source.  This avoids a separate web
-    # thumbnail being rendered later and is sufficient for the current UI.
+    # Write both sizes from one decoded and marked-up source image. The
+    # detailed version is fetched only when an operator opens the lightbox.
+    if detailed_output_path:
+        os.makedirs(os.path.dirname(os.path.abspath(detailed_output_path)), exist_ok=True)
+        cmd.extend([
+            "-resize", f"{DETAIL_PREVIEW_MAX_PIXELS}x{DETAIL_PREVIEW_MAX_PIXELS}>",
+            "-write", detailed_output_path,
+        ])
     cmd.extend(["-resize", f"{PREVIEW_MAX_PIXELS}x{PREVIEW_MAX_PIXELS}>"])
     cmd.append(output_preview_path)
     run_command(cmd, check=True)
     try:
         from control_panel import get_cached_preview_path
         get_cached_preview_path(Path(output_preview_path))
+        if detailed_output_path:
+            get_cached_preview_path(Path(detailed_output_path))
     except Exception:
         pass
     return output_preview_path

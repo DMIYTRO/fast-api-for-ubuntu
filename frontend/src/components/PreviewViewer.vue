@@ -33,6 +33,10 @@ const bySide = computed(() => {
 });
 
 const previewUrl = (file) => file?.preview_url || (file?.id ? `/api/files/${encodeURIComponent(file.id)}/preview` : "");
+const detailedPreviewUrl = (file) => {
+  const url = previewUrl(file);
+  return url ? `${url}${url.includes("?") ? "&" : "?"}size=large` : "";
+};
 
 function rotate(file) { rotation.value[file.id] = ((rotation.value[file.id] || 0) + 90) % 360; }
 function imageTransform(file) {
@@ -84,7 +88,7 @@ function handleImgError(event, file) {
   <Teleport to="body">
     <div v-if="zoomed" class="lightbox" @click.self="zoomed = null">
       <button class="icon-button" @click="zoomed = null">✕</button>
-      <img :src="previewUrl(zoomed)" :alt="zoomed.filename" decoding="async">
+      <img :src="detailedPreviewUrl(zoomed)" :alt="zoomed.filename" decoding="async">
     </div>
   </Teleport>
 </template>

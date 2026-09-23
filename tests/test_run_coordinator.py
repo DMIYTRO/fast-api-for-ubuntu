@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import threading
 import unittest
+from unittest.mock import patch
 
 from processing.models import FileCheck, OrderCheck, ParsedFilename
 from services.batch_adapter import OrderArtifacts, ProcessingOptions
@@ -267,11 +268,11 @@ class RunCoordinatorTests(unittest.TestCase):
         adapter = ParallelBlockingAdapter([make_order("first"), make_order("second")])
         self.adapters["parallel"] = adapter
 
-        run_id = self.submit("parallel")["id"]
-
-        self.assertTrue(adapter.processing_started.wait(timeout=2))
-        adapter.release_processing.set()
-        completed = self.coordinator.wait_for(run_id, {"completed"}, timeout=2)
+        with patch("services.coordinator._order_worker_count", return_value=2):
+            run_id = self.submit("parallel")["id"]
+            self.assertTrue(adapter.processing_started.wait(timeout=2))
+            adapter.release_processing.set()
+            completed = self.coordinator.wait_for(run_id, {"completed"}, timeout=2)
         self.assertEqual(completed["processed_orders"], 2)
 
         event_types = [event.type for event in self.coordinator.events(run_id)]

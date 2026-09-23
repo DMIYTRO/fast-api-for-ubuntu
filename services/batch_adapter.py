@@ -18,6 +18,7 @@ from services.pitstop import (
     PitStopService,
 )
 from services.postpress import normalize_postpress
+from services.preview_storage import preview_order_directory
 
 
 logger = logging.getLogger("image_magic.processing")
@@ -32,6 +33,8 @@ class ProcessingOptions:
     create_pdfs: bool = True
     generate_previews: bool = True
     copy_failures: bool = True
+    preview_root: str | None = None
+    run_id: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -42,6 +45,8 @@ class ProcessingOptions:
             "create_pdfs": self.create_pdfs,
             "generate_previews": self.generate_previews,
             "copy_failures": self.copy_failures,
+            "preview_root": self.preview_root,
+            "run_id": self.run_id,
         }
 
 
@@ -76,6 +81,8 @@ class BatchProcessorAdapter:
         self.input_dir = Path(options.input_path)
         self.pdf_dir = self.input_dir / "PDF"
         self.preview_dir = self.input_dir / "Previews"
+        if options.preview_root and options.run_id:
+            self.preview_dir = Path(options.preview_root)
         self.troubles_dir = self.input_dir / "Troubles"
         self.pitstop_service = pitstop_service
         self.order_info_fetcher = order_info_fetcher
@@ -193,6 +200,11 @@ class BatchProcessorAdapter:
     def process_order(self, order: OrderCheck) -> OrderArtifacts:
         result = OrderArtifacts()
         source_previews_created = False
+        preview_dir = (
+            preview_order_directory(Path(self.options.preview_root), self.options.run_id, order.aggregate_id)
+            if self.options.preview_root and self.options.run_id
+            else self.preview_dir
+        )
 
         def create_source_previews() -> None:
             """Create fallback previews once, only when they are needed."""
@@ -204,12 +216,12 @@ class BatchProcessorAdapter:
             if fold_overlays:
                 preview_results = self.processor.generate_previews_for_files(
                     order.files,
-                    self.preview_dir,
+                    preview_dir,
                     fold_overlays_by_file=fold_overlays,
                 )
             else:
                 preview_results = self.processor.generate_previews_for_files(
-                    order.files, self.preview_dir
+                    order.files, preview_dir
                 )
             for file_check, previews, preview_error in preview_results:
                 result.preview_paths.extend(previews)
@@ -279,9 +291,9 @@ class BatchProcessorAdapter:
                 # only after the report-only check has finished.
                 if self.options.generate_previews:
                     production_dir = (
-                        self.preview_dir
+                        preview_dir
                         / "Final"
-                        / order.aggregate_id
+                        / ("" if self.options.preview_root and self.options.run_id else order.aggregate_id)
                         / "r0001"
                     )
                     preview_options = {

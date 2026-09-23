@@ -72,11 +72,23 @@ onBeforeUnmount(() => {
     <template v-if="checks.activeRun">
       <ActiveRun :run="checks.activeRun" :events="checks.events" :connection="checks.connection" @cancel="checks.cancel" />
       <RunHistory :runs="checks.runs" :active-id="checks.activeRun.id" @select="checks.selectRun" />
-      <OrderFilters :model-value="checks.filter" :search="checks.search" :orders="checks.orders" :visible-orders="checks.filteredOrders" :selected="checks.selected" @toggle-all="checks.toggleAllFiltered()" @update:model-value="checks.setFilter" @update:search="checks.search = $event" />
+      <OrderFilters :model-value="checks.filter" :search="checks.search" :counts="checks.counts" :visible-orders="checks.filteredOrders" :selected="checks.selected" @toggle-all="checks.toggleAllFiltered()" @update:model-value="checks.setFilter" @update:search="checks.setSearch" />
       <section v-if="checks.filteredOrders.length" class="order-grid">
         <OrderCard v-for="order in checks.filteredOrders" :key="order.order_id ?? order.id" :order="order" :run-id="checks.activeRun.id" :reasons="checks.config?.return_reasons || []" :selected="checks.selected.includes(String(order.order_id ?? order.id))" :paid-design="checks.returnDesignEnabled(order)" :design-cost="checks.returnDesignCost(order)" @toggle="checks.toggle(order)" @decide="checks.decide(order, $event)" @return-comment="checks.setReturnComment(order, $event)" @return-design="checks.setReturnDesign(order, $event)" @return-cost="checks.setReturnDesignCost(order, $event)" />
       </section>
-      <section v-else class="empty-state surface"><div>⌁</div><h2>{{ checks.orders.length ? "Ничего не найдено" : "Заказы появятся здесь" }}</h2><p>{{ checks.orders.length ? "Измените фильтр или поисковый запрос." : "Первые карточки появятся ещё до завершения проверки." }}</p></section>
+      <section v-else class="empty-state surface"><div>⌁</div><h2>{{ checks.counts.all ? "Ничего не найдено" : "Заказы появятся здесь" }}</h2><p>{{ checks.counts.all ? "Измените фильтр или поисковый запрос." : "Первые карточки появятся ещё до завершения проверки." }}</p></section>
+      <nav class="orders-pagination surface" aria-label="Страницы заказов">
+        <label>Карточек на странице
+          <select :value="checks.pageSize" :disabled="checks.pageLoading" @change="checks.setPageSize($event.target.value)">
+            <option :value="10">10</option><option :value="50">50</option><option :value="100">100</option>
+          </select>
+        </label>
+        <span>Страница {{ checks.page }} из {{ checks.totalPages }} · найдено {{ checks.total }}</span>
+        <div class="page-buttons">
+          <button class="button secondary" :disabled="checks.pageLoading || checks.page <= 1" @click="checks.setPage(checks.page - 1)">← Назад</button>
+          <button class="button secondary" :disabled="checks.pageLoading || checks.page >= checks.totalPages" @click="checks.setPage(checks.page + 1)">Вперёд →</button>
+        </div>
+      </nav>
     </template>
     <section v-else-if="!checks.loading" class="first-run surface"><div class="first-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="square" stroke-linejoin="miter"><path d="M6 9V3h12v6" /><path d="M6 18H4V10h16v8h-2" /><path d="M6 14h12v7H6z" /><path d="M17 12h.01" /></svg></div><p class="eyebrow">Можно начинать</p><h1>Проверьте первую папку с макетами</h1><p>Выберите папку и профиль печати. Имя файла должно содержать клиента и заказ, например <code>(12690-25506185)_offset-face.jpg</code>.</p><button class="button primary" @click="checks.drawerOpen = true">Начать первую проверку</button></section>
     <div v-else class="loading-page"><span class="spinner"></span> Загружаем рабочий пульт…</div>
@@ -99,3 +111,10 @@ onBeforeUnmount(() => {
   <button v-if="showBackToTop" type="button" class="back-to-top" title="В начало страницы" aria-label="В начало страницы" @click="backToTop">↑</button>
   <div v-if="toast" class="toast">{{ toast }}</div>
 </template>
+
+<style scoped>
+.orders-pagination{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 16px;margin-top:16px;font-size:13px;color:var(--muted)}
+.orders-pagination label,.page-buttons{display:flex;align-items:center;gap:8px}
+.orders-pagination select{padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:inherit}
+@media(max-width:650px){.orders-pagination{justify-content:center}}
+</style>

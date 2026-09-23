@@ -40,6 +40,27 @@ def test_confirmed_fold_replaces_both_standard_preview_frames(tmp_path: Path) ->
     assert ["-resize", f"{PREVIEW_MAX_PIXELS}x{PREVIEW_MAX_PIXELS}>"] == command[-3:-1]
 
 
+
+def test_detailed_preview_uses_same_marked_up_image(tmp_path: Path) -> None:
+    detailed = tmp_path / "preview_large.png"
+    with patch("core.preview_generator.shutil.which", return_value="/usr/bin/magick"), patch(
+        "core.preview_generator.run_command"
+    ) as run_command:
+        generate_preview(
+            "source.png",
+            str(tmp_path / "preview.png"),
+            dpi=300,
+            w_px=900,
+            h_px=600,
+            detailed_output_path=str(detailed),
+        )
+
+    command = run_command.call_args.args[0]
+    assert command.index("-write") < command.index(str(tmp_path / "preview.png"))
+    assert command[command.index("-write") + 1] == str(detailed)
+    assert "1600x1600>" in command
+    assert "480x480>" in command
+
 def test_unconfirmed_or_unsupported_fold_keeps_existing_frames(tmp_path: Path) -> None:
     with patch("core.preview_generator.shutil.which", return_value="/usr/bin/magick"), patch(
         "core.preview_generator.run_command"

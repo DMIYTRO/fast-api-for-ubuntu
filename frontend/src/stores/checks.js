@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { api } from "../services/api.js";
 import { connectRunEvents } from "../services/events.js";
+import { previewQueue } from "../services/previewQueue.js";
 
 const list = (data) => Array.isArray(data) ? data : (data?.items || data?.orders || []);
 const running = (status) => ["queued", "running", "waiting_confirmation", "cancelling"].includes(status);
@@ -57,10 +58,14 @@ export const useChecksStore = defineStore("checks", {
   state: () => ({
     runs: [], activeRun: null, orders: [], config: null, loading: false, error: "",
     connection: "closed", selected: [], filter: localStorage.getItem("im-filter") || "passed",
-    search: "", events: [], drawerOpen: false, stopEvents: null, actionResults: {}, returnComments: {}, returnDesign: {}, conflictPrompt: null,
+    search: "", page: 1, pageSize: [10, 50, 100].includes(Number(localStorage.getItem("im-page-size"))) ? Number(localStorage.getItem("im-page-size")) : 10,
+    total: 0, totalPages: 1, counts: {}, paginationLoaded: false, pageLoading: false, requestSequence: 0,
+    previewSweepKey: "", previewSweepSequence: 0, previewSweepCursor: 0, previewSweepPages: 0, previewSweepRunning: false,
+    events: [], drawerOpen: false, stopEvents: null, actionResults: {}, returnComments: {}, returnDesign: {}, conflictPrompt: null,
   }),
   getters: {
     filteredOrders(state) {
+      if (state.paginationLoaded) return state.orders.filter((order) => !terminalStatuses.includes(order.status));
       const query = state.search.trim().toLowerCase();
       return state.orders.filter((order) => {
         const status = order.status || "detected";
@@ -81,7 +86,113 @@ export const useChecksStore = defineStore("checks", {
     },
   },
   actions: {
-    setFilter(value) { this.filter = value; localStorage.setItem("im-filter", value); },
+    setFilter(value) {
+      this.filter = value;
+      localStorage.setItem("im-filter", value);
+      if (this.activeRun) { this.page = 1; this.selected = []; this.refreshOrders(); }
+    },
+    setSearch(value) {
+      this.search = value;
+      if (!this.activeRun) return;
+      this.page = 1;
+      this.selected = [];
+      clearTimeout(this._searchTimer);
+      this._searchTimer = setTimeout(() => this.refreshOrders(), 300);
+    },
+    setPage(page) {
+      if (page < 1 || page > this.totalPages || page === this.page) return;
+      this.page = page;
+      this.selected = [];
+      this.refreshOrders();
+    },
+    setPageSize(size) {
+      const value = Number(size);
+      if (![10, 50, 100].includes(value)) return;
+      this.pageSize = value;
+      localStorage.setItem("im-page-size", String(value));
+      this.page = 1;
+      this.selected = [];
+      this.resetPreviewSweep();
+      if (this.activeRun) this.refreshOrders();
+    },
+    resetPreviewSweep() {
+      this.previewSweepKey = "";
+      this.previewSweepSequence++;
+      this.previewSweepCursor = 0;
+      this.previewSweepPages = 0;
+      this.previewSweepRunning = false;
+      previewQueue.clear();
+    },
+    async warmPreviewPages(id, key, sequence) {
+      if (this.previewSweepRunning) return;
+      this.previewSweepRunning = true;
+      try {
+        while (this.previewSweepCursor < this.previewSweepPages) {
+          if (this.previewSweepSequence !== sequence || this.previewSweepKey !== key) return;
+          const page = this.previewSweepCursor + 1;
+          await previewQueue.whenIdle();
+          if (this.previewSweepSequence !== sequence || this.previewSweepKey !== key) return;
+          const result = await api.orders(id, {
+            page, page_size: this.pageSize, status: "all", search: "", active_only: true,
+          });
+          if (this.previewSweepSequence !== sequence || this.previewSweepKey !== key) return;
+          previewQueue.enqueue(decorateOrders(result, id));
+          await previewQueue.whenIdle();
+          this.previewSweepCursor = page;
+        }
+      } catch {
+        return;
+      } finally {
+        if (this.previewSweepSequence === sequence && this.previewSweepKey === key) {
+          this.previewSweepRunning = false;
+          if (this.previewSweepCursor < this.previewSweepPages) {
+            queueMicrotask(() => this.warmPreviewPages(id, key, sequence));
+          }
+        }
+      }
+    },
+    async loadOrders(id = this.activeRun?.id) {
+      if (!id) return;
+      const sequence = ++this.requestSequence;
+      this.pageLoading = true;
+      try {
+        const result = await api.orders(id, {
+          page: this.page, page_size: this.pageSize, status: this.filter,
+          search: this.search.trim(), active_only: true,
+        });
+        if (sequence !== this.requestSequence || String(this.activeRun?.id) !== String(id)) return;
+        this.orders = decorateOrders(result, id);
+        this.total = result.total ?? this.orders.length;
+        this.totalPages = result.total_pages ?? 1;
+        this.counts = result.counts || {};
+        this.paginationLoaded = true;
+        previewQueue.prioritize(this.orders);
+        const sweepKey = [id, this.pageSize].join("|");
+        if (this.previewSweepKey !== sweepKey) {
+          this.previewSweepKey = sweepKey;
+          this.previewSweepSequence++;
+          this.previewSweepCursor = 0;
+          this.previewSweepPages = 0;
+          this.previewSweepRunning = false;
+        }
+        const allOrders = Number(this.counts.all ?? this.total);
+        this.previewSweepPages = Math.max(
+          this.previewSweepPages, Math.ceil(allOrders / this.pageSize),
+        );
+        if (this.previewSweepCursor < this.previewSweepPages && !this.previewSweepRunning) {
+          this.warmPreviewPages(id, sweepKey, this.previewSweepSequence);
+        }
+        this.selected = this.selected.filter((selectedId) => this.orders.some(
+          (order) => String(order.order_id ?? order.id) === selectedId
+        ));
+        if (this.page > this.totalPages) {
+          this.page = this.totalPages;
+          await this.loadOrders(id);
+        }
+      } finally {
+        if (sequence === this.requestSequence) this.pageLoading = false;
+      }
+    },
     async initialize() {
       this.loading = true; this.error = "";
       try {
@@ -97,16 +208,22 @@ export const useChecksStore = defineStore("checks", {
           this.activeRun = null;
           this.orders = [];
           this.selected = [];
+          this.paginationLoaded = false;
+          this.resetPreviewSweep();
         }
       } catch (error) { this.error = error.message; }
       finally { this.loading = false; }
     },
     async selectRun(id) {
       this.stopEvents?.(); this.stopEvents = null;
-      const [run, orders] = await Promise.all([api.run(id), api.orders(id).catch(() => ({ items: [] }))]);
-      this.activeRun = run;
-      this.orders = decorateOrders(orders, id);
+      this.requestSequence++;
+      this.resetPreviewSweep();
+      this.paginationLoaded = false;
+      this.page = 1;
       this.selected = [];
+      const run = await api.run(id);
+      this.activeRun = run;
+      await this.loadOrders(id);
       if (running(run.status)) this.listen(id);
     },
     listen(id) {
@@ -120,12 +237,13 @@ export const useChecksStore = defineStore("checks", {
     },
     async resync(id = this.activeRun?.id) {
       if (!id) return;
-      const [run, orders] = await Promise.all([api.run(id), api.orders(id)]);
-      this.activeRun = run; this.orders = decorateOrders(orders, id);
+      const run = await api.run(id);
+      if (String(this.activeRun?.id) !== String(id)) return;
+      this.activeRun = run;
+      await this.loadOrders(id);
     },
     async refreshOrders(id = this.activeRun?.id) {
-      if (!id) return;
-      this.orders = decorateOrders(await api.orders(id), id);
+      await this.loadOrders(id);
     },
     applyEvent(event) {
       this.events.unshift(event);
@@ -137,12 +255,16 @@ export const useChecksStore = defineStore("checks", {
       if (orderData) {
         const id = String(orderData.order_id ?? orderData.id);
         const index = this.orders.findIndex((item) => String(item.order_id ?? item.id) === id);
-        if (index < 0) this.orders.unshift(orderData);
+        if (index < 0) {
+          if (this.paginationLoaded) this.queuePageRefresh();
+          else this.orders.unshift(orderData);
+        }
         else {
           const previous = this.orders[index];
           const updated = { ...previous, ...orderData };
           this.orders.splice(index, 1, updated);
           this._dropSelectionWhenPrintBecomesBlocked(id, previous, updated);
+          if (this.paginationLoaded && previous.status !== updated.status) this.queuePageRefresh();
         }
       } else if (event.order_id) {
         const id = String(event.order_id);
@@ -152,6 +274,7 @@ export const useChecksStore = defineStore("checks", {
           const updated = { ...previous, status: event.status };
           this.orders.splice(index, 1, updated);
           this._dropSelectionWhenPrintBecomesBlocked(id, previous, updated);
+          if (this.paginationLoaded && previous.status !== updated.status) this.queuePageRefresh();
         }
       }
       if (["run.completed", "run.failed", "run.cancelled"].includes(event.type)) {
@@ -160,6 +283,12 @@ export const useChecksStore = defineStore("checks", {
         this.connection = "closed";
         this.resync().catch(() => {});
       }
+    },
+    queuePageRefresh() {
+      if (!this.activeRun) return;
+      this.previewSweepKey = "";
+      clearTimeout(this._pageRefreshTimer);
+      this._pageRefreshTimer = setTimeout(() => this.refreshOrders().catch(() => {}), 400);
     },
     async start(options) {
       this.loading = true;

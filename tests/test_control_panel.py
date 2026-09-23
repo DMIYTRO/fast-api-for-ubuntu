@@ -20,6 +20,7 @@ from processing.models import FileCheck, OrderCheck, ParsedFilename
 from server.models import FileResult, OrderAction, OrderResult
 from server.settings import Settings
 from services.batch_adapter import OrderArtifacts
+from services.preview_storage import preview_order_directory, preview_run_directory
 
 
 class EmptyAdapter:
@@ -181,6 +182,76 @@ class ControlPanelTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["authenticated"])
 
+    def test_preview_root_selection_uses_share_only_for_share_inputs(self):
+        share_input = self.root / "mounted" / "inputFolders"
+        share_preview = self.root / "mounted" / "Previews"
+        share_input.mkdir(parents=True)
+        local = Settings(database_url="sqlite://", password_hash=None)
+        self.assertIsNone(control_panel._preview_root_for_input(
+            local, self.root, share_input, share_preview
+        ))
+        self.assertEqual(control_panel._preview_root_for_input(
+            local, share_input / "order", share_input, share_preview
+        ), share_preview)
+        configured = Settings(database_url="sqlite://", password_hash=None,
+                              preview_root=self.root / "custom-previews")
+        self.assertEqual(control_panel._preview_root_for_input(
+            configured, self.root, share_input, share_preview
+        ), self.root / "custom-previews")
+
+    def test_share_preview_routes_history_and_custom_upload(self):
+        self.adapter_type = OneOrderAdapter
+        self.login()
+        response = self.client.post("/api/checks", json={
+            "input_path": str(self.root), "direction": "digital",
+            "create_pdfs": True, "generate_previews": True, "copy_failures": False,
+        })
+        run_id = response.json()["id"]
+        self.client.app.state.coordinator.wait_for(run_id, timeout=2)
+        repository = self.client.app.state.coordinator.repository
+        run = repository.get_run(run_id)
+        order = next(iter(run["orders"].values()))
+        old_preview = Path(order["preview_paths"][0])
+        share_root = self.root / "share" / "Previews"
+        shared = preview_order_directory(share_root, run_id, "42:1001") / old_preview.name
+        shared.parent.mkdir(parents=True)
+        shared.write_bytes(b"shared-preview")
+        shared.with_name("sample-face_large.png").write_bytes(b"shared-detail")
+        order["preview_paths"] = [str(shared)]
+        run["options"]["preview_root"] = str(share_root)
+        repository.save_run(run)
+
+        file = self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]["files"][0]
+        self.assertEqual(self.client.get(file["preview_url"]).content, b"shared-preview")
+        self.assertEqual(self.client.get(file["preview_url"] + "?size=large").content, b"shared-detail")
+        self.assertEqual(self.client.get(file["source_url"]).content, b"source-image")
+        foreign = preview_run_directory(share_root, "a" * 32) / "secret.png"
+        foreign.parent.mkdir(parents=True)
+        foreign.write_bytes(b"secret")
+        run = repository.get_run(run_id)
+        next(iter(run["orders"].values()))["preview_paths"] = [str(foreign)]
+        next(iter(run["orders"].values()))["files"][0]["preview_paths"] = [str(foreign)]
+        repository.save_run(run)
+        self.assertEqual(self.client.get(file["preview_url"]).status_code, 404)
+        run = repository.get_run(run_id)
+        next(iter(run["orders"].values()))["preview_paths"] = [str(shared)]
+        next(iter(run["orders"].values()))["files"][0]["preview_paths"] = [str(shared)]
+        repository.save_run(run)
+        uploaded = self.client.post(
+            f"/api/checks/{run_id}/orders/1001/return-preview",
+            content=b"\x89PNG\r\n\x1a\ncustom",
+            headers={"Content-Type": "image/png"},
+        )
+        self.assertEqual(uploaded.status_code, 200)
+        self.assertTrue((preview_run_directory(share_root, run_id) / "Custom" / "1001_return-preview.png").is_file())
+        self.assertEqual(self.client.get(uploaded.json()["url"]).content, b"\x89PNG\r\n\x1a\ncustom")
+
+        prepared = self.client.post("/api/orders/prepare-print", json={"run_id": run_id, "order_ids": ["1001"]})
+        self.assertEqual(prepared.json()["items"][0]["status"], "prepared")
+        history = self.client.get("/api/order-history").json()["items"]
+        self.assertEqual(len(history), 1)
+        self.assertEqual(self.client.get(history[0]["previews"][0]["url"]).content, b"shared-preview")
+
     def test_spa_is_public_but_api_and_files_require_authentication(self):
         home = self.client.get("/")
         self.assertEqual(home.status_code, 200)
@@ -340,8 +411,24 @@ class ControlPanelTests(unittest.TestCase):
         self.assertEqual(
             self.client.get(file_result["source_url"]).content, b"source-image"
         )
+        with patch.object(
+            self.client.app.state.coordinator,
+            "list_runs",
+            side_effect=AssertionError("preview lookup scanned all runs"),
+        ):
+            self.assertEqual(
+                self.client.get(file_result["preview_url"]).content, b"preview-image"
+            )
+        (self.root / "Previews" / "sample-face_large.png").write_bytes(
+            b"detailed-preview-image"
+        )
+        detail_response = self.client.get(file_result["preview_url"] + "?size=large")
+        self.assertEqual(detail_response.content, b"detailed-preview-image")
+        self.assertEqual(detail_response.headers["cache-control"], "private, no-cache")
+        (self.root / "Previews" / "sample-face_large.png").unlink()
         self.assertEqual(
-            self.client.get(file_result["preview_url"]).content, b"preview-image"
+            self.client.get(file_result["preview_url"] + "?size=large").content,
+            b"preview-image",
         )
         self.assertEqual(self.client.get(order["pdf_url"]).content, b"%PDF-test")
 
@@ -389,13 +476,7 @@ class ControlPanelTests(unittest.TestCase):
         self.assertEqual(return_without_comment.status_code, 200)
         self.assertEqual(
             return_without_comment.json()["items"],
-            [
-                {
-                    "order_id": "1001",
-                    "status": "pending",
-                    "message": "Задача поставлена в очередь. Загрузка продолжается в фоне.",
-                }
-            ],
+            [{"order_id": "1001", "status": "prepared"}],
         )
         deadline = time.monotonic() + 2
         history = self.client.get("/api/order-history", params={"action": "reject"})

@@ -22,6 +22,7 @@ from .coordinator import RunCoordinator
 from .domain import validate_operator_transition
 from .file_lifecycle import FileConflictError, FileLifecycle, FileLifecycleError
 from .return_preview import custom_return_preview_path, prepare_return_preview_name
+from .preview_storage import preview_run_directory
 
 
 logger = logging.getLogger("image_magic.order_workflow")
@@ -118,7 +119,8 @@ class OrderWorkflowService:
 
     @staticmethod
     def _return_preview_upload_paths(
-        input_path: Path, transition: Any, preview_name: str, order_id: str
+        input_path: Path, transition: Any, preview_name: str, order_id: str,
+        preview_root: Path | None = None, run_id: str | None = None,
     ) -> list[Path]:
         """Find the previews after a return transition for one batch upload."""
         paths = [Path(path) for path in transition.preview_paths if Path(path).is_file()]
@@ -127,9 +129,14 @@ class OrderWorkflowService:
             return matching
         if preview_name:
             custom_preview = custom_return_preview_path(
-                order_id, input_path=input_path
+                order_id, input_path=input_path,
+                preview_root=preview_root, run_id=run_id,
             )
-            collage = input_path / "Previews" / "Return" / preview_name
+            collage = (
+                preview_run_directory(preview_root, run_id) / "Return" / preview_name
+                if preview_root and run_id
+                else input_path / "Previews" / "Return" / preview_name
+            )
             if custom_preview is not None and custom_preview.name == preview_name:
                 return [custom_preview]
             elif not collage.is_file():
@@ -353,6 +360,9 @@ class OrderWorkflowService:
                                 input_path=Path(run["options"]["input_path"]),
                                 preview_paths=previous_order.get("preview_paths"),
                                 files=previous_order.get("files"),
+                                preview_root=Path(run["options"]["preview_root"])
+                                if run["options"].get("preview_root") else None,
+                                run_id=run["id"],
                             )
                         except Exception as exc:
                             results.append(
@@ -469,6 +479,9 @@ class OrderWorkflowService:
                                     transition,
                                     return_preview_name or "",
                                     order_id,
+                                    Path(run["options"]["preview_root"])
+                                    if run["options"].get("preview_root") else None,
+                                    run["id"],
                                 )
                                 if upload_paths:
                                     self.preview_uploader(upload_paths)

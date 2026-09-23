@@ -64,6 +64,7 @@ class Settings:
     callas_cache_dir: Path = PROJECT_DIR / ".callas-cache"
     callas_enabled: bool = True
     callas_timeout_seconds: float = 600.0
+    preview_root: Path | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -211,4 +212,9 @@ class Settings:
             callas_timeout_seconds=max(1.0, float(os.environ.get(
                 "IMAGE_MAGIC_CALLAS_TIMEOUT_SECONDS", "600"
             ))),
+            preview_root=(
+                Path(os.environ["IMAGE_MAGIC_PREVIEW_ROOT"]).expanduser().resolve()
+                if os.environ.get("IMAGE_MAGIC_PREVIEW_ROOT")
+                else None
+            ),
         )
