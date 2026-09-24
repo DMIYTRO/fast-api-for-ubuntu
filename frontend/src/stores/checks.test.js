@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useChecksStore } from "./checks.js";
+import { orderIdentity } from "./orderIdentity.js";
 import { api } from "../services/api.js";
 
 describe("checks store", () => {
@@ -101,6 +102,75 @@ describe("checks store", () => {
     expect(store.orders[0].files[0].preview_url).toBe("/api/files/done%3A123%3A0/preview");
   });
 
+  it("keeps duplicate order numbers separated by customer across cards, selection, and events", () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1", progress: 0 };
+    store.orders = [
+      { aggregate_id: "client-a:100", customer_id: "client-a", order_id: "100", status: "processing", files: [{ filename: "a.pdf" }] },
+      { aggregate_id: "client-b:100", customer_id: "client-b", order_id: "100", status: "processing", files: [{ filename: "b.pdf" }] },
+    ];
+
+    store.toggle(store.orders[0]);
+    store.toggle(store.orders[1]);
+    expect(store.selected).toEqual(["aggregate:client-a:100", "aggregate:client-b:100"]);
+    expect(store.selectedOrders.map((order) => order.customer_id)).toEqual(["client-a", "client-b"]);
+    store.applyEvent({
+      type: "order.updated", run_id: "run-1",
+      order: { ...store.orders[0], files: [{ filename: "a.pdf" }] },
+    });
+    expect(store.orders[0].files[0].id).toBe("run-1:client-a:100:0");
+
+    store.applyEvent({
+      type: "order.checked", run_id: "run-1",
+      order: { aggregate_id: "client-b:100", customer_id: "client-b", order_id: "100", status: "warning" },
+    });
+    expect(store.orders.map((order) => order.status)).toEqual(["processing", "warning"]);
+    expect(store.selectedOrderSnapshots["aggregate:client-b:100"].customer_id).toBe("client-b");
+
+    store.applyEvent({
+      type: "order.checked", run_id: "run-1", aggregate_id: "client-a:100",
+      customer_id: "client-a", order_id: "100", status: "warning",
+    });
+    expect(store.orders.map((order) => order.status)).toEqual(["warning", "warning"]);
+  });
+
+  it("keeps the loaded first card in place when a new order arrives over SSE", () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-stable" };
+    store.pageSize = 10;
+    store.orders = [
+      { aggregate_id: "customer-z:900", customer_id: "customer-z", order_id: "900", status: "passed" },
+    ];
+
+    store.applyEvent({
+      type: "order.completed", run_id: "run-stable",
+      order: { aggregate_id: "customer-a:100", customer_id: "customer-a", order_id: "100", status: "passed" },
+    });
+
+    expect(store.orders.map((order) => order.order_id)).toEqual(["900", "100"]);
+  });
+
+  it("does not let an orders response started before a newer SSE event overwrite that event", async () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-race" };
+    let resolveOrders;
+    vi.spyOn(api, "orders").mockReturnValue(new Promise((resolve) => { resolveOrders = resolve; }));
+
+    const request = store.loadOrders(1);
+    store.applyEvent({
+      type: "order.completed", run_id: "run-race",
+      order: { aggregate_id: "client-a:100", customer_id: "client-a", order_id: "100", status: "completed" },
+    });
+    resolveOrders({
+      items: [{ aggregate_id: "client-a:100", customer_id: "client-a", order_id: "100", status: "processing" }],
+      page: 1, page_size: 10, total: 1, total_pages: 1, counts: {},
+    });
+    await request;
+
+    expect(store.orders).toHaveLength(1);
+    expect(store.orders[0].status).toBe("completed");
+  });
+
   it("updates only the order named by an SSE event", () => {
     const store = useChecksStore();
     store.activeRun = { id: "run-1", progress: 0 };
@@ -109,6 +179,18 @@ describe("checks store", () => {
     expect(store.orders[0].status).toBe("warning");
     expect(store.orders[1].status).toBe("processing");
     expect(store.activeRun.progress).toBe(50);
+  });
+
+  it("targets correction by aggregate identity when order numbers collide", async () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1" };
+    const correction = vi.spyOn(api, "correction").mockResolvedValue({});
+    vi.spyOn(api, "run").mockResolvedValue({ id: "run-1", status: "running" });
+    vi.spyOn(api, "orders").mockResolvedValue({ items: [] });
+
+    await store.decide({ aggregate_id: "client-b:100", customer_id: "client-b", order_id: "100" }, "approve");
+
+    expect(correction).toHaveBeenCalledWith("run-1", "client-b:100", { decision: "approve" });
   });
 
   it("makes previews from a completed order event visible immediately", () => {
@@ -156,7 +238,7 @@ describe("checks store", () => {
   it("permits print only for a non-empty passed selection", () => {
     const store = useChecksStore();
     store.orders = [{ order_id: "100", status: "passed", passed: true }, { order_id: "200", status: "error" }];
-    store.selected = ["100"];
+    store.selected = [orderIdentity(store.orders.find((order) => order.order_id === "100"))];
     expect(store.canPrint).toBe(true);
     store.selected.push("200");
     expect(store.canPrint).toBe(false);
@@ -169,10 +251,10 @@ describe("checks store", () => {
       { order_id: "200", status: "error" },
       { order_id: "300", status: "processing" },
     ];
-    store.selected = ["100", "200"];
+    store.selected = store.orders.slice(0, 2).map(orderIdentity);
     expect(store.canForcePrint).toBe(true);
 
-    store.selected.push("300");
+    store.selected.push(orderIdentity(store.orders[2]));
     expect(store.canForcePrint).toBe(false);
   });
 
@@ -183,7 +265,7 @@ describe("checks store", () => {
       status: "passed",
       pitstop: { execution_status: "running" },
     }];
-    store.selected = ["100"];
+    store.selected = [orderIdentity(store.orders.find((order) => order.order_id === "100"))];
     expect(store.canPrint).toBe(false);
 
     store.orders[0].pitstop = { execution_status: "failed", verdict: "unknown" };
@@ -201,7 +283,7 @@ describe("checks store", () => {
       { order_id: "200", status: "passed" },
       { order_id: "300", status: "passed" },
     ];
-    store.selected = ["200"];
+    store.selected = [orderIdentity(store.orders.find((order) => order.order_id === "200"))];
 
     store.applyEvent({
       type: "order.pitstop_completed",
@@ -223,7 +305,7 @@ describe("checks store", () => {
     const store = useChecksStore();
     store.activeRun = { id: "run-1" };
     store.orders = [{ order_id: "100", status: "passed" }];
-    store.selected = ["100"];
+    store.selected = [orderIdentity(store.orders.find((order) => order.order_id === "100"))];
 
     store.applyEvent({
       type: "order.pitstop_started",
@@ -270,7 +352,7 @@ describe("checks store", () => {
     store.setFilter("passed");
 
     store.toggleAllFiltered();
-    expect(store.selected).toEqual(["100", "300"]);
+    expect(store.selected).toEqual([orderIdentity(store.orders[0]), orderIdentity(store.orders[2])]);
 
     store.toggleAllFiltered();
     expect(store.selected).toEqual([]);
@@ -280,8 +362,8 @@ describe("checks store", () => {
     const store = useChecksStore();
     store.activeRun = { id: "run-1", progress: 73 };
     store.orders = [{ order_id: "100" }, { order_id: "200" }];
-    store.selected = ["100", "200"];
-    store.returnComments = { "100": "Размер неверный.", "200": "Низкое разрешение." };
+    store.selected = store.orders.map(orderIdentity);
+    store.returnComments = { [orderIdentity(store.orders[0])]: "Размер неверный.", [orderIdentity(store.orders[1])]: "Низкое разрешение." };
     store.setReturnDesign(store.orders[0], false);
     store.setReturnDesignCost(store.orders[1], "50");
     const reject = vi.spyOn(api, "prepareReject").mockImplementation(async ({ order_ids }) => ({
@@ -307,7 +389,7 @@ describe("checks store", () => {
     const store = useChecksStore();
     store.activeRun = { id: "run-1" };
     store.orders = [{ order_id: "100", status: "error" }];
-    store.selected = ["100"];
+    store.selected = [orderIdentity(store.orders.find((order) => order.order_id === "100"))];
     vi.spyOn(api, "prepareReject").mockResolvedValue({
       items: [{ order_id: "100", status: "prepared" }],
     });
@@ -328,8 +410,8 @@ describe("checks store", () => {
     const store = useChecksStore();
     store.activeRun = { id: "run-1" };
     store.orders = [{ order_id: "100" }, { order_id: "200" }];
-    store.selected = ["100", "200"];
-    store.returnComments = { "100": "Причина 1", "200": "Причина 2" };
+    store.selected = store.orders.map(orderIdentity);
+    store.returnComments = { [orderIdentity(store.orders[0])]: "Причина 1", [orderIdentity(store.orders[1])]: "Причина 2" };
     vi.spyOn(api, "prepareReject").mockImplementation(async ({ order_ids }) => ({
       items: [{
         order_id: order_ids[0],
@@ -342,15 +424,33 @@ describe("checks store", () => {
     const result = await store.act("reject", "");
 
     expect(result.map((item) => item.status)).toEqual(["prepared", "error"]);
-    expect(store.selected).toEqual(["200"]);
-    expect(store.returnComments).toEqual({ "200": "Причина 2" });
+    expect(store.selected).toEqual([orderIdentity(store.orders[1])]);
+    expect(store.returnComments).toEqual({ [orderIdentity(store.orders[1])]: "Причина 2" });
+  });
+
+  it("uses aggregate IDs in workflow actions when customer order numbers collide", async () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1" };
+    store.orders = [
+      { aggregate_id: "client-a:100", customer_id: "client-a", order_id: "100", status: "passed" },
+      { aggregate_id: "client-b:100", customer_id: "client-b", order_id: "100", status: "passed" },
+    ];
+    store.selected = store.orders.map(orderIdentity);
+    const print = vi.spyOn(api, "preparePrint").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "orders").mockResolvedValue({ items: [] });
+
+    await store.act("print", "");
+
+    expect(print).toHaveBeenCalledWith({
+      order_ids: ["client-a:100", "client-b:100"], run_id: "run-1", conflict_strategy: "fail", confirm_failed_processing: false,
+    });
   });
 
   it("sends explicit confirmation when printing an order with an error", async () => {
     const store = useChecksStore();
     store.activeRun = { id: "run-1" };
     store.orders = [{ order_id: "100", status: "error" }];
-    store.selected = ["100"];
+    store.selected = [orderIdentity(store.orders.find((order) => order.order_id === "100"))];
     const print = vi.spyOn(api, "preparePrint").mockResolvedValue({
       items: [{ order_id: "100", status: "prepared" }],
     });

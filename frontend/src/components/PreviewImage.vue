@@ -6,6 +6,8 @@ const emit = defineEmits(["load", "error"]);
 const image = ref(null);
 const status = ref("loading");
 let observer;
+let nearObserver;
+let queuedJob;
 let cancelQueued;
 let activeRequest;
 let displayedObjectUrl;
@@ -13,10 +15,25 @@ let displayedObjectUrl;
 // All cards share a small pool so a large page cannot fan out dozens of requests.
 const MAX_ACTIVE = 4;
 const MAX_ATTEMPTS = 3;
-const queue = globalThis.__previewImageQueue || (globalThis.__previewImageQueue = { active: 0, waiting: [] });
+const queue = globalThis.__previewImageQueue || (globalThis.__previewImageQueue = { active: 0, waiting: [], sequence: 0 });
 
-function enqueue() {
-  if (!props.src || !image.value || status.value === "loaded" || cancelQueued || activeRequest) return;
+function startWaiting() {
+  while (queue.active < MAX_ACTIVE && queue.waiting.length) {
+    queue.waiting.sort((a, b) => b.priority - a.priority || a.sequence - b.sequence);
+    const next = queue.waiting[0];
+    // Keep two slots available for cards currently inside the viewport.
+    if (next.priority < 2 && queue.active >= MAX_ACTIVE - 2) return;
+    queue.waiting.shift().start();
+  }
+}
+
+function enqueue(priority = 1) {
+  if (!props.src || !image.value || status.value === "loaded" || activeRequest) return;
+  if (queuedJob) {
+    queuedJob.priority = Math.max(queuedJob.priority, priority);
+    startWaiting();
+    return;
+  }
   let cancelled = false;
   const job = () => {
     if (cancelled || !image.value) return;
@@ -26,7 +43,7 @@ function enqueue() {
       if (released) return;
       released = true;
       queue.active -= 1;
-      while (queue.active < MAX_ACTIVE && queue.waiting.length) queue.waiting.shift()();
+      startWaiting();
     };
     const request = { src: props.src, controller: new AbortController(), release, timer: undefined, objectUrl: undefined };
     activeRequest = request;
@@ -59,18 +76,26 @@ function enqueue() {
     };
     run();
   };
-  const wrapped = () => {
-    if (cancelled) return;
-    cancelQueued = undefined;
-    job();
+  const wrapped = {
+    priority,
+    sequence: queue.sequence++,
+    start: () => {
+      if (cancelled) return;
+      queuedJob = undefined;
+      cancelQueued = undefined;
+      job();
+    },
   };
-  if (queue.active < MAX_ACTIVE) wrapped();
+  const mayStart = priority >= 2 || queue.active < MAX_ACTIVE - 2;
+  if (queue.active < MAX_ACTIVE && mayStart) wrapped.start();
   else {
+    queuedJob = wrapped;
     queue.waiting.push(wrapped);
     cancelQueued = () => {
       cancelled = true;
       const index = queue.waiting.indexOf(wrapped);
       if (index >= 0) queue.waiting.splice(index, 1);
+      queuedJob = undefined;
       cancelQueued = undefined;
     };
   }
@@ -92,33 +117,50 @@ function cancelActiveRequest() {
 }
 function retry() {
   status.value = "loading";
-  enqueue();
+  enqueue(2);
 }
-function activate() {
-  observer?.disconnect();
-  observer = undefined;
-  enqueue();
+function activate(priority = 1) {
+  if (priority === 2) {
+    observer?.disconnect();
+    nearObserver?.disconnect();
+    observer = undefined;
+    nearObserver = undefined;
+  }
+  enqueue(priority);
 }
 
-onMounted(() => {
-  if (props.eager || typeof IntersectionObserver === "undefined") return activate();
+function observePreview() {
+  if (props.eager || typeof IntersectionObserver === "undefined") return activate(2);
+  const target = image.value;
+  nearObserver = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) activate(1);
+  }, { rootMargin: "500px 0px" });
   observer = new IntersectionObserver((entries) => {
-    if (entries.some((entry) => entry.isIntersecting)) activate();
-  }, { rootMargin: "250px 0px" });
-  if (image.value) observer.observe(image.value);
-});
+    if (entries.some((entry) => entry.isIntersecting)) activate(2);
+  }, { rootMargin: "0px" });
+  if (target) {
+    nearObserver.observe(target);
+    observer.observe(target);
+  }
+}
+
+onMounted(observePreview);
 
 watch(() => props.src, () => {
+  observer?.disconnect();
+  nearObserver?.disconnect();
+  observer = undefined;
+  nearObserver = undefined;
   cancelQueued?.();
   cancelActiveRequest();
   revokeDisplayedImage();
   status.value = "loading";
-  if (!observer) enqueue();
-  else if (image.value) observer.observe(image.value);
+  observePreview();
 });
 
 onBeforeUnmount(() => {
   observer?.disconnect();
+  nearObserver?.disconnect();
   cancelQueued?.();
   cancelActiveRequest();
   revokeDisplayedImage();
@@ -126,7 +168,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <span class="preview-loader" :class="{ 'preview-loader-error': status === 'error' }">
+  <span class="preview-loader" :class="{ 'preview-loader-error': status === 'error', 'preview-loader-loading': status === 'loading' }">
     <img ref="image" :class="{ 'preview-loader-placeholder': status !== 'loaded' }" :alt="alt" decoding="async" :aria-hidden="status !== 'loaded'">
     <button v-if="status === 'error'" class="preview-load-retry" type="button" @click.stop="retry">Повторить загрузку</button>
   </span>

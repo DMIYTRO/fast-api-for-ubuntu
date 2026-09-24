@@ -31,6 +31,7 @@ from server.models import OrderAction, OrderResult, PitstopCheck
 from server.schemas import CheckOptions, CorrectionRequest, OrderActionRequest
 from server.settings import Settings
 from services import (
+    AmbiguousOrderError,
     FileLifecycle,
     FileLifecycleError,
     InvalidRunStateError,
@@ -151,6 +152,7 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
     input_path = Path((run.get("options") or {}).get("input_path", ""))
     for order in values:
         order_id = str(order.get("order_id") or order.get("id") or "")
+        order_ref = _custom_preview_storage_id(run, order)
         order["html_url"] = f"/runs/{run_id}/report"
         order["json_url"] = f"/api/checks/{run_id}/export.json"
         if order.get("actions"):
@@ -161,10 +163,11 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
                 "action": latest.get("action"),
             }
         if order.get("pdf_path"):
-            order["pdf_url"] = f"/api/orders/{order_id}/pdf?run_id={run_id}"
-        if input_path and custom_return_preview_path(order_id, input_path=input_path):
+            order["pdf_url"] = f"/api/orders/{order_ref}/pdf?run_id={run_id}"
+        preview_storage_id = order_ref
+        if input_path and custom_return_preview_path(preview_storage_id, input_path=input_path):
             order["custom_preview_url"] = (
-                f"/api/checks/{run_id}/orders/{order_id}/return-preview"
+                f"/api/checks/{run_id}/orders/{order_ref}/return-preview"
             )
         pitstop = order.get("pitstop") or {}
         check_id = str(pitstop.get("check_id") or "")
@@ -219,6 +222,20 @@ def _safe_result_path(run: dict[str, Any], raw_path: str | None) -> Path:
     return target
 
 
+def _custom_preview_storage_id(run: dict[str, Any], order: dict[str, Any]) -> str:
+    """Use a customer-qualified filename only when bare IDs collide in this run."""
+    real_id = str(order.get("order_id") or order.get("id") or "")
+    identity = str(order.get("aggregate_id") or real_id)
+    orders = run.get("orders") or {}
+    values = orders.values() if isinstance(orders, dict) else orders
+    matching_identities = {
+        str(candidate.get("aggregate_id") or candidate.get("order_id") or candidate.get("id") or "")
+        for candidate in values
+        if str(candidate.get("order_id") or candidate.get("id") or "") == real_id
+    }
+    return identity if len(matching_identities) > 1 else real_id
+
+
 def _safe_history_preview_path(root_path: str, raw_path: str | None) -> Path | None:
     """Return an available history preview only when it remains inside its run."""
     if not raw_path:
@@ -235,13 +252,47 @@ def _find_order(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     runs = [_get_run_or_404(coordinator, run_id)] if run_id else coordinator.list_runs()
     runs = sorted(runs, key=lambda item: item.get("created_at") or "", reverse=True)
+    exact_matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    number_matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for run in runs:
         orders = run.get("orders") or {}
-        if isinstance(orders, dict) and order_id in orders:
-            return run, orders[order_id]
-        for order in _orders_from_run(run):
-            if str(order.get("order_id") or order.get("id")) == order_id:
-                return run, order
+        entries = (
+            list(orders.items())
+            if isinstance(orders, dict)
+            else [(str(index), order) for index, order in enumerate(orders)]
+        )
+        for stored_key, order in entries:
+            aggregate_id = str(order.get("aggregate_id") or stored_key)
+            real_order_id = str(order.get("order_id") or order.get("id") or "")
+            if order_id == aggregate_id or (
+                order_id == str(stored_key) and order_id != real_order_id
+            ):
+                exact_matches.append((run, order))
+            elif real_order_id == order_id:
+                number_matches.append((run, order))
+
+    # Keep the latest historical result for the same customer/order identity,
+    # while refusing a bare order number shared by different customers.
+    matches = exact_matches or number_matches
+    if matches:
+        identities = {
+            (
+                str(order.get("customer_id") or ""),
+                str(order.get("order_id") or order.get("id") or ""),
+            )
+            for _, order in matches
+        }
+        run_counts: dict[str, int] = {}
+        for matched_run, _order in matches:
+            matched_run_id = str(matched_run.get("id") or "")
+            run_counts[matched_run_id] = run_counts.get(matched_run_id, 0) + 1
+        if len(identities) > 1 or any(count > 1 for count in run_counts.values()):
+            raise APIError(
+                409,
+                "ambiguous_order",
+                "Номер заказа неоднозначен; используйте aggregate_id.",
+            )
+        return matches[0]
     raise APIError(404, "order_not_found", "Заказ не найден.")
 
 
@@ -705,11 +756,8 @@ def create_app(
         dependencies=[Depends(protected)],
     )
     def get_order(request: Request, run_id: str, order_id: str) -> dict[str, Any]:
-        run = _get_run_or_404(_get_coordinator(request), run_id)
-        for order in _orders_from_run(run):
-            if str(order.get("order_id") or order.get("id")) == order_id:
-                return order
-        raise APIError(404, "order_not_found", "Заказ не найден.")
+        _, order = _find_order(_get_coordinator(request), order_id, run_id)
+        return order
 
     @application.post(
         "/api/checks/{run_id}/orders/{order_id}/correction",
@@ -728,6 +776,8 @@ def create_app(
                     coordinator_value.confirm_correction(run_id, order_id)
                 )
             return _public_run(coordinator_value.reject_correction(run_id, order_id))
+        except AmbiguousOrderError as exc:
+            raise APIError(409, "ambiguous_order", "Номер заказа неоднозначен; используйте aggregate_id.") from exc
         except RunNotFoundError as exc:
             raise APIError(404, "order_not_found", "Заказ не найден.") from exc
         except InvalidRunStateError as exc:
@@ -843,9 +893,10 @@ def create_app(
     def uploaded_return_preview(
         request: Request, run_id: str, order_id: str
     ) -> FileResponse:
-        run, _ = _find_order(_get_coordinator(request), order_id, run_id)
+        run, order = _find_order(_get_coordinator(request), order_id, run_id)
+        preview_storage_id = _custom_preview_storage_id(run, order)
         preview = custom_return_preview_path(
-            order_id, input_path=Path(run["options"]["input_path"])
+            preview_storage_id, input_path=Path(run["options"]["input_path"])
         )
         if preview is None:
             raise APIError(
@@ -863,7 +914,8 @@ def create_app(
         request: Request, run_id: str, order_id: str
     ) -> dict[str, str]:
         """Store a small operator preview that takes precedence on FTP return."""
-        run, _ = _find_order(_get_coordinator(request), order_id, run_id)
+        run, order = _find_order(_get_coordinator(request), order_id, run_id)
+        preview_storage_id = _custom_preview_storage_id(run, order)
         maximum_size = 1024 * 1024
         try:
             content_length = int(request.headers.get("content-length", "0"))
@@ -897,10 +949,10 @@ def create_app(
         directory = Path(run["options"]["input_path"]) / CUSTOM_PREVIEWS_RELATIVE_PATH
         directory.mkdir(parents=True, exist_ok=True)
         for other_suffix in (".png", ".jpg"):
-            (directory / f"{order_id}_return-preview{other_suffix}").unlink(
+            (directory / f"{preview_storage_id}_return-preview{other_suffix}").unlink(
                 missing_ok=True
             )
-        target = directory / f"{order_id}_return-preview{suffix}"
+        target = directory / f"{preview_storage_id}_return-preview{suffix}"
         temporary = target.with_suffix(f"{suffix}.uploading")
         temporary.write_bytes(content)
         os.replace(temporary, target)

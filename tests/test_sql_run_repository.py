@@ -908,6 +908,25 @@ class SqlRunRepositoryTests(unittest.TestCase):
         self.assertEqual(searched["total"], 1)
         self.assertEqual(searched["items"][0]["order_id"], "02017")
 
+    def test_orders_page_order_stays_stable_when_new_lower_sorting_order_is_added(self):
+        run = sample_run("stable-page-run")
+        template = deepcopy(next(iter(run["orders"].values())))
+        run["orders"] = {}
+        first = deepcopy(template)
+        first["customer_id"] = "customer-z"
+        first["order_id"] = "900"
+        second = deepcopy(template)
+        second["customer_id"] = "customer-a"
+        second["order_id"] = "100"
+        run["orders"] = {"first": first, "second": second}
+        self.repository.create_run(run)
+
+        page = self.repository.list_orders_page(
+            "stable-page-run", page=1, page_size=10, status="all", search="", active_only=True
+        )
+
+        self.assertEqual([order["order_id"] for order in page["items"]], ["900", "100"])
+
     def test_run_summary_omits_orders(self):
         self.repository.create_run(sample_run("summary-run"))
         summary = self.repository.get_run_summary("summary-run")

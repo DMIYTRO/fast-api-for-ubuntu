@@ -5,14 +5,16 @@ import unittest
 
 from processing.models import FileCheck, OrderCheck, ParsedFilename
 from services.batch_adapter import OrderArtifacts, ProcessingOptions
-from services.coordinator import InvalidRunStateError, RunCoordinator
+from services.coordinator import AmbiguousOrderError, InvalidRunStateError, RunCoordinator, _stored_order_key
 from services.dto import order_check_to_dto
 from services.repository import InMemoryRunRepository
 
 
-def make_order(order_id: str, *, waiting: bool = False, warning: bool = False):
+def make_order(
+    order_id: str, *, customer_id: str = "42", waiting: bool = False, warning: bool = False
+):
     parsed = ParsedFilename(
-        customer_id="42",
+        customer_id=customer_id,
         order_id=order_id,
         width_mm=90,
         height_mm=50,
@@ -34,7 +36,7 @@ def make_order(order_id: str, *, waiting: bool = False, warning: bool = False):
     )
     if warning:
         item.warnings.append("проверить цвет")
-    return OrderCheck(order_id=order_id, customer_id="42", files=[item])
+    return OrderCheck(order_id=order_id, customer_id=customer_id, files=[item])
 
 
 class FakeAdapter:
@@ -238,6 +240,57 @@ class RunCoordinatorTests(unittest.TestCase):
         completed = self.coordinator.wait_for(run_id, {"completed"}, timeout=2)
         self.assertEqual(completed["total_orders"], 2)
         self.assertIn("second", completed["orders"])
+
+    def test_bare_duplicate_order_number_is_not_resolved_by_first_dictionary_key(self):
+        run = {
+            "orders": {
+                "1001": {"order_id": "1001", "customer_id": "10"},
+                "20:1001": {
+                    "aggregate_id": "20:1001",
+                    "order_id": "1001",
+                    "customer_id": "20",
+                },
+            }
+        }
+        self.assertEqual(_stored_order_key(run, "20:1001"), "20:1001")
+        with self.assertRaises(AmbiguousOrderError):
+            _stored_order_key(run, "1001")
+
+    def test_duplicate_order_ids_have_distinct_sse_identity(self):
+        orders = [
+            make_order("same-order", customer_id="customer-a"),
+            make_order("same-order", customer_id="customer-b"),
+        ]
+        self.adapters["duplicate-identities"] = FakeAdapter(orders)
+        run_id = self.submit("duplicate-identities")["id"]
+        completed = self.coordinator.wait_for(run_id, {"completed"}, timeout=2)
+
+        self.assertEqual(
+            {value["aggregate_id"] for value in completed["orders"].values()},
+            {"customer-a:same-order", "customer-b:same-order"},
+        )
+        for event_type in (
+            "order.detected",
+            "order.checked",
+            "order.completed",
+            "pdf.created",
+            "preview.created",
+        ):
+            matching = [
+                event for event in self.coordinator.events(run_id)
+                if event.type == event_type
+            ]
+            self.assertEqual(len(matching), 2, event_type)
+            self.assertEqual(
+                {event.data["aggregate_id"] for event in matching},
+                {"customer-a:same-order", "customer-b:same-order"},
+                event_type,
+            )
+            self.assertEqual({event.data["order_id"] for event in matching}, {"same-order"})
+            self.assertEqual(
+                {event.data["customer_id"] for event in matching},
+                {"customer-a", "customer-b"},
+            )
 
     def test_pitstop_order_never_becomes_terminal_green_before_final_result(self):
         adapter = PitStopBlockingAdapter([make_order("pitstop-order")])

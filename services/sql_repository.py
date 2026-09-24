@@ -261,7 +261,10 @@ class SqlRunRepository:
             records = session.scalars(
                 select(OrderResult).where(*filtered)
                 .options(*options)
-                .order_by(OrderResult.customer_id, OrderResult.order_id, OrderResult.id)
+                # Keep offset pagination stable while a run is still adding
+                # orders. Sorting by customer/order lets a newly discovered
+                # low-sorting key shift every row on the active page.
+                .order_by(OrderResult.id)
                 .offset((page - 1) * page_size).limit(page_size)
             ).all()
             page_record = SimpleNamespace(

@@ -406,6 +406,31 @@ class OrderWorkflowTests(unittest.TestCase):
             action = session.scalar(select(OrderAction))
             self.assertIn('"ok": true', action.cms_response_json)
 
+    def test_unique_composite_request_still_sends_bare_order_id(self):
+        BlockingLifecycle.release.set()
+        self.order.update(aggregate_id="42:1001", customer_id="42")
+        with self.database.session_factory() as session, session.begin():
+            session.get(OrderResult, 1).customer_id = "42"
+        calls = []
+        service = OrderWorkflowService(
+            self.coordinator,
+            self.database.session_factory,
+            lambda _order_ref, _run_id: (self.run, self.order),
+            lifecycle_factory=BlockingLifecycle,
+            prepress_sender=lambda order_id, comment: (
+                calls.append((order_id, comment)) or {"http_status": 200}
+            ),
+        )
+
+        result = service.prepare(
+            OrderActionCommand(("42:1001",), run_id="run-1"), "print"
+        )
+
+        self.assertEqual(calls, [("1001", None)])
+        self.assertEqual(result["items"][0]["order_id"], "1001")
+        self.assertEqual(result["items"][0]["aggregate_id"], "42:1001")
+        self.assertEqual(result["items"][0]["status"], "prepared")
+
     def test_multiple_prints_use_one_prepress_request_without_comment(self):
         BlockingLifecycle.release.set()
         self.order["order_id"] = "1001"
@@ -443,6 +468,102 @@ class OrderWorkflowTests(unittest.TestCase):
 
         self.assertEqual(calls, [(["1001", "1002"], None)])
         self.assertEqual([item["status"] for item in result["items"]], ["prepared", "prepared"])
+
+    def test_composite_print_for_customer_collision_never_calls_legacy_sender(self):
+        calls = []
+        first = dict(
+            self.order,
+            order_id="1001",
+            aggregate_id="10:1001",
+            customer_id="10",
+        )
+        second = dict(
+            self.order,
+            order_id="1001",
+            aggregate_id="20:1001",
+            customer_id="20",
+        )
+        self.run["orders"] = {"1001": first, "20:1001": second}
+        with self.database.session_factory() as session, session.begin():
+            session.query(OrderResult).delete()
+            session.add_all(
+                [
+                    OrderResult(id=1, run_id="run-1", order_id="1001", customer_id="10", status="passed", passed=True),
+                    OrderResult(id=2, run_id="run-1", order_id="1001", customer_id="20", status="passed", passed=True),
+                ]
+            )
+
+        def forbidden_lifecycle(_path):
+            raise AssertionError("ambiguous external action must not transition files")
+
+        service = OrderWorkflowService(
+            self.coordinator,
+            self.database.session_factory,
+            lambda order_ref, _run_id: (
+                self.run,
+                {"10:1001": first, "20:1001": second}[order_ref],
+            ),
+            lifecycle_factory=forbidden_lifecycle,
+            prepress_sender=lambda *args: calls.append(args),
+        )
+        result = service.prepare(
+            OrderActionCommand(("20:1001",), run_id="run-1"), "print"
+        )
+
+        self.assertEqual(calls, [])
+        self.assertEqual(result["items"][0]["status"], "rejected")
+        self.assertEqual(result["items"][0]["code"], "ambiguous_external_order_id")
+        self.assertEqual(result["items"][0]["aggregate_id"], "20:1001")
+        with self.database.session_factory() as session:
+            self.assertEqual(session.scalars(select(OrderAction)).all(), [])
+
+    def test_composite_reject_for_customer_collision_never_calls_rework_sender(self):
+        calls = []
+        first = dict(
+            self.order,
+            order_id="1001",
+            aggregate_id="10:1001",
+            customer_id="10",
+        )
+        second = dict(
+            self.order,
+            order_id="1001",
+            aggregate_id="20:1001",
+            customer_id="20",
+        )
+        self.run["orders"] = {"1001": first, "20:1001": second}
+        with self.database.session_factory() as session, session.begin():
+            session.query(OrderResult).delete()
+            session.add_all(
+                [
+                    OrderResult(id=1, run_id="run-1", order_id="1001", customer_id="10", status="passed", passed=True),
+                    OrderResult(id=2, run_id="run-1", order_id="1001", customer_id="20", status="passed", passed=True),
+                ]
+            )
+
+        def forbidden_lifecycle(_path):
+            raise AssertionError("ambiguous external action must not transition files")
+
+        service = OrderWorkflowService(
+            self.coordinator,
+            self.database.session_factory,
+            lambda order_ref, _run_id: (
+                self.run,
+                {"10:1001": first, "20:1001": second}[order_ref],
+            ),
+            lifecycle_factory=forbidden_lifecycle,
+            rework_sender=lambda *args: calls.append(args),
+        )
+        result = service.prepare(
+            OrderActionCommand(("20:1001",), run_id="run-1"), "reject"
+        )
+
+        self.assertEqual(calls, [])
+        self.assertEqual(result["items"][0]["status"], "rejected")
+        self.assertEqual(result["items"][0]["code"], "ambiguous_external_order_id")
+        self.assertEqual(result["items"][0]["aggregate_id"], "20:1001")
+        with self.database.session_factory() as session:
+            self.assertEqual(session.scalars(select(OrderAction)).all(), [])
 
     def test_prepress_failure_rolls_back_local_print_transition(self):
         BlockingLifecycle.release.set()

@@ -3,6 +3,7 @@
 from .batch_adapter import BatchProcessorAdapter, ProcessingOptions
 from .coordinator import (
     ActiveRunError,
+    AmbiguousOrderError,
     InvalidRunStateError,
     RunCoordinator,
     RunNotFoundError,
@@ -16,6 +17,7 @@ from .sql_repository import SqlRunRepository
 
 __all__ = [
     "ActiveRunError",
+    "AmbiguousOrderError",
     "BatchProcessorAdapter",
     "FileLifecycle",
     "FileLifecycleError",

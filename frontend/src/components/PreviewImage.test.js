@@ -11,6 +11,7 @@ class MockObserver {
   observe(node) { this.nodes.push(node); }
   disconnect() {}
   intersectAll() { this.callback(this.nodes.map((target) => ({ target, isIntersecting: true }))); }
+  intersectNode(target) { this.callback([{ target, isIntersecting: true }]); }
 }
 function deferred() {
   let resolve;
@@ -76,6 +77,23 @@ describe("PreviewImage", () => {
     calls[0].resolve(ok());
     await flush();
     expect(fetch).toHaveBeenCalledTimes(5);
+  });
+
+  it("prioritizes a visible preview over queued near-viewport previews", async () => {
+    vi.stubGlobal("IntersectionObserver", MockObserver);
+    for (let index = 0; index < 4; index += 1) mount(`/thumb/active-${index}`, true);
+    await flush();
+    const queued = mount("/thumb/near", false);
+    await nextTick();
+    const nearObserver = observers.at(-2);
+    nearObserver.intersectNode(queued.host.querySelector("img"));
+    const visible = mount("/thumb/visible", false);
+    await nextTick();
+    observers.at(-1).intersectNode(visible.host.querySelector("img"));
+    calls[0].resolve(ok());
+    await flush();
+    expect(calls.map((call) => call.src)).toContain("/thumb/visible");
+    expect(calls.map((call) => call.src)).not.toContain("/thumb/near");
   });
 
   it("aborts a replaced URL and ignores its late response without freeing the new slot", async () => {

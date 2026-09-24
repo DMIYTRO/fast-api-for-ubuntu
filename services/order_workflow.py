@@ -219,16 +219,88 @@ class OrderWorkflowService:
         self, command: OrderActionCommand, action: str
     ) -> dict[str, list[dict[str, Any]]]:
         results: list[dict[str, Any]] = []
+        current_identity = {"order_id": "", "aggregate_id": "", "include_aggregate_id": False}
+
+        def add_result(item: dict[str, Any]) -> None:
+            item.setdefault("order_id", current_identity["order_id"])
+            if current_identity["include_aggregate_id"]:
+                item.setdefault("aggregate_id", current_identity["aggregate_id"])
+            results.append(item)
+
         batch_prepress_result = None
+        resolved_orders = [
+            (order_ref, *self.order_finder(order_ref, command.run_id))
+            for order_ref in command.order_ids
+        ]
+        external_order_ids = [
+            str(order.get("order_id") or order.get("id") or order_ref)
+            for order_ref, _run, order in resolved_orders
+        ]
+        ambiguous_external_refs: set[tuple[str, str]] = set()
+        for order_ref, run, order in resolved_orders:
+            real_id = str(order.get("order_id") or order.get("id") or order_ref)
+            run_orders = run.get("orders") or {}
+            order_values = run_orders.values() if isinstance(run_orders, dict) else run_orders
+            matching_order_identities = [
+                str(candidate.get("aggregate_id") or candidate.get("order_id") or candidate.get("id") or "")
+                for candidate in order_values
+                if str(candidate.get("order_id") or candidate.get("id") or "") == real_id
+            ]
+            if len(set(matching_order_identities)) > 1:
+                ambiguous_external_refs.add(
+                    (str(run.get("id") or ""), str(order.get("aggregate_id") or order_ref))
+                )
+        selected_identities: dict[str, set[tuple[str, str]]] = {}
+        for order_ref, run, order in resolved_orders:
+            real_id = str(order.get("order_id") or order.get("id") or order_ref)
+            selected_identities.setdefault(real_id, set()).add(
+                (str(run.get("id") or ""), str(order.get("customer_id") or ""))
+            )
+        duplicate_external_ids = {
+            order_id
+            for order_id, identities in selected_identities.items()
+            if len(identities) > 1
+        }
+        for order_ref, run, order in resolved_orders:
+            real_id = str(order.get("order_id") or order.get("id") or order_ref)
+            if real_id in duplicate_external_ids:
+                ambiguous_external_refs.add(
+                    (str(run.get("id") or ""), str(order.get("aggregate_id") or order_ref))
+                )
+        sends_to_external_service = (
+            (action == "print" and self.prepress_sender is not None)
+            or (action == "reject" and self.rework_sender is not None)
+        )
         if (
             action == "print"
             and self.prepress_sender is not None
-            and len(command.order_ids) > 1
+            and len(external_order_ids) > 1
+            and not duplicate_external_ids
         ):
-            batch_prepress_result = self.prepress_sender(list(command.order_ids), None)
+            batch_prepress_result = self.prepress_sender(external_order_ids, None)
         with self.session_factory() as session:
-            for order_id in command.order_ids:
-                run, order = self.order_finder(order_id, command.run_id)
+            for order_ref, run, order in resolved_orders:
+                order_id = str(order.get("order_id") or order.get("id") or order_ref)
+                aggregate_id = str(order.get("aggregate_id") or order_ref)
+                customer_id = order.get("customer_id")
+                if customer_id is not None:
+                    customer_id = str(customer_id)
+                current_identity["order_id"] = order_id
+                current_identity["aggregate_id"] = aggregate_id
+                current_identity["include_aggregate_id"] = order_ref == aggregate_id and aggregate_id != order_id
+                if sends_to_external_service and (str(run.get("id") or ""), aggregate_id) in ambiguous_external_refs:
+                    add_result(
+                        {
+                            "order_id": order_id,
+                            "status": "rejected",
+                            "code": "ambiguous_external_order_id",
+                            "message": (
+                                "Внешняя система не различает клиентов с одинаковым "
+                                "номером заказа; действие не выполнено."
+                            ),
+                        }
+                    )
+                    continue
                 pitstop = order.get("pitstop") or None
                 pitstop_ready = (
                     pitstop is None
@@ -257,7 +329,7 @@ class OrderWorkflowService:
                         )
                     )
                 ):
-                    results.append(
+                    add_result(
                         {
                             "order_id": order_id,
                             "status": "rejected",
@@ -265,20 +337,32 @@ class OrderWorkflowService:
                         }
                     )
                     continue
-                stored = session.scalar(
-                    select(OrderResult)
-                    .where(
-                        OrderResult.run_id == run["id"],
-                        OrderResult.order_id == order_id,
-                    )
-                    .order_by(desc(OrderResult.updated_at))
+                stored_query = select(OrderResult).where(
+                    OrderResult.run_id == run["id"],
+                    OrderResult.order_id == order_id,
+                    OrderResult.customer_id == customer_id,
                 )
+                stored = session.scalar(
+                    stored_query.order_by(desc(OrderResult.updated_at))
+                )
+                if stored is None and customer_id is not None:
+                    legacy_candidates = session.scalars(
+                        select(OrderResult).where(
+                            OrderResult.run_id == run["id"],
+                            OrderResult.order_id == order_id,
+                        )
+                    ).all()
+                    if (
+                        len(legacy_candidates) == 1
+                        and legacy_candidates[0].customer_id is None
+                    ):
+                        stored = legacy_candidates[0]
                 if stored is None:
-                    results.append({"order_id": order_id, "status": "not_found"})
+                    add_result({"order_id": order_id, "status": "not_found"})
                     continue
                 active_action = self._claim_action(stored.id, action)
                 if active_action is not None:
-                    results.append(
+                    add_result(
                         self._busy_result(order_id, action, active_action)
                     )
                     continue
@@ -292,7 +376,7 @@ class OrderWorkflowService:
                         .order_by(desc(OrderAction.created_at), desc(OrderAction.id))
                     )
                     if pending_action is not None:
-                        results.append(
+                        add_result(
                             self._busy_result(
                                 order_id, action, pending_action.action
                             )
@@ -300,7 +384,7 @@ class OrderWorkflowService:
                         continue
                     expected_status = self._terminal_status_for_action(action)
                     if stored.status == "prepared" and order.get("status") == expected_status:
-                        results.append(
+                        add_result(
                             {
                                 "order_id": order_id,
                                 "status": "prepared",
@@ -321,7 +405,7 @@ class OrderWorkflowService:
                         existing_action is not None
                         and order.get("status") == expected_status
                     ):
-                        results.append(
+                        add_result(
                             {
                                 "order_id": order_id,
                                 "status": "prepared",
@@ -336,7 +420,7 @@ class OrderWorkflowService:
                             confirm_failed_processing=command.confirm_failed_processing,
                         )
                     except ValueError as exc:
-                        results.append(
+                        add_result(
                             {
                                 "order_id": order_id,
                                 "status": "rejected",
@@ -355,7 +439,7 @@ class OrderWorkflowService:
                                 files=previous_order.get("files"),
                             )
                         except Exception as exc:
-                            results.append(
+                            add_result(
                                 {
                                     "order_id": order_id,
                                     "status": "error",
@@ -393,7 +477,7 @@ class OrderWorkflowService:
                             if pending_action is not None
                             else "unknown"
                         )
-                        results.append(self._busy_result(order_id, action, active))
+                        add_result(self._busy_result(order_id, action, active))
                         continue
                     try:
                         lifecycle = self.lifecycle_factory(
@@ -418,7 +502,7 @@ class OrderWorkflowService:
                                     exc.destination
                                 ),
                             }
-                        results.append(
+                        add_result(
                             {
                                 "order_id": order_id,
                                 "status": "conflict"
@@ -437,7 +521,7 @@ class OrderWorkflowService:
                             run["id"],
                             order_id,
                         )
-                        results.append(
+                        add_result(
                             {
                                 "order_id": order_id,
                                 "status": "error",
@@ -449,7 +533,7 @@ class OrderWorkflowService:
                         upload_paths: list[Path] = []
                         self.coordinator.apply_file_transition(
                             run["id"],
-                            order_id,
+                            aggregate_id,
                             status=expected_status,
                             source_paths=transition.source_paths,
                             pdf_path=transition.pdf_path,
@@ -485,7 +569,7 @@ class OrderWorkflowService:
                                 prepress_result, ensure_ascii=False
                             )
                         session.commit()
-                        results.append(
+                        add_result(
                             {
                                 "order_id": order_id,
                                 "status": "prepared",
@@ -497,7 +581,7 @@ class OrderWorkflowService:
                         try:
                             lifecycle.rollback(transition)
                             self.coordinator.restore_order_snapshot(
-                                run["id"], order_id, previous_order
+                                run["id"], aggregate_id, previous_order
                             )
                         except Exception:
                             logger.exception(
@@ -515,7 +599,7 @@ class OrderWorkflowService:
                             run["id"],
                             order_id,
                         )
-                        results.append(
+                        add_result(
                             {
                                 "order_id": order_id,
                                 "status": "error",

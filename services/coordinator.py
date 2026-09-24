@@ -89,16 +89,30 @@ class _RunContext:
         return self.order_keys[id(order)]
 
 
+class AmbiguousOrderError(ValueError):
+    """A legacy bare order number maps to more than one customer/order."""
+
+
 def _stored_order_key(run: dict[str, Any], order_id: str) -> str | None:
-    if order_id in run.get("orders", {}):
-        return order_id
-    matches = [
+    orders = run.get("orders") or {}
+    exact_matches = [
         key
-        for key, value in (run.get("orders") or {}).items()
-        if value.get("order_id") == order_id
-        or value.get("aggregate_id") == order_id
+        for key, value in orders.items()
+        if value.get("aggregate_id") == order_id
+        or (key == order_id and str(value.get("order_id") or value.get("id") or "") != order_id)
     ]
-    return matches[0] if len(matches) == 1 else None
+    if len(exact_matches) > 1:
+        raise AmbiguousOrderError(order_id)
+    if exact_matches:
+        return exact_matches[0]
+    number_matches = [
+        key
+        for key, value in orders.items()
+        if str(value.get("order_id") or value.get("id") or "") == order_id
+    ]
+    if len(number_matches) > 1:
+        raise AmbiguousOrderError(order_id)
+    return number_matches[0] if number_matches else None
 
 
 class RunCoordinator:
@@ -253,7 +267,8 @@ class RunCoordinator:
             orders = [order for order in orders if order.get("status") in {"error", "failed", "technical_error"}]
         elif status != "all":
             orders = [order for order in orders if order.get("status") == status]
-        orders.sort(key=lambda order: (str(order.get("customer_id") or ""), str(order.get("order_id") or order.get("id") or "")))
+        # Dict insertion order follows discovery order and keeps pagination
+        # stable as new orders arrive during an active run.
         total = len(orders)
         start = (page - 1) * page_size
         run["orders"] = {str(i): order for i, order in enumerate(orders[start:start + page_size])}
@@ -368,7 +383,13 @@ class RunCoordinator:
             self._save_and_emit_locked(
                 run,
                 "order.file_transition",
-                {"order_id": order_id, "status": status, "order": order},
+                {
+                    "aggregate_id": order.get("aggregate_id") or stored_key,
+                    "order_id": order.get("order_id") or order_id,
+                    "customer_id": order.get("customer_id"),
+                    "status": status,
+                    "order": order,
+                },
             )
             self._changed.notify_all()
             return self.get_run(run_id)
@@ -387,7 +408,12 @@ class RunCoordinator:
             self._save_and_emit_locked(
                 run,
                 "order.file_transition_rolled_back",
-                {"order_id": order_id, "status": snapshot.get("status")},
+                {
+                    "aggregate_id": snapshot.get("aggregate_id") or stored_key,
+                    "order_id": snapshot.get("order_id") or order_id,
+                    "customer_id": snapshot.get("customer_id"),
+                    "status": snapshot.get("status"),
+                },
             )
             self._changed.notify_all()
             return self.get_run(run_id)
@@ -465,7 +491,12 @@ class RunCoordinator:
             self._save_and_emit_locked(
                 run,
                 f"order.correction_{decision}",
-                {"order_id": order_id, "decisions": decision_audit},
+                {
+                    "aggregate_id": order.aggregate_id,
+                    "order_id": order.order_id,
+                    "customer_id": order.customer_id,
+                    "decisions": decision_audit,
+                },
             )
             self._pending_resumes.append((run_id, stored_key))
             self._schedule_next_locked()
@@ -576,7 +607,9 @@ class RunCoordinator:
                         run,
                         "order.detected",
                         {
+                            "aggregate_id": order.aggregate_id,
                             "order_id": order.order_id,
+                            "customer_id": order.customer_id,
                             "order": detected_dto,
                             "processed": inspected,
                             "total": run["total_orders"],
@@ -598,7 +631,9 @@ class RunCoordinator:
                         run,
                         "order.checked",
                         {
+                            "aggregate_id": order.aggregate_id,
                             "order_id": order.order_id,
+                            "customer_id": order.customer_id,
                             "status": effective_checked_status,
                             "source_status": checked_status,
                         },
@@ -621,7 +656,12 @@ class RunCoordinator:
                             if auto_approve
                             else "order.correction_rejected"
                         ),
-                        {"order_id": order.order_id, "automatic": True},
+                        {
+                            "aggregate_id": order.aggregate_id,
+                            "order_id": order.order_id,
+                            "customer_id": order.customer_id,
+                            "automatic": True,
+                        },
                     )
                 elif pending_files:
                     with self._lock:
@@ -635,7 +675,9 @@ class RunCoordinator:
                             run,
                             "order.waiting_confirmation",
                             {
+                                "aggregate_id": order.aggregate_id,
                                 "order_id": order.order_id,
+                                "customer_id": order.customer_id,
                                 "order": dto,
                                 "processed": run["processed_orders"],
                                 "total": run["total_orders"],
@@ -708,7 +750,9 @@ class RunCoordinator:
                     run,
                     pitstop_event,
                     {
+                        "aggregate_id": order.aggregate_id,
                         "order_id": order.order_id,
+                        "customer_id": order.customer_id,
                         "status": status,
                         "source_status": source_status,
                         "pitstop_status": pitstop_status,
@@ -720,7 +764,9 @@ class RunCoordinator:
                 run,
                 "order.completed",
                 {
+                    "aggregate_id": order.aggregate_id,
                     "order_id": order.order_id,
+                    "customer_id": order.customer_id,
                     "status": status,
                     "order": dto,
                     "processed": run["processed_orders"],
@@ -732,13 +778,23 @@ class RunCoordinator:
                 self._emit_locked(
                     run_id,
                     "pdf.created",
-                    {"order_id": order.order_id, "path": str(artifacts.pdf_path)},
+                    {
+                        "aggregate_id": order.aggregate_id,
+                        "order_id": order.order_id,
+                        "customer_id": order.customer_id,
+                        "path": str(artifacts.pdf_path),
+                    },
                 )
             for path in artifacts.preview_paths:
                 self._emit_locked(
                     run_id,
                     "preview.created",
-                    {"order_id": order.order_id, "path": str(path)},
+                    {
+                        "aggregate_id": order.aggregate_id,
+                        "order_id": order.order_id,
+                        "customer_id": order.customer_id,
+                        "path": str(path),
+                    },
                 )
             self._changed.notify_all()
 

@@ -16,6 +16,7 @@ const uploadInput = ref(null);
 const uploadError = ref("");
 const uploadingPreview = ref(false);
 const id = computed(() => props.order.order_id ?? props.order.id);
+const actionId = computed(() => props.order.aggregate_id ?? id.value);
 const files = computed(() => props.order.files || props.order.file_results || []);
 const face = computed(() => files.value.find((file) => String(file.side || file.parsed?.side).toLowerCase() === "face") || files.value[0]);
 const back = computed(() => files.value.find((file) => String(file.side || file.parsed?.side).toLowerCase() === "back"));
@@ -100,7 +101,7 @@ async function uploadPreview(file) {
   }
   uploadingPreview.value = true;
   try {
-    const result = await api.uploadReturnPreview(props.runId, id.value, file);
+    const result = await api.uploadReturnPreview(props.runId, actionId.value, file);
     props.order.custom_preview_url = result.url;
   } catch (error) { uploadError.value = error.message; }
   finally { uploadingPreview.value = false; }

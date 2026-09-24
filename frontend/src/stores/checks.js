@@ -1,6 +1,8 @@
 import { defineStore } from "pinia";
 import { api } from "../services/api.js";
 import { connectRunEvents } from "../services/events.js";
+import { applyRunFileProgressEvent, createRunFileProgress } from "./runFileProgress.js";
+import { orderIdentity, sameOrderIdentity } from "./orderIdentity.js";
 
 const list = (data) => Array.isArray(data) ? data : (data?.items || data?.orders || []);
 const running = (status) => ["queued", "running", "waiting_confirmation", "cancelling"].includes(status);
@@ -9,6 +11,7 @@ const printableStatuses = ["passed", "warning", "completed"];
 const pitstopPendingStatuses = ["queued", "pending", "running", "checking", "processing"];
 let searchDebounceTimer;
 let ordersRequestSequence = 0;
+let orderEventRevision = 0;
 let orderPageRefreshTimer;
 
 export const matchesStatusFilter = (order, filter) => {
@@ -34,11 +37,12 @@ export const isOrderForcePrintable = (order) => order?.status === "error";
 const decorateOrder = (order, runId) => {
   if (!order) return order;
   const orderId = String(order.order_id ?? order.id ?? "");
+  const fileOrderId = String(order.aggregate_id ?? (order.customer_id != null ? `${order.customer_id}:${orderId}` : orderId));
   const previews = order.preview_paths || [];
   const files = (order.files || order.file_results || []).map((file, index) => {
     const parsed = file.parsed || {};
     const side = file.side || parsed.side;
-    const id = String(file.id || `${runId}:${orderId}:${index}`);
+    const id = String(file.id || `${runId}:${fileOrderId}:${index}`);
     const matchingPreview = file.preview_path || previews.find((path) =>
       side && String(path).toLowerCase().includes(String(side).toLowerCase())
     );
@@ -58,7 +62,7 @@ const decorateOrders = (data, runId) => list(data).map((order) => decorateOrder(
 
 export const useChecksStore = defineStore("checks", {
   state: () => ({
-    runs: [], activeRun: null, orders: [], config: null, loading: false, error: "",
+    runs: [], activeRun: null, fileProgress: createRunFileProgress(), orders: [], config: null, loading: false, error: "",
     connection: "closed", selected: [], selectedOrderSnapshots: {}, filter: localStorage.getItem("im-filter") || "passed",
     search: "", page: 1, pageSize: 10, pageInfo: { total: 0, total_pages: 1, counts: {} },
     events: [], drawerOpen: false, stopEvents: null, actionResults: {}, returnComments: {}, returnDesign: {}, conflictPrompt: null,
@@ -74,7 +78,7 @@ export const useChecksStore = defineStore("checks", {
         return filterOk && (!query || text.includes(query));
       });
     },
-    selectedOrders: (state) => state.selected.map((id) => state.selectedOrderSnapshots[id] || state.orders.find((order) => String(order.order_id ?? order.id) === String(id))).filter(Boolean),
+    selectedOrders: (state) => state.selected.map((id) => state.selectedOrderSnapshots[id] || state.orders.find((order) => orderIdentity(order) === String(id) || String(order.order_id ?? order.id) === String(id))).filter(Boolean),
     canPrint() { return this.selectedOrders.length > 0 && this.selectedOrders.every(isOrderPrintable); },
     canForcePrint() {
       return this.selectedOrders.some(isOrderForcePrintable)
@@ -101,18 +105,19 @@ export const useChecksStore = defineStore("checks", {
       if (!this.activeRun?.id) return;
       const runId = this.activeRun.id;
       const requestSequence = ++ordersRequestSequence;
+      const eventRevision = orderEventRevision;
       const result = await api.orders(runId, {
         page, page_size: this.pageSize, status: this.filter,
         search: this.search.trim(), active_only: true,
       });
-      if (requestSequence !== ordersRequestSequence || String(this.activeRun?.id) !== String(runId)) return;
+      if (requestSequence !== ordersRequestSequence || eventRevision !== orderEventRevision || String(this.activeRun?.id) !== String(runId)) return;
       const totalPages = result.total_pages || 1;
       if (page > totalPages) return this.loadOrders(totalPages);
       this.page = result.page || page;
       this.orders = decorateOrders(result, runId);
       this.pageInfo = { total: result.total || 0, total_pages: result.total_pages || 1, counts: result.counts || {} };
       for (const order of this.orders) {
-        const id = String(order.order_id ?? order.id);
+        const id = orderIdentity(order);
         if (this.selected.includes(id)) this.selectedOrderSnapshots[id] = order;
       }
     },
@@ -139,6 +144,7 @@ export const useChecksStore = defineStore("checks", {
       this.stopEvents?.(); this.stopEvents = null;
       const [run] = await Promise.all([api.run(id, { include_orders: false })]);
       this.activeRun = run;
+      this.fileProgress = createRunFileProgress(run.id);
       this.page = 1; this.selected = []; this.selectedOrderSnapshots = {};
       await this.loadOrders(1);
       if (running(run.status)) this.listen(id);
@@ -166,18 +172,28 @@ export const useChecksStore = defineStore("checks", {
       this.events.unshift(event);
       this.events = this.events.slice(0, 100);
       if (event.run_id && this.activeRun && String(event.run_id) !== String(this.activeRun.id)) return;
+      applyRunFileProgressEvent(this.fileProgress, event);
       if (event.processed != null && event.total) this.activeRun.progress = Math.round(event.processed / event.total * 100);
       Object.assign(this.activeRun || {}, event.run || {});
       const orderData = event.order ? decorateOrder(event.order, this.activeRun?.id) : null;
+      if (orderData || event.order_id != null) orderEventRevision += 1;
       if (orderData) {
-        const id = String(orderData.order_id ?? orderData.id);
-        const index = this.orders.findIndex((item) => String(item.order_id ?? item.id) === id);
+        const id = orderIdentity(orderData);
+        let index = this.orders.findIndex((item) => sameOrderIdentity(item, orderData));
+        if (index < 0 && !orderData.aggregate_id && orderData.customer_id == null) {
+          const matches = this.orders.map((item, itemIndex) => ({ item, itemIndex }))
+            .filter(({ item }) => String(item.order_id ?? item.id) === String(orderData.order_id ?? orderData.id));
+          if (matches.length === 1) index = matches[0].itemIndex;
+        }
+        const resolvedId = index >= 0 ? orderIdentity(this.orders[index]) : id;
         if (index < 0) {
-          const selectedSnapshot = this.selectedOrderSnapshots[id];
+          const selectedKey = Object.keys(this.selectedOrderSnapshots).find((key) => sameOrderIdentity(this.selectedOrderSnapshots[key], orderData));
+          const selectedSnapshot = this.selectedOrderSnapshots[selectedKey || id];
           if (selectedSnapshot) {
             const updatedSelection = { ...selectedSnapshot, ...orderData };
-            this.selectedOrderSnapshots[id] = updatedSelection;
-            this._dropSelectionWhenPrintBecomesBlocked(id, selectedSnapshot, updatedSelection);
+            const snapshotId = selectedKey || id;
+            this.selectedOrderSnapshots[snapshotId] = updatedSelection;
+            this._dropSelectionWhenPrintBecomesBlocked(snapshotId, selectedSnapshot, updatedSelection);
           }
           const status = orderData.status || "detected";
           const terminal = terminalStatuses.includes(status);
@@ -185,26 +201,37 @@ export const useChecksStore = defineStore("checks", {
           const text = [orderData.order_id, orderData.id, orderData.customer_id, ...(orderData.files || []).map((file) => file.filename)].join(" ").toLowerCase();
           const matchesPage = !terminal && matchesStatusFilter(orderData, this.filter) && (!query || text.includes(query));
           if (matchesPage && this.page === 1) {
-            this.orders.unshift(orderData);
-            if (this.orders.length > this.pageSize) this.orders.pop();
+            // New SSE orders append in discovery order; unshift would replace
+            // the first visible card on every completed order. The next API
+            // refresh supplies the canonical page in the same stable order.
+            if (this.orders.length < this.pageSize) this.orders.push(orderData);
           }
         } else {
           const previous = this.orders[index];
           const updated = { ...previous, ...orderData };
           this.orders.splice(index, 1, updated);
-          if (this.selected.includes(id)) this.selectedOrderSnapshots[id] = updated;
-          this._dropSelectionWhenPrintBecomesBlocked(id, previous, updated);
+          if (this.selected.includes(resolvedId)) this.selectedOrderSnapshots[resolvedId] = updated;
+          this._dropSelectionWhenPrintBecomesBlocked(resolvedId, previous, updated);
         }
-      } else if (event.order_id) {
-        const id = String(event.order_id);
-        const index = this.orders.findIndex((item) => String(item.order_id ?? item.id) === id);
+      } else if (event.order_id != null) {
+        const eventOrder = { aggregate_id: event.aggregate_id, customer_id: event.customer_id, order_id: event.order_id, id: event.id };
+        const id = orderIdentity(eventOrder);
+        let index = this.orders.findIndex((item) => sameOrderIdentity(item, eventOrder));
+        if (index < 0 && event.aggregate_id == null && event.customer_id == null) {
+          const matches = this.orders.map((item, itemIndex) => ({ item, itemIndex }))
+            .filter(({ item }) => String(item.order_id ?? item.id) === String(event.order_id));
+          if (matches.length === 1) index = matches[0].itemIndex;
+        }
         if (event.status) {
-          const previous = this.orders[index] || this.selectedOrderSnapshots[id];
+          const selectedKey = Object.keys(this.selectedOrderSnapshots).find((key) => sameOrderIdentity(this.selectedOrderSnapshots[key], eventOrder));
+          const snapshotId = selectedKey || id;
+          const previous = (index >= 0 ? this.orders[index] : null) || this.selectedOrderSnapshots[snapshotId];
           if (previous) {
             const updated = { ...previous, status: event.status };
             if (index >= 0) this.orders.splice(index, 1, updated);
-            if (this.selected.includes(id)) this.selectedOrderSnapshots[id] = updated;
-            this._dropSelectionWhenPrintBecomesBlocked(id, previous, updated);
+            const resolvedId = index >= 0 ? orderIdentity(this.orders[index]) : snapshotId;
+            if (this.selected.includes(resolvedId)) this.selectedOrderSnapshots[resolvedId] = updated;
+            this._dropSelectionWhenPrintBecomesBlocked(resolvedId, previous, updated);
           }
         }
       }
@@ -233,7 +260,7 @@ export const useChecksStore = defineStore("checks", {
     async refreshRuns() { this.runs = list(await api.runs()); },
     async cancel() { if (this.activeRun) { await api.cancel(this.activeRun.id); await this.resync(); } },
     toggle(order) {
-      const id = String(order.order_id ?? order.id);
+      const id = orderIdentity(order);
       if (this.selected.includes(id)) {
         this.selected = this.selected.filter((item) => item !== id);
         delete this.selectedOrderSnapshots[id];
@@ -243,7 +270,7 @@ export const useChecksStore = defineStore("checks", {
       }
     },
     toggleAllFiltered() {
-      const ids = this.filteredOrders.map((order) => String(order.order_id ?? order.id));
+      const ids = this.filteredOrders.map((order) => orderIdentity(order));
       const allSelected = ids.length > 0 && ids.every((id) => this.selected.includes(id));
       if (allSelected) {
         this.selected = this.selected.filter((id) => !ids.includes(id));
@@ -251,43 +278,44 @@ export const useChecksStore = defineStore("checks", {
       } else {
         this.selected = [...new Set([...this.selected, ...ids])];
         this.filteredOrders.forEach((order) => {
-          const id = String(order.order_id ?? order.id);
+          const id = orderIdentity(order);
           this.selectedOrderSnapshots[id] = order;
         });
       }
     },
     clearSelection() { this.selected = []; this.selectedOrderSnapshots = {}; },
     returnDesignEnabled(order) {
-      const id = String(order.order_id ?? order.id);
+      const id = orderIdentity(order);
       return this.returnDesign[id]?.design !== false;
     },
     returnDesignCost(order) {
-      const id = String(order.order_id ?? order.id);
+      const id = orderIdentity(order);
       return this.returnDesign[id]?.design_cost ?? "0";
     },
     setReturnDesign(order, design) {
-      const id = String(order.order_id ?? order.id);
+      const id = orderIdentity(order);
       const designCost = this.returnDesign[id]?.design_cost ?? "0";
       this.returnDesign[id] = { design, design_cost: designCost };
     },
     setReturnDesignCost(order, designCost) {
-      const id = String(order.order_id ?? order.id);
+      const id = orderIdentity(order);
       this.returnDesign[id] = {
         design: this.returnDesign[id]?.design !== false,
         design_cost: designCost || "0",
       };
     },
     setReturnComment(order, comment) {
-      const id = String(order.order_id ?? order.id);
+      const id = orderIdentity(order);
       if (comment) this.returnComments[id] = comment;
       else delete this.returnComments[id];
     },
     async decide(order, decision) {
-      await api.correction(this.activeRun.id, order.order_id ?? order.id, { decision });
+      await api.correction(this.activeRun.id, order.aggregate_id ?? order.order_id ?? order.id, { decision });
       await this.resync();
     },
     async act(action, comment, conflictStrategy = "fail") {
-      const order_ids = [...this.selected];
+      const selectedOrders = this.selectedOrders;
+      const order_ids = selectedOrders.map((order) => order.aggregate_id ?? order.order_id ?? order.id);
       const run_id = this.activeRun?.id;
       const isPrint = ["print", "force-print"].includes(action);
       const responses = isPrint
@@ -297,17 +325,31 @@ export const useChecksStore = defineStore("checks", {
           conflict_strategy: conflictStrategy,
           confirm_failed_processing: action === "force-print",
         })]
-        : await Promise.all(order_ids.map((orderId) => api.prepareReject({
-          order_ids: [orderId],
-          run_id,
-          comment: [this.returnComments[orderId], comment].filter(Boolean).join("\n"),
-          ...(this.returnDesign[orderId] || { design: true, design_cost: "0" }),
-          conflict_strategy: conflictStrategy,
-        })));
+        : await Promise.all(selectedOrders.map((order) => {
+          const identity = orderIdentity(order);
+          const orderId = order.aggregate_id ?? order.order_id ?? order.id;
+          return api.prepareReject({
+            order_ids: [orderId],
+            run_id,
+            comment: [this.returnComments[identity] ?? this.returnComments[String(order.order_id ?? order.id)], comment].filter(Boolean).join("\n"),
+            ...(this.returnDesign[identity] || this.returnDesign[String(order.order_id ?? order.id)] || { design: true, design_cost: "0" }),
+            conflict_strategy: conflictStrategy,
+          });
+        }));
       const result = responses.flatMap((response) => list(response));
+      const resultIdentity = (item) => {
+        const direct = orderIdentity(item);
+        if (direct && !direct.startsWith("legacy:")) return direct;
+        const matches = selectedOrders.filter((order) =>
+          String(order.order_id ?? order.id) === String(item.order_id ?? item.id)
+          || String(order.aggregate_id ?? "") === String(item.order_id ?? item.id)
+        );
+        return matches.length === 1 ? orderIdentity(matches[0]) : direct || String(item.order_id);
+      };
       for (const item of result) {
-        this.actionResults[String(item.order_id)] = item;
-        const order = this.orders.find((value) => String(value.order_id ?? value.id) === String(item.order_id));
+        const identity = resultIdentity(item);
+        this.actionResults[identity] = item;
+        const order = this.orders.find((value) => orderIdentity(value) === identity);
         if (order) order.action_result = item;
       }
       const conflict = result.find((item) => item.status === "conflict");
@@ -315,7 +357,7 @@ export const useChecksStore = defineStore("checks", {
         this.conflictPrompt = {
           action,
           comment,
-          orderId: String(conflict.order_id),
+          orderId: resultIdentity(conflict),
           conflict: conflict.conflict,
         };
         return result;
@@ -323,7 +365,7 @@ export const useChecksStore = defineStore("checks", {
       this.conflictPrompt = null;
       const completedIds = new Set(result
         .filter((item) => item.status === "prepared")
-        .map((item) => String(item.order_id)));
+        .map(resultIdentity));
       const terminalStatus = this._terminalStatusForAction(action);
       // The API response confirms that the files have already been moved.
       // Update the active queue immediately instead of waiting for a second
@@ -350,7 +392,7 @@ export const useChecksStore = defineStore("checks", {
     _markOrdersTerminal(orderIds, status) {
       orderIds.forEach((id) => {
         const index = this.orders.findIndex(
-          (order) => String(order.order_id ?? order.id) === id
+          (order) => orderIdentity(order) === id
         );
         if (index >= 0) {
           this.orders.splice(index, 1, { ...this.orders[index], status });
