@@ -1,43 +1,57 @@
-import os
-import sys
-import shutil
 from pathlib import Path
+
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from control_panel import PREVIEW_CACHE_DIR, get_cached_preview_path
+from core.preview_cache import full_preview_cache_path, preview_cache_root, preview_work_dir
 
-def test_get_cached_preview_path_creates_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    cache_dir = tmp_path / "cache"
-    monkeypatch.setattr("control_panel.PREVIEW_CACHE_DIR", cache_dir)
-    
-    source = tmp_path / "source.png"
-    source.write_bytes(b"preview-data")
-    
-    cached = get_cached_preview_path(source)
-    
-    assert cached != source
-    assert cached.parent == cache_dir
-    assert cached.is_file()
-    assert cached.read_bytes() == b"preview-data"
-    
-    cached_again = get_cached_preview_path(source)
-    assert cached_again == cached
 
-def test_get_cached_preview_path_updates_on_modification(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    cache_dir = tmp_path / "cache"
-    monkeypatch.setattr("control_panel.PREVIEW_CACHE_DIR", cache_dir)
-    
-    source = tmp_path / "source.png"
-    source.write_bytes(b"v1")
-    cached1 = get_cached_preview_path(source)
-    assert cached1.read_bytes() == b"v1"
-    
-    source.write_bytes(b"v2_new_content")
-    cached2 = get_cached_preview_path(source)
-    assert cached2.read_bytes() == b"v2_new_content"
+def test_full_rendition_cache_is_deterministic_and_stays_on_share(tmp_path, monkeypatch):
+    share = tmp_path / "share"
+    share.mkdir()
+    cache = share / ".preview-cache"
+    monkeypatch.setenv("IMAGE_MAGIC_INPUT_DIR", str(share))
+    monkeypatch.setenv("IMAGE_MAGIC_PREVIEW_CACHE_DIR", str(cache))
+    monkeypatch.setattr("core.preview_cache._is_external_mount", lambda _path: True)
 
-def test_get_cached_preview_path_fallback_nonexistent(tmp_path: Path):
-    non_existent = tmp_path / "does_not_exist.png"
-    result = get_cached_preview_path(non_existent)
-    assert result == non_existent
+    thumbnail = share / "Previews" / "order_preview.png"
+    full = full_preview_cache_path(thumbnail)
+    assert full == full_preview_cache_path(thumbnail)
+    assert full.is_relative_to(cache)
+    assert preview_cache_root() == cache
+
+
+def test_working_files_use_external_share_and_directory_exists(tmp_path, monkeypatch):
+    share = tmp_path / "share"
+    share.mkdir()
+    cache = share / ".preview-cache"
+    monkeypatch.setenv("IMAGE_MAGIC_INPUT_DIR", str(share))
+    monkeypatch.setenv("IMAGE_MAGIC_PREVIEW_CACHE_DIR", str(cache))
+    monkeypatch.setattr("core.preview_cache._is_external_mount", lambda _path: True)
+
+    work = preview_work_dir(share / "Previews" / "order.png")
+    assert work.is_relative_to(cache)
+    assert work.is_dir()
+
+
+def test_local_cache_configuration_falls_back_to_external_share(tmp_path, monkeypatch, caplog):
+    share = tmp_path / "share"
+    share.mkdir()
+    monkeypatch.setenv("IMAGE_MAGIC_INPUT_DIR", str(share))
+    local_cache = tmp_path / "system-cache"
+    monkeypatch.setenv("IMAGE_MAGIC_PREVIEW_CACHE_DIR", str(local_cache))
+    monkeypatch.setattr("core.preview_cache._is_external_mount", lambda _path: True)
+
+    cache = preview_cache_root()
+    assert cache == share / ".preview-cache"
+    assert not local_cache.exists()
+    assert "preview.cache_path_outside_share" in caplog.text
+
+
+def test_unmounted_external_share_is_a_hard_error(tmp_path, monkeypatch):
+    share = tmp_path / "share"
+    share.mkdir()
+    monkeypatch.setenv("IMAGE_MAGIC_INPUT_DIR", str(share))
+    monkeypatch.setattr("core.preview_cache._is_external_mount", lambda _path: False)
+
+    with pytest.raises(RuntimeError, match="Внешний диск Share недоступен"):
+        preview_cache_root()

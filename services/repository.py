@@ -117,6 +117,15 @@ class InMemoryRunRepository:
             value = self._runs.get(run_id)
             return deepcopy(value) if value is not None else None
 
+    def get_run_summary(self, run_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            value = self._runs.get(run_id)
+            if value is None:
+                return None
+            summary = deepcopy(value)
+            summary["orders"] = {}
+            return summary
+
     def list_runs(
         self,
         *,

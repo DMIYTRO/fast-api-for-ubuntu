@@ -237,6 +237,77 @@ class ControlPanelTests(unittest.TestCase):
             b"back-preview",
         )
 
+    def test_thumbnail_and_full_preview_urls_use_stable_file_id_and_external_cache(self):
+        self.adapter_type = OneOrderAdapter
+        self.login()
+        response = self.client.post(
+            "/api/checks",
+            json={"input_path": str(self.root), "direction": "digital",
+                  "create_pdfs": True, "generate_previews": True,
+                  "copy_failures": False},
+        )
+        run_id = response.json()["id"]
+        self.client.app.state.coordinator.wait_for(run_id, timeout=2)
+        file_result = self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]["files"][0]
+        self.assertTrue(file_result["thumbnail_url"].endswith("?size=thumbnail"))
+        self.assertTrue(file_result["full_preview_url"].endswith("?size=full"))
+        self.assertTrue(file_result["id"].isdigit())
+        with patch.dict(os.environ, {
+            "IMAGE_MAGIC_INPUT_DIR": str(self.root),
+            "IMAGE_MAGIC_PREVIEW_CACHE_DIR": str(self.root / ".preview-cache"),
+        }), patch("core.preview_cache._is_external_mount", return_value=True):
+            from core.preview_cache import full_preview_cache_path
+            rendition = full_preview_cache_path(self.root / "Previews" / "sample-face.png")
+            rendition.parent.mkdir(parents=True, exist_ok=True)
+            rendition.write_bytes(b"full-resolution-preview")
+            self.assertEqual(
+                self.client.get(file_result["thumbnail_url"]).content, b"preview-image"
+            )
+            full_response = self.client.get(file_result["full_preview_url"])
+            self.assertEqual(full_response.content, b"full-resolution-preview")
+            self.assertIn("no-cache", full_response.headers["cache-control"])
+            self.assertIn("etag", full_response.headers)
+            self.assertEqual(
+                self.client.get(f"/api/files/{file_result['id']}/preview?size=large").content,
+                b"full-resolution-preview",
+            )
+            self.assertEqual(
+                self.client.get(f"/api/files/{file_result['id']}/preview?size=small").content,
+                b"preview-image",
+            )
+
+    def test_dashboard_can_fetch_lightweight_run_summary_and_paginated_orders(self):
+        self.adapter_type = OneOrderAdapter
+        self.login()
+        response = self.client.post(
+            "/api/checks",
+            json={
+                "input_path": str(self.root), "direction": "digital",
+                "create_pdfs": True, "generate_previews": True,
+                "copy_failures": False,
+            },
+        )
+        run_id = response.json()["id"]
+        self.client.app.state.coordinator.wait_for(run_id, timeout=2)
+
+        summary = self.client.get(
+            f"/api/checks/{run_id}?include_orders=false"
+        ).json()
+        self.assertEqual(summary["orders"], {})
+
+        page = self.client.get(
+            f"/api/checks/{run_id}/orders?page=1&page_size=10&status=all&active_only=true"
+        ).json()
+        self.assertEqual(page["page"], 1)
+        self.assertEqual(page["page_size"], 10)
+        self.assertEqual(page["total"], 1)
+        self.assertEqual(page["items"][0]["order_id"], "1001")
+        self.assertEqual(page["counts"]["all"], 1)
+        invalid = self.client.get(
+            f"/api/checks/{run_id}/orders?page_size=20"
+        )
+        self.assertEqual(invalid.status_code, 422)
+
     def test_http_journal_does_not_store_passwords(self):
         secret = "do-not-write-this-password"
         response = self.client.post(

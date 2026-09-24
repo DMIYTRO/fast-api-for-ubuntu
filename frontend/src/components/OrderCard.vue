@@ -6,6 +6,7 @@ import FileParameters from "./FileParameters.vue";
 import CorrectionDecision from "./CorrectionDecision.vue";
 import ReturnReasons from "./ReturnReasons.vue";
 import PitStopReport from "./PitStopReport.vue";
+import { groupIssueMessages, issueObjectLabel } from "./issueGroups.js";
 
 const props = defineProps({ order: Object, runId: String, selected: Boolean, reasons: Array, paidDesign: { type: Boolean, default: true }, designCost: { type: String, default: "0" } });
 const emit = defineEmits(["toggle", "decide", "return-comment", "return-design", "return-cost"]);
@@ -32,10 +33,12 @@ const allErrors = computed(() => [
   ...(props.order.errors || []),
   ...files.value.flatMap((file) => file.errors || []),
 ].map(issueText).filter(Boolean));
+const groupedErrors = computed(() => groupIssueMessages(allErrors.value));
 const allWarnings = computed(() => [
   ...(props.order.warnings || []),
   ...files.value.flatMap((file) => file.warnings || []),
 ].map(issueText).filter(Boolean));
+const groupedWarnings = computed(() => groupIssueMessages(allWarnings.value));
 const statusLabel = { detected: "Обнаружен", passed: "Прошёл", completed: "Прошёл", warning: "Предупреждение", error: "Ошибка PDF", failed: "Ошибка", technical_error: "Сбой проверки", pitstop_checking: "PitStop проверяет", waiting_confirmation: "Нужно решение", processing: "Проверяется" };
 const successful = computed(() => {
   if (!["passed", "completed"].includes(props.order.status)) return false;
@@ -171,8 +174,8 @@ function choosePreview() { uploadInput.value?.click(); }
           </table>
         </div>
 
-        <div v-if="allErrors.length" class="issue-list errors"><strong>Ошибки проверки</strong><ul><li v-for="item in allErrors" :key="item">{{ item }}</li></ul></div>
-        <div v-if="allWarnings.length" class="issue-list warnings"><strong>Предупреждения</strong><ul><li v-for="item in allWarnings" :key="item">{{ item }}</li></ul></div>
+        <div v-if="allErrors.length" class="issue-list errors"><strong>Ошибки проверки</strong><ul><li v-for="(item, index) in groupedErrors" :key="index">{{ item.message }}<span v-if="item.count > 1"> — {{ item.count }} {{ issueObjectLabel(item.count) }}</span></li></ul></div>
+        <div v-if="allWarnings.length" class="issue-list warnings"><strong>Предупреждения</strong><ul><li v-for="(item, index) in groupedWarnings" :key="index">{{ item.message }}<span v-if="item.count > 1"> — {{ item.count }} {{ issueObjectLabel(item.count) }}</span></li></ul></div>
         <div v-if="successful && !allErrors.length && !allWarnings.length" class="issue-list success-note"><strong>Заказ соответствует требованиям допечатной подготовки.</strong></div>
         <PitStopReport v-if="order.pitstop" :pitstop="order.pitstop" />
         <CorrectionDecision :order="order" :busy="busy" @decide="decide" />

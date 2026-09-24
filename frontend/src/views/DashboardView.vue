@@ -72,11 +72,24 @@ onBeforeUnmount(() => {
     <template v-if="checks.activeRun">
       <ActiveRun :run="checks.activeRun" :events="checks.events" :connection="checks.connection" @cancel="checks.cancel" />
       <RunHistory :runs="checks.runs" :active-id="checks.activeRun.id" @select="checks.selectRun" />
-      <OrderFilters :model-value="checks.filter" :search="checks.search" :orders="checks.orders" :visible-orders="checks.filteredOrders" :selected="checks.selected" @toggle-all="checks.toggleAllFiltered()" @update:model-value="checks.setFilter" @update:search="checks.search = $event" />
+      <OrderFilters :model-value="checks.filter" :search="checks.search" :orders="checks.orders" :visible-orders="checks.filteredOrders" :selected="checks.selected" :counts="checks.pageInfo.counts" @toggle-all="checks.toggleAllFiltered()" @update:model-value="checks.setFilter" @update:search="checks.setSearch" />
       <section v-if="checks.filteredOrders.length" class="order-grid">
         <OrderCard v-for="order in checks.filteredOrders" :key="order.order_id ?? order.id" :order="order" :run-id="checks.activeRun.id" :reasons="checks.config?.return_reasons || []" :selected="checks.selected.includes(String(order.order_id ?? order.id))" :paid-design="checks.returnDesignEnabled(order)" :design-cost="checks.returnDesignCost(order)" @toggle="checks.toggle(order)" @decide="checks.decide(order, $event)" @return-comment="checks.setReturnComment(order, $event)" @return-design="checks.setReturnDesign(order, $event)" @return-cost="checks.setReturnDesignCost(order, $event)" />
       </section>
-      <section v-else class="empty-state surface"><div>⌁</div><h2>{{ checks.orders.length ? "Ничего не найдено" : "Заказы появятся здесь" }}</h2><p>{{ checks.orders.length ? "Измените фильтр или поисковый запрос." : "Первые карточки появятся ещё до завершения проверки." }}</p></section>
+      <section v-else class="empty-state surface"><div>⌁</div><h2>{{ checks.pageInfo.counts.all ? "Ничего не найдено" : "Заказы появятся здесь" }}</h2><p>{{ checks.pageInfo.counts.all ? "Измените фильтр или поисковый запрос." : "Первые карточки появятся ещё до завершения проверки." }}</p></section>
+      <nav v-if="checks.pageInfo.total" class="orders-pagination" aria-label="Страницы заказов">
+        <label>Карточек на странице
+          <select :value="checks.pageSize" @change="checks.setPageSize(Number($event.target.value))">
+            <option :value="10">10</option><option :value="50">50</option><option :value="100">100</option>
+          </select>
+        </label>
+        <span>Показаны {{ (checks.page - 1) * checks.pageSize + 1 }}–{{ Math.min(checks.page * checks.pageSize, checks.pageInfo.total) }} из {{ checks.pageInfo.total }}</span>
+        <div class="orders-page-buttons">
+          <button class="button secondary" :disabled="checks.page <= 1" @click="checks.setPage(checks.page - 1)">← Назад</button>
+          <span>Страница {{ checks.page }} из {{ checks.pageInfo.total_pages }}</span>
+          <button class="button secondary" :disabled="checks.page >= checks.pageInfo.total_pages" @click="checks.setPage(checks.page + 1)">Вперёд →</button>
+        </div>
+      </nav>
     </template>
     <section v-else-if="!checks.loading" class="first-run surface"><div class="first-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="square" stroke-linejoin="miter"><path d="M6 9V3h12v6" /><path d="M6 18H4V10h16v8h-2" /><path d="M6 14h12v7H6z" /><path d="M17 12h.01" /></svg></div><p class="eyebrow">Можно начинать</p><h1>Проверьте первую папку с макетами</h1><p>Выберите папку и профиль печати. Имя файла должно содержать клиента и заказ, например <code>(12690-25506185)_offset-face.jpg</code>.</p><button class="button primary" @click="checks.drawerOpen = true">Начать первую проверку</button></section>
     <div v-else class="loading-page"><span class="spinner"></span> Загружаем рабочий пульт…</div>

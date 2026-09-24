@@ -56,7 +56,9 @@ from services.sborka_integration import (
 )
 from services.ftp_preview_uploader import build_ftp_preview_uploader
 from services.return_preview import CUSTOM_PREVIEWS_RELATIVE_PATH, custom_return_preview_path
+from core.preview_cache import full_preview_cache_path
 from services.repository import InMemoryRunRepository, RunRepository
+from services.event_retention import run_event_retention
 
 try:
     from services.sql_repository import SqlRunRepository
@@ -181,7 +183,7 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
                 ),
             }
         for index, item in enumerate(order.get("files") or []):
-            file_id = str(item.get("id") or f"{run_id}:{order_id}:{index}")
+            file_id = str(item.get("file_result_id") or item.get("id") or f"{run_id}:{order_id}:{index}")
             item["id"] = file_id
             item["filename"] = item.get("filename") or item.get("name")
             parsed = item.get("parsed") or {}
@@ -192,6 +194,8 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
             item["source_url"] = f"/api/files/{file_id}/source"
             if item.get("preview_path") or order.get("preview_paths"):
                 item["preview_url"] = f"/api/files/{file_id}/preview"
+                item["thumbnail_url"] = item["preview_url"] + "?size=thumbnail"
+                item["full_preview_url"] = item["preview_url"] + "?size=full"
     return values
 
 
@@ -438,10 +442,20 @@ def create_app(
         heartbeat_task = asyncio.create_task(
             heartbeat(), name="image-magic-heartbeat"
         )
+        retention_stop = asyncio.Event()
+        retention_task = None
+        if callable(getattr(repository, "archive_old_terminal_events", None)):
+            retention_task = asyncio.create_task(
+                run_event_retention(repository, retention_stop),
+                name="image-magic-event-retention",
+            )
         try:
             yield
         finally:
             logger.info("application.stopping")
+            retention_stop.set()
+            if retention_task is not None:
+                await retention_task
             heartbeat_task.cancel()
             with suppress(asyncio.CancelledError):
                 await heartbeat_task
@@ -620,8 +634,20 @@ def create_app(
         }
 
     @application.get("/api/checks/{run_id}", dependencies=[Depends(protected)])
-    def get_check(request: Request, run_id: str) -> dict[str, Any]:
-        return _public_run(_get_run_or_404(_get_coordinator(request), run_id))
+    def get_check(
+        request: Request, run_id: str,
+        include_orders: bool = Query(default=True),
+    ) -> dict[str, Any]:
+        coordinator_value = _get_coordinator(request)
+        try:
+            run = (
+                coordinator_value.get_run_summary(run_id)
+                if not include_orders
+                else coordinator_value.get_run(run_id)
+            )
+        except RunNotFoundError as exc:
+            raise APIError(404, "run_not_found", "Запуск проверки не найден.") from exc
+        return _public_run(run)
 
     @application.post(
         "/api/checks/{run_id}/cancel", dependencies=[Depends(protected)]
@@ -635,9 +661,44 @@ def create_app(
     @application.get(
         "/api/checks/{run_id}/orders", dependencies=[Depends(protected)]
     )
-    def list_orders(request: Request, run_id: str) -> dict[str, Any]:
-        run = _get_run_or_404(_get_coordinator(request), run_id)
-        return {"items": _orders_from_run(run)}
+    def list_orders(
+        request: Request,
+        run_id: str,
+        page: int | None = Query(default=None, ge=1),
+        page_size: int | None = Query(default=None, ge=1, le=100),
+        status: str | None = Query(default=None),
+        search: str | None = Query(default=None, max_length=200),
+        active_only: bool | None = Query(default=None),
+    ) -> dict[str, Any]:
+        coordinator_value = _get_coordinator(request)
+        # Keep the original response contract for clients that do not opt in
+        # to pagination. The dashboard always supplies pagination parameters.
+        if all(value is None for value in (page, page_size, status, search, active_only)):
+            run = _get_run_or_404(coordinator_value, run_id)
+            return {"items": _orders_from_run(run)}
+        page = page or 1
+        page_size = page_size or 10
+        status = status or "all"
+        search = search or ""
+        active_only = bool(active_only)
+        if page_size not in {10, 50, 100}:
+            raise APIError(422, "invalid_page_size", "Размер страницы должен быть 10, 50 или 100.")
+        if status not in {"all", "passed", "warning", "error", "waiting_confirmation"}:
+            raise APIError(422, "invalid_order_filter", "Фильтр заказов не распознан.")
+        try:
+            result = coordinator_value.list_orders_page(
+                run_id, page=page, page_size=page_size, status=status,
+                search=search, active_only=active_only,
+            )
+        except RunNotFoundError as exc:
+            raise APIError(404, "run_not_found", "Запуск проверки не найден.") from exc
+        result["items"] = _orders_from_run({
+            "id": run_id,
+            "options": result["run"].get("options") or {},
+            "orders": result["run"].get("orders") or {},
+        })
+        result.pop("run", None)
+        return result
 
     @application.get(
         "/api/checks/{run_id}/orders/{order_id}",
@@ -717,16 +778,30 @@ def create_app(
         "/api/files/{file_id}/source", dependencies=[Depends(protected)]
     )
     def source_file(request: Request, file_id: str) -> FileResponse:
-        run, item = _find_file(_get_coordinator(request), file_id)
+        coordinator = _get_coordinator(request)
+        match = coordinator.find_file_by_id(file_id)
+        if match is None:
+            run, item = _find_file(coordinator, file_id)
+        else:
+            run, item = match
         return FileResponse(_safe_result_path(run, item.get("path")))
 
     @application.get(
         "/api/files/{file_id}/preview", dependencies=[Depends(protected)]
     )
     def preview_file(
-        request: Request, file_id: str, page: int | None = None
+        request: Request,
+        file_id: str,
+        page: int | None = None,
+        size: Literal["thumbnail", "full", "small", "large"] = "thumbnail",
     ) -> FileResponse:
-        run, item = _find_file(_get_coordinator(request), file_id)
+        coordinator = _get_coordinator(request)
+        match = coordinator.find_file_by_id(file_id)
+        if match is None:
+            # Compatibility for older/in-memory result IDs without a DB file ID.
+            run, item = _find_file(coordinator, file_id)
+        else:
+            run, item = match
         previews_for_file = item.get("preview_paths") or []
         if page is not None:
             if page < 1 or page > len(previews_for_file):
@@ -743,7 +818,23 @@ def create_app(
                 (path for path in previews if side and side in Path(path).stem),
                 previews[0] if previews else None,
             )
-        return FileResponse(_safe_result_path(run, preview))
+        thumbnail = _safe_result_path(run, preview)
+        if size in {"full", "large"}:
+            try:
+                rendition = full_preview_cache_path(thumbnail)
+            except RuntimeError as exc:
+                logger.error("preview.cache_configuration_error error=%s", exc)
+                raise APIError(503, "preview_cache_unavailable", "Кеш превью на внешнем диске не настроен.") from exc
+            if not rendition.is_file():
+                raise APIError(404, "preview_not_found", "Детальное превью ещё не создано.")
+            return FileResponse(
+                rendition,
+                headers={"Cache-Control": "private, no-cache, must-revalidate"},
+            )
+        return FileResponse(
+            thumbnail,
+            headers={"Cache-Control": "private, no-cache, must-revalidate"},
+        )
 
     @application.get(
         "/api/checks/{run_id}/orders/{order_id}/return-preview",

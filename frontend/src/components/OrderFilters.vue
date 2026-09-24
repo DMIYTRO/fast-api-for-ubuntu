@@ -1,11 +1,10 @@
 <script setup>
 import { computed } from "vue";
 import { matchesStatusFilter } from "../stores/checks.js";
-const props = defineProps({ modelValue: String, search: String, orders: Array, visibleOrders: Array, selected: Array });
+const props = defineProps({ modelValue: String, search: String, orders: Array, visibleOrders: Array, selected: Array, counts: Object });
 defineEmits(["update:modelValue", "update:search", "toggle-all"]);
-const count = (orders, type) => orders.filter((order) =>
-  !["accepted_for_print", "returned_for_rework"].includes(order.status) && matchesStatusFilter(order, type)
-).length;
+const count = (orders, type) => props.counts?.[type]
+  ?? orders.filter((order) => !["accepted_for_print", "returned_for_rework"].includes(order.status) && matchesStatusFilter(order, type)).length;
 const visibleIds = computed(() => (props.visibleOrders || []).map((order) => String(order.order_id ?? order.id)));
 const selectedVisibleCount = computed(() => visibleIds.value.filter((id) => props.selected?.includes(id)).length);
 const allSelected = computed(() => visibleIds.value.length > 0 && selectedVisibleCount.value === visibleIds.value.length);

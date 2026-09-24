@@ -11,6 +11,7 @@ from core.inspector import count_frames, inspect_file, inspect_tiff_structure
 from core.pdf_inspector import inspect_pdf
 from core.pdf_exporter import convert_image_to_pdf, merge_pdfs_with_pymupdf
 from core.preview_generator import generate_preview
+from core.preview_cache import full_preview_cache_path, preview_work_dir
 from core.resampler import resample_image
 from core.tool_runner import run_command
 from config.profiles import DEFAULT_PROFILE, PrePressProfile
@@ -732,7 +733,9 @@ class BatchProcessor:
         preview_dir.mkdir(parents=True, exist_ok=True)
         created_previews: list[Path] = []
 
-        with tempfile.TemporaryDirectory(prefix=f".preview_{pdf_path.stem}_") as temp_dir:
+        with tempfile.TemporaryDirectory(
+            prefix=f".preview_{pdf_path.stem}_", dir=preview_work_dir(preview_dir / ".preview")
+        ) as temp_dir:
             temp_path = Path(temp_dir)
             page_pattern = temp_path / "page-%03d.png"
             command = [
@@ -746,7 +749,13 @@ class BatchProcessor:
                 f"-sOutputFile={page_pattern}",
                 str(pdf_path),
             ]
-            result = run_command(command, capture_output=True, text=True)
+            tool_env = os.environ.copy()
+            tool_env["TMPDIR"] = str(temp_path)
+            tool_env["TEMP"] = str(temp_path)
+            tool_env["TMP"] = str(temp_path)
+            result = run_command(
+                command, capture_output=True, text=True, env=tool_env
+            )
             if result.returncode != 0:
                 details = (result.stderr or result.stdout).strip()
                 raise ValueError(f"ошибка рендеринга PDF для превью: {details}")
@@ -777,6 +786,7 @@ class BatchProcessor:
                     safe_zone_mm=safe_zone_mm,
                     bleed_mm=bleed_mm,
                     fold_overlay=page_overlay,
+                    full_preview_path=str(full_preview_cache_path(output_preview_path)),
                 )
                 created_previews.append(output_preview_path)
 
@@ -869,6 +879,7 @@ class BatchProcessor:
                         safe_zone_mm=self.profile.safe_zone_mm,
                         bleed_mm=1.0,
                         fold_overlay=overlay,
+                        full_preview_path=str(full_preview_cache_path(preview_path)),
                     )
                     previews = [preview_path]
                 return file_check, previews, None

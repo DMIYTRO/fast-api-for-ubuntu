@@ -293,6 +293,20 @@ export IMAGE_MAGIC_PITSTOP_WINDOWS_SHARED_ROOT='C:\Mac\Home'
 печати. Отчёты сохраняются в `output_report/pitstop/` и выдаются через
 защищённые API-ссылки.
 
+Для диагностики нескольких проблемных PDF тем же профилем запустите отдельный
+report-only сценарий (он не меняет исходные файлы и сохраняет stdout/stderr,
+JSON и XML отчёты в общей папке):
+
+```bash
+.venv/bin/python scripts/diagnose_pitstop.py --profile digital \
+  "/mnt/shared/inputFolders/PDF/problem-1.pdf" \
+  "/mnt/shared/inputFolders/PDF/problem-2.pdf"
+```
+
+Допустимы профили `digital` и `offset`. Перед запуском должны быть заданы
+переменные `IMAGE_MAGIC_PITSTOP_*` из блока выше; диагностика возвращает код 1,
+если SSH/CLI завершился с ошибкой, отчёт отсутствует или исходный PDF изменился.
+
 ### Журнал диагностики
 
 Сервер постоянно пишет журнал в `logs/image-magic.log`. В нём сохраняются:

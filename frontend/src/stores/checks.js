@@ -7,6 +7,9 @@ const running = (status) => ["queued", "running", "waiting_confirmation", "cance
 const terminalStatuses = ["accepted_for_print", "returned_for_rework"];
 const printableStatuses = ["passed", "warning", "completed"];
 const pitstopPendingStatuses = ["queued", "pending", "running", "checking", "processing"];
+let searchDebounceTimer;
+let ordersRequestSequence = 0;
+let orderPageRefreshTimer;
 
 export const matchesStatusFilter = (order, filter) => {
   const status = order?.status || "detected";
@@ -56,24 +59,22 @@ const decorateOrders = (data, runId) => list(data).map((order) => decorateOrder(
 export const useChecksStore = defineStore("checks", {
   state: () => ({
     runs: [], activeRun: null, orders: [], config: null, loading: false, error: "",
-    connection: "closed", selected: [], filter: localStorage.getItem("im-filter") || "passed",
-    search: "", events: [], drawerOpen: false, stopEvents: null, actionResults: {}, returnComments: {}, returnDesign: {}, conflictPrompt: null,
+    connection: "closed", selected: [], selectedOrderSnapshots: {}, filter: localStorage.getItem("im-filter") || "passed",
+    search: "", page: 1, pageSize: 10, pageInfo: { total: 0, total_pages: 1, counts: {} },
+    events: [], drawerOpen: false, stopEvents: null, actionResults: {}, returnComments: {}, returnDesign: {}, conflictPrompt: null,
   }),
   getters: {
     filteredOrders(state) {
       const query = state.search.trim().toLowerCase();
       return state.orders.filter((order) => {
         const status = order.status || "detected";
-        // This dashboard is an active work queue.  Orders already handed to
-        // print or returned for rework belong to their file folders/history,
-        // not to any of the active tabs (including "Все").
         if (terminalStatuses.includes(status)) return false;
         const filterOk = matchesStatusFilter(order, state.filter);
         const text = [order.order_id, order.id, order.customer_id, ...(order.files || []).map((file) => file.filename)].join(" ").toLowerCase();
         return filterOk && (!query || text.includes(query));
       });
     },
-    selectedOrders: (state) => state.orders.filter((order) => state.selected.includes(String(order.order_id ?? order.id))),
+    selectedOrders: (state) => state.selected.map((id) => state.selectedOrderSnapshots[id] || state.orders.find((order) => String(order.order_id ?? order.id) === String(id))).filter(Boolean),
     canPrint() { return this.selectedOrders.length > 0 && this.selectedOrders.every(isOrderPrintable); },
     canForcePrint() {
       return this.selectedOrders.some(isOrderForcePrintable)
@@ -81,32 +82,65 @@ export const useChecksStore = defineStore("checks", {
     },
   },
   actions: {
-    setFilter(value) { this.filter = value; localStorage.setItem("im-filter", value); },
+    setFilter(value) {
+      this.filter = value; this.page = 1; localStorage.setItem("im-filter", value);
+      return this.loadOrders(1);
+    },
+    setSearch(value) {
+      this.search = value; this.page = 1;
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(() => this.loadOrders(1).catch(() => {}), 250);
+    },
+    async setPage(page) { return this.loadOrders(page); },
+    async setPageSize(size) {
+      if (![10, 50, 100].includes(Number(size))) return;
+      this.pageSize = Number(size); this.page = 1;
+      return this.loadOrders(1);
+    },
+    async loadOrders(page = this.page) {
+      if (!this.activeRun?.id) return;
+      const runId = this.activeRun.id;
+      const requestSequence = ++ordersRequestSequence;
+      const result = await api.orders(runId, {
+        page, page_size: this.pageSize, status: this.filter,
+        search: this.search.trim(), active_only: true,
+      });
+      if (requestSequence !== ordersRequestSequence || String(this.activeRun?.id) !== String(runId)) return;
+      const totalPages = result.total_pages || 1;
+      if (page > totalPages) return this.loadOrders(totalPages);
+      this.page = result.page || page;
+      this.orders = decorateOrders(result, runId);
+      this.pageInfo = { total: result.total || 0, total_pages: result.total_pages || 1, counts: result.counts || {} };
+      for (const order of this.orders) {
+        const id = String(order.order_id ?? order.id);
+        if (this.selected.includes(id)) this.selectedOrderSnapshots[id] = order;
+      }
+    },
     async initialize() {
       this.loading = true; this.error = "";
       try {
         const [config, runs] = await Promise.all([api.config(), api.runs()]);
         this.config = config;
         this.runs = list(runs);
-        // A refresh starts a fresh operator session.  Restore only work that
-        // is genuinely still in progress; completed runs must not repopulate
-        // counters or the active queue until the operator starts a new check.
-        const candidate = this.runs.find((item) => running(item.status));
+        // Prefer work that is still running, otherwise restore the latest
+        // saved run so its results and previews remain available after F5.
+        const candidate = this.runs.find((item) => running(item.status)) || this.runs[0];
         if (candidate) await this.selectRun(candidate.id);
         else {
           this.activeRun = null;
           this.orders = [];
-          this.selected = [];
+          this.selected = []; this.selectedOrderSnapshots = {};
+          this.page = 1; this.pageInfo = { total: 0, total_pages: 1, counts: {} };
         }
       } catch (error) { this.error = error.message; }
       finally { this.loading = false; }
     },
     async selectRun(id) {
       this.stopEvents?.(); this.stopEvents = null;
-      const [run, orders] = await Promise.all([api.run(id), api.orders(id).catch(() => ({ items: [] }))]);
+      const [run] = await Promise.all([api.run(id, { include_orders: false })]);
       this.activeRun = run;
-      this.orders = decorateOrders(orders, id);
-      this.selected = [];
+      this.page = 1; this.selected = []; this.selectedOrderSnapshots = {};
+      await this.loadOrders(1);
       if (running(run.status)) this.listen(id);
     },
     listen(id) {
@@ -120,12 +154,13 @@ export const useChecksStore = defineStore("checks", {
     },
     async resync(id = this.activeRun?.id) {
       if (!id) return;
-      const [run, orders] = await Promise.all([api.run(id), api.orders(id)]);
-      this.activeRun = run; this.orders = decorateOrders(orders, id);
+      const [run] = await Promise.all([api.run(id, { include_orders: false })]);
+      this.activeRun = run;
+      await this.loadOrders(this.page);
     },
     async refreshOrders(id = this.activeRun?.id) {
       if (!id) return;
-      this.orders = decorateOrders(await api.orders(id), id);
+      await this.loadOrders(this.page);
     },
     applyEvent(event) {
       this.events.unshift(event);
@@ -137,22 +172,45 @@ export const useChecksStore = defineStore("checks", {
       if (orderData) {
         const id = String(orderData.order_id ?? orderData.id);
         const index = this.orders.findIndex((item) => String(item.order_id ?? item.id) === id);
-        if (index < 0) this.orders.unshift(orderData);
-        else {
+        if (index < 0) {
+          const selectedSnapshot = this.selectedOrderSnapshots[id];
+          if (selectedSnapshot) {
+            const updatedSelection = { ...selectedSnapshot, ...orderData };
+            this.selectedOrderSnapshots[id] = updatedSelection;
+            this._dropSelectionWhenPrintBecomesBlocked(id, selectedSnapshot, updatedSelection);
+          }
+          const status = orderData.status || "detected";
+          const terminal = terminalStatuses.includes(status);
+          const query = this.search.trim().toLowerCase();
+          const text = [orderData.order_id, orderData.id, orderData.customer_id, ...(orderData.files || []).map((file) => file.filename)].join(" ").toLowerCase();
+          const matchesPage = !terminal && matchesStatusFilter(orderData, this.filter) && (!query || text.includes(query));
+          if (matchesPage && this.page === 1) {
+            this.orders.unshift(orderData);
+            if (this.orders.length > this.pageSize) this.orders.pop();
+          }
+        } else {
           const previous = this.orders[index];
           const updated = { ...previous, ...orderData };
           this.orders.splice(index, 1, updated);
+          if (this.selected.includes(id)) this.selectedOrderSnapshots[id] = updated;
           this._dropSelectionWhenPrintBecomesBlocked(id, previous, updated);
         }
       } else if (event.order_id) {
         const id = String(event.order_id);
         const index = this.orders.findIndex((item) => String(item.order_id ?? item.id) === id);
-        if (index >= 0 && event.status) {
-          const previous = this.orders[index];
-          const updated = { ...previous, status: event.status };
-          this.orders.splice(index, 1, updated);
-          this._dropSelectionWhenPrintBecomesBlocked(id, previous, updated);
+        if (event.status) {
+          const previous = this.orders[index] || this.selectedOrderSnapshots[id];
+          if (previous) {
+            const updated = { ...previous, status: event.status };
+            if (index >= 0) this.orders.splice(index, 1, updated);
+            if (this.selected.includes(id)) this.selectedOrderSnapshots[id] = updated;
+            this._dropSelectionWhenPrintBecomesBlocked(id, previous, updated);
+          }
         }
+      }
+      if (event.order || event.status) {
+        clearTimeout(orderPageRefreshTimer);
+        orderPageRefreshTimer = setTimeout(() => this.loadOrders(this.page).catch(() => {}), 600);
       }
       if (["run.completed", "run.failed", "run.cancelled"].includes(event.type)) {
         this.stopEvents?.();
@@ -176,16 +234,29 @@ export const useChecksStore = defineStore("checks", {
     async cancel() { if (this.activeRun) { await api.cancel(this.activeRun.id); await this.resync(); } },
     toggle(order) {
       const id = String(order.order_id ?? order.id);
-      this.selected = this.selected.includes(id) ? this.selected.filter((item) => item !== id) : [...this.selected, id];
+      if (this.selected.includes(id)) {
+        this.selected = this.selected.filter((item) => item !== id);
+        delete this.selectedOrderSnapshots[id];
+      } else {
+        this.selected = [...this.selected, id];
+        this.selectedOrderSnapshots[id] = order;
+      }
     },
     toggleAllFiltered() {
       const ids = this.filteredOrders.map((order) => String(order.order_id ?? order.id));
       const allSelected = ids.length > 0 && ids.every((id) => this.selected.includes(id));
-      this.selected = allSelected
-        ? this.selected.filter((id) => !ids.includes(id))
-        : [...new Set([...this.selected, ...ids])];
+      if (allSelected) {
+        this.selected = this.selected.filter((id) => !ids.includes(id));
+        ids.forEach((id) => delete this.selectedOrderSnapshots[id]);
+      } else {
+        this.selected = [...new Set([...this.selected, ...ids])];
+        this.filteredOrders.forEach((order) => {
+          const id = String(order.order_id ?? order.id);
+          this.selectedOrderSnapshots[id] = order;
+        });
+      }
     },
-    clearSelection() { this.selected = []; },
+    clearSelection() { this.selected = []; this.selectedOrderSnapshots = {}; },
     returnDesignEnabled(order) {
       const id = String(order.order_id ?? order.id);
       return this.returnDesign[id]?.design !== false;
@@ -264,6 +335,7 @@ export const useChecksStore = defineStore("checks", {
           delete this.returnDesign[id];
         });
         this.selected = this.selected.filter((id) => !completedIds.has(String(id)));
+        completedIds.forEach((id) => delete this.selectedOrderSnapshots[id]);
       } else {
         this.clearSelection();
       }
@@ -291,6 +363,7 @@ export const useChecksStore = defineStore("checks", {
     _dropSelectionWhenPrintBecomesBlocked(id, previous, updated) {
       if (isOrderPrintable(previous) && !isOrderPrintable(updated)) {
         this.selected = this.selected.filter((selectedId) => String(selectedId) !== String(id));
+        delete this.selectedOrderSnapshots[id];
       }
     },
   },

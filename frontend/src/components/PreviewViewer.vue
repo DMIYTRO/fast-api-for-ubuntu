@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref } from "vue";
+import PreviewImage from "./PreviewImage.vue";
 
 const props = defineProps({ files: Array });
 const zoomed = ref(null);
@@ -12,13 +13,17 @@ const bySide = computed(() => {
     Number(file.page_count) === 2 && Array.isArray(file.preview_paths) && file.preview_paths.length >= 2
   );
   if (duplexPdf) {
-    const page = (number, side) => ({
-      ...duplexPdf,
-      id: `${duplexPdf.id}:${side}`,
-      side,
-      filename: `${duplexPdf.filename || duplexPdf.name} - ${side}`,
-      preview_url: `${previewUrl(duplexPdf)}?page=${number}`,
-    });
+    const page = (number, side) => {
+      const thumbnail = withQuery(previewUrl(duplexPdf), "page", number);
+      return {
+        ...duplexPdf,
+        id: `${duplexPdf.id}:${side}`,
+        side,
+        filename: `${duplexPdf.filename || duplexPdf.name} - ${side}`,
+        thumbnail_url: thumbnail,
+        full_preview_url: withQuery(withQuery(duplexPdf.full_preview_url || previewUrl(duplexPdf), "size", "full"), "page", number),
+      };
+    };
     return [
       { side: "face", file: page(1, "face") },
       { side: "back", file: page(2, "back") },
@@ -32,7 +37,14 @@ const bySide = computed(() => {
   ];
 });
 
-const previewUrl = (file) => file?.preview_url || (file?.id ? `/api/files/${encodeURIComponent(file.id)}/preview` : "");
+const previewUrl = (file) => file?.thumbnail_url || file?.preview_url || (file?.id ? `/api/files/${encodeURIComponent(file.id)}/preview?size=thumbnail` : "");
+const withQuery = (url, key, value) => {
+  const [path, query = ""] = url.split("?");
+  const params = new URLSearchParams(query);
+  params.set(key, value);
+  return `${path}?${params.toString()}`;
+};
+const fullPreviewUrl = (file) => file?.full_preview_url || withQuery(previewUrl(file), "size", "full");
 
 function rotate(file) { rotation.value[file.id] = ((rotation.value[file.id] || 0) + 90) % 360; }
 function imageTransform(file) {
@@ -41,22 +53,7 @@ function imageTransform(file) {
   return `rotate(${angle}deg) scale(${scale})`;
 }
 
-function handleImgError(event, file) {
-  const target = event.target;
-  if (!target || target.dataset.retried === "done") return;
-  const retryCount = Number(target.dataset.retries || 0);
-  if (retryCount >= 3) {
-    target.dataset.retried = "done";
-    return;
-  }
-  target.dataset.retries = String(retryCount + 1);
-  setTimeout(() => {
-    const url = previewUrl(file);
-    if (url) {
-      target.src = `${url}${url.includes('?') ? '&' : '?'}retry=${Date.now()}`;
-    }
-  }, 1200);
-}
+
 </script>
 
 <template>
@@ -66,17 +63,14 @@ function handleImgError(event, file) {
         <b>{{ side === "face" ? "Face" : "Back" }}</b>
         <button v-if="file" title="Повернуть" @click="rotate(file)">↻</button>
       </div>
-      <button v-if="file && previewUrl(file)" class="preview-image" @click="zoomed = file">
-        <img 
+      <div v-if="file && previewUrl(file)" class="preview-image" role="button" tabindex="0" :aria-label="`Открыть подробное превью: ${file.filename}`" @click="zoomed = file" @keydown.enter="zoomed = file">
+        <PreviewImage
           :key="`${file.id}:${previewUrl(file)}:${file.preview_paths?.join(',') || ''}`"
-          :src="previewUrl(file)" 
-          :alt="`${side}: ${file.filename}`" 
+          :src="previewUrl(file)"
+          :alt="`${side}: ${file.filename}`"
           :style="{ transform: imageTransform(file) }"
-          loading="lazy"
-          decoding="async"
-          @error="handleImgError($event, file)"
-        >
-      </button>
+        />
+      </div>
       <div v-else class="preview-empty">{{ file ? "Превью создается..." : "Нет файла" }}</div>
       <div v-if="file" class="preview-filename" :title="file.filename">{{ file.filename }}</div>
     </div>
@@ -84,7 +78,7 @@ function handleImgError(event, file) {
   <Teleport to="body">
     <div v-if="zoomed" class="lightbox" @click.self="zoomed = null">
       <button class="icon-button" @click="zoomed = null">✕</button>
-      <img :src="previewUrl(zoomed)" :alt="zoomed.filename" decoding="async">
+      <PreviewImage :src="fullPreviewUrl(zoomed)" :alt="zoomed.filename" :eager="true" />
     </div>
   </Teleport>
 </template>

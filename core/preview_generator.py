@@ -1,18 +1,20 @@
-from pathlib import Path
-"""
-Ядро визуальной разметки и генерации превью изображений.
-"""
+"""Ядро визуальной разметки и генерации превью изображений."""
 
 import os
 import shutil
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
+
+from core.preview_cache import preview_work_dir
 from core.tool_runner import run_command
 
 
 SUPPORTED_FOLD_TYPES = frozenset({"half-fold", "c-fold", "z-fold"})
 # A single compact preview is used by both the operator workspace and history.
 PREVIEW_MAX_PIXELS = 480
+PREVIEW_FULL_MAX_PIXELS = 1800
 
 
 @dataclass(frozen=True)
@@ -146,6 +148,7 @@ def generate_preview(
     safe_zone_mm: float = 4.0,
     bleed_mm: float = 1.0,
     fold_overlay: FoldOverlay | Mapping[str, object] | None = None,
+    full_preview_path: str | None = None,
 ) -> str:
     """Render a preview with either regular frames or confirmed fold guides."""
     magick_cmd = shutil.which("magick")
@@ -200,14 +203,25 @@ def generate_preview(
             "-fill", "none",
             "-draw", f"rectangle {gx1},{gy1} {gx2},{gy2}",
         ])
-    # Keep previews compact at the source.  This avoids a separate web
-    # thumbnail being rendered later and is sufficient for the current UI.
+    # Keep the old output path as the compact, API-compatible rendition.
     cmd.extend(["-resize", f"{PREVIEW_MAX_PIXELS}x{PREVIEW_MAX_PIXELS}>"])
     cmd.append(output_preview_path)
-    run_command(cmd, check=True)
-    try:
-        from control_panel import get_cached_preview_path
-        get_cached_preview_path(Path(output_preview_path))
-    except Exception:
-        pass
+    work_root = preview_work_dir(Path(output_preview_path))
+    with tempfile.TemporaryDirectory(prefix="magick-preview_", dir=work_root) as temp_scratch:
+        scratch = Path(temp_scratch)
+        env = os.environ.copy()
+        env["TMPDIR"] = str(scratch)
+        env["MAGICK_TMPDIR"] = str(scratch)
+        env["MAGICK_TEMPORARY_PATH"] = str(scratch)
+        run_command(cmd, check=True, env=env)
+        if full_preview_path:
+            full_target = Path(full_preview_path)
+            full_target.parent.mkdir(parents=True, exist_ok=True)
+            full_cmd = [
+                *cmd[:-3],
+                "-resize",
+                f"{PREVIEW_FULL_MAX_PIXELS}x{PREVIEW_FULL_MAX_PIXELS}>",
+                str(full_target),
+            ]
+            run_command(full_cmd, check=True, env=env)
     return output_preview_path

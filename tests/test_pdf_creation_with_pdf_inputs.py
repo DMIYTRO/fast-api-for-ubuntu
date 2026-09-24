@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pymupdf
@@ -156,3 +158,36 @@ def test_complete_duplex_pdf_uses_face_and_back_preview_names(tmp_path: Path) ->
         "job_(90x50)_4-4_(1-205)_input_face",
         "job_(90x50)_4-4_(1-205)_input_back",
     ]
+
+
+def test_ghostscript_uses_external_temporary_directory(tmp_path: Path, monkeypatch) -> None:
+    share = tmp_path / "share"
+    preview_dir = share / "Previews"
+    pdf = share / "PDF" / "source.pdf"
+    pdf.parent.mkdir(parents=True)
+    preview_dir.mkdir(parents=True)
+    pdf.write_bytes(b"pdf")
+    cache_dir = share / ".preview-cache"
+    monkeypatch.setenv("IMAGE_MAGIC_INPUT_DIR", str(share))
+    monkeypatch.setenv("IMAGE_MAGIC_PREVIEW_CACHE_DIR", str(cache_dir))
+    monkeypatch.setattr("core.preview_cache._is_external_mount", lambda _path: True)
+
+    def render(command, **kwargs):
+        assert kwargs["env"]["TMPDIR"].startswith(str(cache_dir / ".work"))
+        assert kwargs["env"]["TEMP"] == kwargs["env"]["TMPDIR"]
+        assert kwargs["env"]["TMP"] == kwargs["env"]["TMPDIR"]
+        output_pattern = next(value.split("=", 1)[1] for value in command if value.startswith("-sOutputFile="))
+        Path(output_pattern.replace("%03d", "001")).write_bytes(b"page")
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    with patch("processing.batch_processor.shutil.which", return_value="/usr/bin/gs"), patch(
+        "processing.batch_processor.run_command", side_effect=render
+    ) as run_command, patch(
+        "processing.batch_processor.inspect_file", return_value=_image_metadata("page.png")
+    ), patch("processing.batch_processor.generate_preview"):
+        processor = BatchProcessor(share, share)
+        processor.generate_pdf_previews(pdf, preview_dir)
+
+    scratch_path = Path(run_command.call_args.kwargs["env"]["TMPDIR"])
+    assert scratch_path.is_relative_to(cache_dir / ".work")
+    assert not scratch_path.exists()

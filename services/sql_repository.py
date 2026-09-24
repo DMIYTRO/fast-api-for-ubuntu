@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from types import SimpleNamespace
 from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
 from typing import Any, Callable
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from server.models import (
+    ArchivedRunEvent,
     CheckRun,
     CorrectionDecision,
     FileResult,
@@ -200,6 +202,87 @@ class SqlRunRepository:
                 )
             )
 
+    def get_run_summary(self, run_id: str) -> dict[str, Any] | None:
+        with self._session_factory() as session:
+            record = session.get(CheckRun, run_id)
+            return self._run_to_dict(record, include_orders=False) if record is not None else None
+
+    def list_orders_page(
+        self, run_id: str, *, page: int, page_size: int, status: str,
+        search: str, active_only: bool = True,
+    ) -> dict[str, Any] | None:
+        with self._session_factory() as session:
+            run_record = session.get(CheckRun, run_id)
+            if run_record is None:
+                return None
+            base = [OrderResult.run_id == run_id]
+            terminal = ("accepted_for_print", "returned_for_rework")
+            if active_only:
+                base.append(OrderResult.status.notin_(terminal))
+            query = search.strip()
+            if query:
+                base.append(or_(
+                    OrderResult.order_id.contains(query, autoescape=True),
+                    OrderResult.customer_id.contains(query, autoescape=True),
+                    exists(select(FileResult.id).where(
+                        FileResult.order_result_id == OrderResult.id,
+                        FileResult.filename.contains(query, autoescape=True),
+                    )),
+                ))
+            grouped = session.execute(
+                select(OrderResult.status, func.count(OrderResult.id))
+                .where(*base).group_by(OrderResult.status)
+            ).all()
+            status_counts = {str(key or "detected"): int(count) for key, count in grouped}
+            counts = {
+                "all": sum(status_counts.values()),
+                "passed": sum(status_counts.get(value, 0) for value in ("passed", "warning", "completed")),
+                "warning": status_counts.get("warning", 0),
+                "error": sum(status_counts.get(value, 0) for value in ("error", "failed", "technical_error")),
+                "waiting_confirmation": status_counts.get("waiting_confirmation", 0),
+            }
+            filtered = list(base)
+            if status == "passed":
+                filtered.append(OrderResult.status.in_(("passed", "warning", "completed")))
+            elif status == "error":
+                filtered.append(OrderResult.status.in_(("error", "failed", "technical_error")))
+            elif status != "all":
+                filtered.append(OrderResult.status == status)
+            total = int(session.scalar(
+                select(func.count(OrderResult.id)).where(*filtered)
+            ) or 0)
+            options = (
+                selectinload(OrderResult.files),
+                selectinload(OrderResult.actions),
+                selectinload(OrderResult.pdf_revisions)
+                .selectinload(PdfRevision.checks)
+                .selectinload(PitstopCheck.issues),
+            )
+            records = session.scalars(
+                select(OrderResult).where(*filtered)
+                .options(*options)
+                .order_by(OrderResult.customer_id, OrderResult.order_id, OrderResult.id)
+                .offset((page - 1) * page_size).limit(page_size)
+            ).all()
+            page_record = SimpleNamespace(
+                id=run_record.id, status=run_record.status, stage=run_record.stage,
+                progress=run_record.progress, options_json=run_record.options_json,
+                input_path=run_record.input_path, direction=run_record.direction,
+                created_at=run_record.created_at, started_at=run_record.started_at,
+                finished_at=run_record.finished_at, error=run_record.error,
+                orders=records,
+            )
+            run = self._run_to_dict(page_record)
+            return {
+                "run": run,
+                "items": list(run["orders"].values()),
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "total_pages": max(1, (total + page_size - 1) // page_size),
+                "counts": counts,
+            }
+
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         with self._session_factory() as session:
             statement = (
@@ -216,6 +299,54 @@ class SqlRunRepository:
             )
             record = session.scalar(statement)
             return self._run_to_dict(record) if record is not None else None
+
+    def find_file_by_id(self, file_id: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """Resolve a stable database file ID without scanning run history."""
+        try:
+            record_id = int(file_id)
+        except (TypeError, ValueError):
+            return None
+        with self._session_factory() as session:
+            record = session.scalar(
+                select(FileResult)
+                .where(FileResult.id == record_id)
+                .options(
+                    selectinload(FileResult.order_result).selectinload(OrderResult.run),
+                    selectinload(FileResult.order_result).selectinload(OrderResult.files),
+                    selectinload(FileResult.order_result).selectinload(OrderResult.actions),
+                    selectinload(FileResult.order_result)
+                    .selectinload(OrderResult.pdf_revisions)
+                    .selectinload(PdfRevision.checks)
+                    .selectinload(PitstopCheck.issues),
+                )
+            )
+            if record is None:
+                return None
+            order_record = record.order_result
+            run_record = order_record.run
+            # Reuse the normal DTO serializer with only this order loaded. This
+            # avoids materializing the whole run when a card requests preview.
+            run = self._run_to_dict(
+                SimpleNamespace(
+                    id=run_record.id,
+                    input_path=run_record.input_path,
+                    direction=run_record.direction,
+                    status=run_record.status,
+                    stage=run_record.stage,
+                    progress=run_record.progress,
+                    options_json=run_record.options_json,
+                    created_at=run_record.created_at,
+                    started_at=run_record.started_at,
+                    finished_at=run_record.finished_at,
+                    error=run_record.error,
+                    orders=[order_record],
+                )
+            )
+        for order in (run.get("orders") or {}).values():
+            for item in order.get("files") or []:
+                if str(item.get("file_result_id") or "") == str(record_id):
+                    return run, item
+        return None
 
     def list_runs(
         self,
@@ -274,26 +405,91 @@ class SqlRunRepository:
             )
         return event
 
+    @staticmethod
+    def _event_from_record(record: Any) -> RunEvent:
+        return RunEvent(
+            id=record.id,
+            type=record.event_type,
+            run_id=record.run_id,
+            data=_json_load(record.payload_json, {}),
+            created_at=_iso(record.created_at) or _now_iso(),
+        )
+
     def list_events(self, run_id: str, after_id: int = 0) -> list[RunEvent]:
+        # Archived rows keep their original IDs and payloads. Merging both tables
+        # preserves the SSE Last-Event-ID contract across the archive boundary.
         with self._session_factory() as session:
-            statement = (
-                select(SqlRunEvent)
-                .where(
-                    SqlRunEvent.run_id == run_id,
-                    SqlRunEvent.id > after_id,
+            archived = list(
+                session.scalars(
+                    select(ArchivedRunEvent)
+                    .where(
+                        ArchivedRunEvent.run_id == run_id,
+                        ArchivedRunEvent.id > after_id,
+                    )
+                    .order_by(ArchivedRunEvent.id)
                 )
-                .order_by(SqlRunEvent.id)
             )
-            return [
-                RunEvent(
-                    id=record.id,
-                    type=record.event_type,
-                    run_id=record.run_id,
-                    data=_json_load(record.payload_json, {}),
-                    created_at=_iso(record.created_at) or _now_iso(),
+            live = list(
+                session.scalars(
+                    select(SqlRunEvent)
+                    .where(SqlRunEvent.run_id == run_id, SqlRunEvent.id > after_id)
+                    .order_by(SqlRunEvent.id)
                 )
-                for record in session.scalars(statement)
-            ]
+            )
+            return sorted(
+                (self._event_from_record(record) for record in (*archived, *live)),
+                key=lambda event: event.id,
+            )
+
+    def archive_old_terminal_events(
+        self,
+        cutoff: datetime,
+        *,
+        batch_size: int = 500,
+    ) -> int:
+        """Move one bounded batch of old events to replayable cold storage.
+
+        Run/order/file rows are never changed. Only events created before the
+        cutoff for completed, failed or cancelled runs whose finished_at also
+        predates the cutoff are eligible. The insert and delete share one
+        transaction, so a failure leaves the event in its original table.
+        """
+        if batch_size < 1:
+            raise ValueError("batch_size должен быть больше нуля")
+        terminal_statuses = ("completed", "failed", "cancelled")
+        with self._session_factory() as session, session.begin():
+            records = list(
+                session.scalars(
+                    select(SqlRunEvent)
+                    .join(CheckRun, CheckRun.id == SqlRunEvent.run_id)
+                    .where(
+                        CheckRun.status.in_(terminal_statuses),
+                        CheckRun.finished_at.is_not(None),
+                        CheckRun.finished_at <= cutoff,
+                        SqlRunEvent.created_at <= cutoff,
+                    )
+                    .order_by(SqlRunEvent.id)
+                    .limit(batch_size)
+                )
+            )
+            if not records:
+                return 0
+            record_ids = [record.id for record in records]
+            session.add_all(
+                ArchivedRunEvent(
+                    id=record.id,
+                    run_id=record.run_id,
+                    event_type=record.event_type,
+                    payload_json=record.payload_json,
+                    created_at=record.created_at,
+                )
+                for record in records
+            )
+            session.flush()
+            session.query(SqlRunEvent).filter(SqlRunEvent.id.in_(record_ids)).delete(
+                synchronize_session=False
+            )
+            return len(records)
 
     def recover_interrupted_runs(self) -> int:
         """Mark work lacking an in-memory processor context as interrupted.

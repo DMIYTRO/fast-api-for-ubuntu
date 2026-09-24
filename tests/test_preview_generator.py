@@ -2,6 +2,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core.preview_generator import (
+    PREVIEW_FULL_MAX_PIXELS,
     PREVIEW_MAX_PIXELS,
     FoldOverlay,
     _fold_draw_commands,
@@ -90,3 +91,44 @@ def test_source_preview_overlay_uses_parsed_side_and_finished_span(tmp_path: Pat
         "side": "back",
         "span_mm": 297,
     }
+
+
+def test_full_rendition_uses_independent_size_and_share_scratch(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    share.mkdir()
+    thumbnail = share / "Previews" / "preview.png"
+    cache = share / ".cache"
+    with patch.dict("os.environ", {
+        "IMAGE_MAGIC_INPUT_DIR": str(share),
+        "IMAGE_MAGIC_PREVIEW_CACHE_DIR": str(cache),
+    }), patch("core.preview_cache._is_external_mount", return_value=True), patch("core.preview_generator.shutil.which", return_value="/usr/bin/magick"), patch(
+        "core.preview_generator.run_command"
+    ) as run_command:
+        from core.preview_cache import full_preview_cache_path
+        full_path = full_preview_cache_path(thumbnail)
+        generate_preview(
+            "source.png", str(thumbnail), dpi=300, w_px=2400, h_px=1600,
+            full_preview_path=str(full_path),
+        )
+
+    assert run_command.call_count == 2
+    compact_cmd = run_command.call_args_list[0].args[0]
+    full_cmd = run_command.call_args_list[1].args[0]
+    assert compact_cmd[-3:-1] == ["-resize", f"{PREVIEW_MAX_PIXELS}x{PREVIEW_MAX_PIXELS}>"]
+    assert full_cmd[-3:-1] == ["-resize", f"{PREVIEW_FULL_MAX_PIXELS}x{PREVIEW_FULL_MAX_PIXELS}>"]
+    scratch_path = Path(run_command.call_args_list[0].kwargs["env"]["MAGICK_TEMPORARY_PATH"])
+    assert scratch_path.is_relative_to(cache / ".work")
+    assert not scratch_path.exists()
+    assert full_path.is_relative_to(cache)
+
+
+def test_preview_cache_rejects_configured_local_disk_path(tmp_path: Path) -> None:
+    from core.preview_cache import preview_cache_root
+    share = tmp_path / "share"
+    share.mkdir()
+    with patch.dict("os.environ", {
+        "IMAGE_MAGIC_INPUT_DIR": str(share),
+        "IMAGE_MAGIC_PREVIEW_CACHE_DIR": str(tmp_path / "system-cache"),
+    }), patch("core.preview_cache._is_external_mount", return_value=True):
+        cache = preview_cache_root()
+        assert cache == share / ".preview-cache"

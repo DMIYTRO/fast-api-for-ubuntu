@@ -36,15 +36,69 @@ describe("checks store", () => {
     expect(store.filteredOrders.map((order) => order.order_id)).toEqual(["100"]);
   });
 
-  it("does not restore a completed run after a page refresh", async () => {
+  it("loads requested order pages and retains selected orders across pages", async () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1" };
+    vi.spyOn(api, "orders")
+      .mockResolvedValueOnce({
+        items: [{ order_id: "101", status: "passed" }],
+        page: 1, page_size: 10, total: 21, total_pages: 3,
+        counts: { all: 21, passed: 15, warning: 3, error: 3, waiting_confirmation: 0 },
+      })
+      .mockResolvedValueOnce({
+        items: [{ order_id: "111", status: "passed" }],
+        page: 2, page_size: 10, total: 21, total_pages: 3,
+        counts: { all: 21, passed: 15, warning: 3, error: 3, waiting_confirmation: 0 },
+      });
+
+    await store.loadOrders(1);
+    store.toggleAllFiltered();
+    await store.setPage(2);
+
+    expect(api.orders).toHaveBeenNthCalledWith(1, "run-1", {
+      page: 1, page_size: 10, status: "passed", search: "", active_only: true,
+    });
+    expect(store.pageInfo.total_pages).toBe(3);
+    expect(store.orders.map((order) => order.order_id)).toEqual(["111"]);
+    expect(store.selectedOrders.map((order) => order.order_id)).toEqual(["101"]);
+    store.applyEvent({
+      type: "order.pitstop_completed", run_id: "run-1",
+      order: { order_id: "101", status: "error" },
+    });
+    expect(store.selected).toEqual([]);
+    expect(store.canPrint).toBe(false);
+  });
+
+  it("clamps the requested page when the result set shrinks", async () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1" };
+    vi.spyOn(api, "orders")
+      .mockResolvedValueOnce({ items: [], page: 5, page_size: 10, total: 12, total_pages: 2, counts: {} })
+      .mockResolvedValueOnce({ items: [{ order_id: "112", status: "passed" }], page: 2, page_size: 10, total: 12, total_pages: 2, counts: {} });
+
+    await store.loadOrders(5);
+
+    expect(api.orders).toHaveBeenNthCalledWith(2, "run-1", {
+      page: 2, page_size: 10, status: "passed", search: "", active_only: true,
+    });
+    expect(store.page).toBe(2);
+    expect(store.orders[0].order_id).toBe("112");
+  });
+
+  it("restores the latest completed run and its previews after a page refresh", async () => {
     const store = useChecksStore();
     vi.spyOn(api, "config").mockResolvedValue({});
     vi.spyOn(api, "runs").mockResolvedValue({ items: [{ id: "done", status: "completed" }] });
+    vi.spyOn(api, "run").mockResolvedValue({ id: "done", status: "completed" });
+    vi.spyOn(api, "orders").mockResolvedValue({
+      items: [{ order_id: "123", status: "passed", files: [{ filename: "art.pdf", preview_path: "/mnt/share/Previews/art_preview.png" }] }],
+      page: 1, page_size: 10, total: 1, total_pages: 1, counts: { all: 1, passed: 1 },
+    });
 
     await store.initialize();
 
-    expect(store.activeRun).toBeNull();
-    expect(store.orders).toEqual([]);
+    expect(store.activeRun.id).toBe("done");
+    expect(store.orders[0].files[0].preview_url).toBe("/api/files/done%3A123%3A0/preview");
   });
 
   it("updates only the order named by an SSE event", () => {

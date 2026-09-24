@@ -1,13 +1,16 @@
 from copy import deepcopy
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import tempfile
 import unittest
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import DBAPIError
 
 from server.database import Database
 from server.models import (
+    ArchivedRunEvent,
     CheckRun,
     CorrectionDecision,
     FileResult,
@@ -597,6 +600,68 @@ class SqlRunRepositoryTests(unittest.TestCase):
         self.assertEqual(events[0].data, {"progress": 100})
         self.assertIn(f"id: {second.id}", events[0].as_sse())
 
+    def _make_old_run_and_event(self, *, status="completed", run_id="run-1"):
+        run = sample_run(run_id, status=status)
+        run["finished_at"] = "2025-01-01T00:00:00+00:00"
+        self.repository.create_run(run)
+        event = self.repository.append_event(run_id, "run.completed", {"x": 1})
+        old = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        with self.database.session_factory() as session, session.begin():
+            session.get(CheckRun, run_id).finished_at = old
+            session.get(SqlRunEvent, event.id).created_at = old
+        return event
+
+    def test_archives_only_old_events_for_terminal_runs_and_keeps_sse_replay(self):
+        event = self._make_old_run_and_event()
+        self._make_old_run_and_event(status="waiting_confirmation", run_id="run-2")
+        self._make_old_run_and_event(status="running", run_id="run-3")
+        cutoff = datetime(2025, 4, 1, tzinfo=timezone.utc)
+
+        moved = self.repository.archive_old_terminal_events(cutoff, batch_size=1)
+
+        self.assertEqual(moved, 1)
+        with self.database.session_factory() as session:
+            self.assertIsNone(session.get(SqlRunEvent, event.id))
+            archived = session.get(ArchivedRunEvent, event.id)
+            self.assertIsNotNone(archived)
+            self.assertEqual(archived.payload_json, '{"x":1}')
+            self.assertEqual(session.get(CheckRun, "run-1").status, "completed")
+            self.assertEqual(session.get(CheckRun, "run-2").status, "waiting_confirmation")
+        replay = self.repository.list_events("run-1")
+        self.assertEqual([(item.id, item.type, item.data) for item in replay],
+                         [(event.id, "run.completed", {"x": 1})])
+        self.assertEqual(self.repository.list_events("run-1", after_id=event.id), [])
+        self.assertEqual(len(self.repository.list_events("run-2")), 1)
+        self.assertEqual(len(self.repository.list_events("run-3")), 1)
+
+    def test_event_archiving_is_idempotent_and_respects_event_cutoff(self):
+        event = self._make_old_run_and_event()
+        cutoff = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        self.assertEqual(self.repository.archive_old_terminal_events(cutoff), 1)
+        self.assertEqual(self.repository.archive_old_terminal_events(cutoff), 0)
+        self.assertEqual(self.repository.list_events("run-1")[0].id, event.id)
+
+        newer_event = self.repository.append_event("run-1", "late.update", {"v": 2})
+        self.assertEqual(self.repository.archive_old_terminal_events(cutoff), 0)
+        self.assertEqual([item.id for item in self.repository.list_events("run-1")],
+                         [event.id, newer_event.id])
+
+    def test_event_archive_insert_failure_rolls_back_without_losing_event(self):
+        event = self._make_old_run_and_event()
+        with self.database.engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TRIGGER fail_archive BEFORE INSERT ON archived_run_events "
+                "BEGIN SELECT RAISE(ABORT, 'archive blocked'); END"
+            )
+        with self.assertRaises(DBAPIError):
+            self.repository.archive_old_terminal_events(
+                datetime(2025, 4, 1, tzinfo=timezone.utc)
+            )
+        with self.database.session_factory() as session:
+            self.assertIsNotNone(session.get(SqlRunEvent, event.id))
+            self.assertIsNone(session.get(ArchivedRunEvent, event.id))
+        self.assertEqual(self.repository.list_events("run-1")[0].id, event.id)
+
     def test_state_and_event_are_rolled_back_together(self):
         run = sample_run(status="running")
         self.repository.create_run(run)
@@ -812,6 +877,42 @@ class SqlRunRepositoryTests(unittest.TestCase):
             [event.type for event in reopened.list_events(submitted["id"])],
             ["run.started", "scan.progress", "run.completed"],
         )
+
+    def test_orders_page_loads_only_requested_rows_and_searches_server_side(self):
+        run = sample_run("paged-run")
+        template = deepcopy(next(iter(run["orders"].values())))
+        run["orders"] = {}
+        for index in range(23):
+            order = deepcopy(template)
+            order_id = f"{2000 + index:05d}"
+            order["order_id"] = order_id
+            order["customer_id"] = "customer"
+            order["status"] = "warning" if index % 2 else "passed"
+            order["files"][0]["name"] = f"layout-{index:02d}.jpg"
+            order["files"][0]["path"] = f"/orders/input/layout-{index:02d}.jpg"
+            run["orders"][f"customer:{order_id}"] = order
+        self.repository.create_run(run)
+
+        page = self.repository.list_orders_page(
+            "paged-run", page=2, page_size=10, status="all", search="", active_only=True
+        )
+        self.assertEqual(page["total"], 23)
+        self.assertEqual(len(page["items"]), 10)
+        self.assertEqual(page["page"], 2)
+        self.assertEqual(page["counts"]["warning"], 11)
+        self.assertEqual(page["counts"]["passed"], 23)
+
+        searched = self.repository.list_orders_page(
+            "paged-run", page=1, page_size=10, status="all", search="layout-17", active_only=True
+        )
+        self.assertEqual(searched["total"], 1)
+        self.assertEqual(searched["items"][0]["order_id"], "02017")
+
+    def test_run_summary_omits_orders(self):
+        self.repository.create_run(sample_run("summary-run"))
+        summary = self.repository.get_run_summary("summary-run")
+        self.assertEqual(summary["id"], "summary-run")
+        self.assertEqual(summary["orders"], {})
 
 
 if __name__ == "__main__":

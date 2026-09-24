@@ -284,6 +284,27 @@ class RunEvent(Base):
     run: Mapped[CheckRun] = relationship(back_populates="events")
 
 
+class ArchivedRunEvent(Base):
+    """Cold storage for replayable events from old, terminal runs.
+
+    IDs intentionally retain their original run_events values so SSE cursors
+    continue to work after an event is archived.
+    """
+
+    __tablename__ = "archived_run_events"
+    __table_args__ = (
+        Index("ix_archived_run_events_run_id_id", "run_id", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+
+
 class OrderAction(Base):
     __tablename__ = "order_actions"
     __table_args__ = (

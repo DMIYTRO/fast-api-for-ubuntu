@@ -204,6 +204,75 @@ class RunCoordinator:
             raise RunNotFoundError(run_id)
         return value
 
+    def get_run_summary(self, run_id: str) -> dict[str, Any]:
+        getter = getattr(self.repository, "get_run_summary", None)
+        value = getter(run_id) if getter else self.repository.get_run(run_id)
+        if value is None:
+            raise RunNotFoundError(run_id)
+        value.setdefault("orders", {})
+        return value
+
+    def list_orders_page(
+        self, run_id: str, *, page: int, page_size: int, status: str,
+        search: str, active_only: bool = True,
+    ) -> dict[str, Any]:
+        getter = getattr(self.repository, "list_orders_page", None)
+        if getter:
+            result = getter(
+                run_id, page=page, page_size=page_size, status=status,
+                search=search, active_only=active_only,
+            )
+            if result is None:
+                raise RunNotFoundError(run_id)
+            return result
+        run = self.get_run(run_id)
+        orders = list((run.get("orders") or {}).values())
+        terminal = {"accepted_for_print", "returned_for_rework"}
+        if active_only:
+            orders = [order for order in orders if order.get("status") not in terminal]
+        query = search.strip().casefold()
+        if query:
+            orders = [order for order in orders if query in " ".join([
+                str(order.get("order_id") or ""), str(order.get("customer_id") or ""),
+                *(str(file.get("filename") or file.get("name") or "") for file in order.get("files") or []),
+            ]).casefold()]
+        grouped: dict[str, int] = {}
+        for order in orders:
+            value = str(order.get("status") or "detected")
+            grouped[value] = grouped.get(value, 0) + 1
+        counts = {
+            "all": sum(grouped.values()),
+            "passed": sum(grouped.get(value, 0) for value in ("passed", "warning", "completed")),
+            "warning": grouped.get("warning", 0),
+            "error": sum(grouped.get(value, 0) for value in ("error", "failed", "technical_error")),
+            "waiting_confirmation": grouped.get("waiting_confirmation", 0),
+        }
+        if status == "passed":
+            orders = [order for order in orders if order.get("status") in {"passed", "warning", "completed"}]
+        elif status == "error":
+            orders = [order for order in orders if order.get("status") in {"error", "failed", "technical_error"}]
+        elif status != "all":
+            orders = [order for order in orders if order.get("status") == status]
+        orders.sort(key=lambda order: (str(order.get("customer_id") or ""), str(order.get("order_id") or order.get("id") or "")))
+        total = len(orders)
+        start = (page - 1) * page_size
+        run["orders"] = {str(i): order for i, order in enumerate(orders[start:start + page_size])}
+        return {"run": run, "items": list(run["orders"].values()), "page": page,
+                "page_size": page_size, "total": total,
+                "total_pages": max(1, (total + page_size - 1) // page_size), "counts": counts}
+
+    def find_file_by_id(self, file_id: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """Use the repository's stable file index when available."""
+        finder = getattr(self.repository, "find_file_by_id", None)
+        if finder:
+            return finder(file_id)
+        for run in self.repository.list_runs():
+            for order in (run.get("orders") or {}).values():
+                for item in order.get("files") or []:
+                    if str(item.get("file_result_id") or item.get("id") or "") == file_id:
+                        return run, item
+        return None
+
     def list_runs(
         self,
         *,
