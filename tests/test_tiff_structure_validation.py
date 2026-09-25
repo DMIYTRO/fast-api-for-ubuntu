@@ -61,7 +61,7 @@ def test_tiff_structure_reads_composite_channels_and_ignores_layers_for_page_cou
                 "/usr/bin/magick",
                 "identify",
                 "-format",
-                "%[tiff:has-layers]\n",
+                "%p\t%[tiff:has-layers]\n",
                 "artwork.tif",
             ],
             capture_output=True,
@@ -75,7 +75,7 @@ def test_tiff_structure_reads_composite_channels_and_ignores_layers_for_page_cou
 def test_tiff_structure_distinguishes_layers_from_real_pages() -> None:
     with patch("core.inspector.shutil.which", return_value="/usr/bin/magick"), patch(
         "core.inspector.run_command",
-        side_effect=[_completed("0\tcmyka  5.0\n"), _completed("true\ntrue\n")],
+        side_effect=[_completed("0\tcmyka  5.0\n"), _completed("0\ttrue\n1\ttrue\n")],
     ):
         layered = inspect_tiff_structure("layered.tiff")
 
@@ -83,12 +83,12 @@ def test_tiff_structure_distinguishes_layers_from_real_pages() -> None:
         "core.inspector.run_command",
         side_effect=[
             _completed("0\tcmyk  4.0\n1\tcmyk  4.0\n"),
-            _completed("\n\n"),
+            _completed("0\t\n1\t\n"),
         ],
     ):
         multipage = inspect_tiff_structure("multipage.tiff")
 
-    assert layered == TiffStructure(1, True, True, "cmyka  5.0")
+    assert layered == TiffStructure(1, True, True, "cmyka  5.0", layer_count=1)
     assert multipage == TiffStructure(2, False, False, "cmyk  4.0")
 
 
@@ -144,15 +144,26 @@ def test_flattened_single_page_tiff_has_no_structural_errors(tmp_path: Path) -> 
     assert dto["page_count"] is None
 
 
+def test_single_layer_tiff_is_a_warning_not_an_error(tmp_path: Path) -> None:
+    item = _inspect_batch(
+        tmp_path, TiffStructure(1, True, False, "cmyk  4.0", layer_count=1)
+    )
+
+    assert not any("несведённые слои" in error for error in item.errors)
+    assert any("один несведённый слой" in warning for warning in item.warnings)
+    assert item.tiff_layer_count == 1
+    assert file_check_to_dto(item)["tiff_layer_count"] == 1
+
+
 @pytest.mark.parametrize(
     ("structure", "expected_fragments", "unexpected_fragment"),
     [
         (TiffStructure(1, False, True, "cmyka  5.0"), ("альфа-канал",), "страниц"),
-        (TiffStructure(1, True, False, "cmyk  4.0"), ("несведённые слои",), "страниц"),
+        (TiffStructure(1, True, False, "cmyk  4.0", layer_count=2), ("несведённых слоёв: 2",), "страниц"),
         (TiffStructure(2, False, False, "cmyk  4.0"), ("2 страниц",), "несведённые слои"),
         (
-            TiffStructure(1, True, True, "cmyka  5.0"),
-            ("альфа-канал", "несведённые слои"),
+            TiffStructure(1, True, True, "cmyka  5.0", layer_count=2),
+            ("альфа-канал", "несведённых слоёв: 2"),
             "страниц",
         ),
     ],

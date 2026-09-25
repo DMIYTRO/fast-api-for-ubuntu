@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections import deque
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 import logging
 import os
 import queue
 import threading
+import time
 import traceback
 from typing import Any, Callable, Protocol
 from uuid import uuid4
@@ -44,6 +45,13 @@ def _order_worker_count() -> int:
     except ValueError:
         requested = available
     return max(1, min(requested, available))
+
+
+def _order_timeout_seconds() -> float:
+    try:
+        return max(1.0, float(os.environ.get("IMAGE_MAGIC_ORDER_TIMEOUT_SECONDS", "900")))
+    except ValueError:
+        return 900.0
 
 
 class RunNotFoundError(KeyError):
@@ -131,8 +139,13 @@ class RunCoordinator:
             BatchProcessorAdapter
         ),
         autostart: bool = True,
+        order_timeout_seconds: float | None = None,
     ) -> None:
         self.repository = repository
+        self.order_timeout_seconds = (
+            _order_timeout_seconds() if order_timeout_seconds is None
+            else max(0.01, order_timeout_seconds)
+        )
         self._adapter_factory = adapter_factory
         self._contexts: dict[str, _RunContext] = {}
         self._pending_runs: deque[str] = deque()
@@ -180,6 +193,8 @@ class RunCoordinator:
             "id": run_id,
             "status": "queued",
             "stage": "queued",
+            "stage_label": "В очереди",
+            "current_order": None,
             "progress": 0,
             "options": options.as_dict(),
             "created_at": now,
@@ -356,6 +371,9 @@ class RunCoordinator:
         pdf_path: str | None,
         preview_paths: list[str],
         errors: list[str] | None = None,
+        pitstop: dict[str, Any] | None = None,
+        current_pdf_revision: int | None = None,
+        current_pdf_sha256: str | None = None,
     ) -> dict[str, Any]:
         """Persist paths/status after a deliberate operator file transition."""
         with self._lock:
@@ -373,6 +391,12 @@ class RunCoordinator:
                 order["pdf_path"] = pdf_path
             if preview_paths:
                 order["preview_paths"] = preview_paths
+            if pitstop is not None:
+                order["pitstop"] = pitstop
+            if current_pdf_revision is not None:
+                order["current_pdf_revision"] = current_pdf_revision
+            if current_pdf_sha256 is not None:
+                order["current_pdf_sha256"] = current_pdf_sha256
             if errors:
                 order["errors"] = [*order.get("errors", []), *errors]
                 order["processing_errors"] = [
@@ -561,6 +585,7 @@ class RunCoordinator:
                 return
             run["status"] = "running"
             run["stage"] = "scanning"
+            run["stage_label"] = "Поиск заказов и проверка файлов"
             run["started_at"] = _now()
             self._save_and_emit_locked(run, "run.started", {})
             self._changed.notify_all()
@@ -578,117 +603,160 @@ class RunCoordinator:
             orders = iter(batch)
 
         inspected = 0
-        processing_futures: list[Future[None]] = []
-        with ThreadPoolExecutor(
+        processing_futures: dict[Future[None], OrderCheck] = {}
+        submitted_at: dict[Future[None], float] = {}
+        executor = ThreadPoolExecutor(
             max_workers=_order_worker_count(),
             thread_name_prefix="image-magic-order",
-        ) as executor:
-            for order in orders:
-                if context.cancel_requested.is_set():
-                    self._cancel_remaining(run_id)
-                    return
-                inspected += 1
+        )
+        for order in orders:
+            if context.cancel_requested.is_set():
+                self._cancel_remaining(run_id)
+                executor.shutdown(wait=False, cancel_futures=True)
+                return
+            inspected += 1
+            with self._lock:
+                run = self.get_run(run_id)
+                total_hint = (
+                    known_total
+                    if known_total is not None
+                    else int(getattr(context.adapter, "total_orders", 0) or 0)
+                )
+                run["total_orders"] = max(
+                    run["total_orders"], total_hint, inspected
+                )
+                run["stage"] = "processing"
+                run["stage_label"] = f"Обработка заказа {order.order_id}"
+                run["current_order"] = order.order_id
+                run["progress"] = max(run["progress"], 10)
+                aggregate_id = context.add_order(order)
+                detected_dto = order_check_to_dto(order, status="detected")
+                run["orders"][aggregate_id] = detected_dto
+                self._save_and_emit_locked(
+                    run,
+                    "order.detected",
+                    {
+                        "aggregate_id": order.aggregate_id,
+                        "order_id": order.order_id,
+                        "customer_id": order.customer_id,
+                        "order": detected_dto,
+                        "processed": inspected,
+                        "total": run["total_orders"],
+                    },
+                )
+                checked_status = _inspection_status(order)
+                effective_checked_status = (
+                    "processing"
+                    if checked_status in {"passed", "warning"}
+                    and bool(getattr(context.adapter, "pitstop_enabled", False))
+                    else checked_status
+                )
+                run["orders"][aggregate_id] = order_check_to_dto(
+                    order,
+                    status=effective_checked_status,
+                    source_status=checked_status,
+                )
+                self._save_and_emit_locked(
+                    run,
+                    "order.checked",
+                    {
+                        "aggregate_id": order.aggregate_id,
+                        "order_id": order.order_id,
+                        "customer_id": order.customer_id,
+                        "status": effective_checked_status,
+                        "source_status": checked_status,
+                    },
+                )
+                self._changed.notify_all()
+
+            pending_files = context.adapter.pending_files(order)
+            correction_policy = run["options"].get("correction_policy", "ask")
+            auto_approve = (
+                run["options"].get("approve_corrections")
+                or correction_policy == "auto"
+            )
+            auto_reject = correction_policy == "reject"
+            if pending_files and (auto_approve or auto_reject):
+                context.adapter.decide(order, auto_approve)
+                self._emit_locked(
+                    run_id,
+                    (
+                        "order.correction_confirmed"
+                        if auto_approve
+                        else "order.correction_rejected"
+                    ),
+                    {
+                        "aggregate_id": order.aggregate_id,
+                        "order_id": order.order_id,
+                        "customer_id": order.customer_id,
+                        "automatic": True,
+                    },
+                )
+            elif pending_files:
                 with self._lock:
                     run = self.get_run(run_id)
-                    total_hint = (
-                        known_total
-                        if known_total is not None
-                        else int(getattr(context.adapter, "total_orders", 0) or 0)
+                    dto = order_check_to_dto(
+                        order, status="waiting_confirmation"
                     )
-                    run["total_orders"] = max(
-                        run["total_orders"], total_hint, inspected
-                    )
-                    run["stage"] = "processing"
-                    run["progress"] = max(run["progress"], 10)
-                    aggregate_id = context.add_order(order)
-                    detected_dto = order_check_to_dto(order, status="detected")
-                    run["orders"][aggregate_id] = detected_dto
+                    run["orders"][aggregate_id] = dto
+                    self._update_counts(run)
                     self._save_and_emit_locked(
                         run,
-                        "order.detected",
+                        "order.waiting_confirmation",
                         {
                             "aggregate_id": order.aggregate_id,
                             "order_id": order.order_id,
                             "customer_id": order.customer_id,
-                            "order": detected_dto,
-                            "processed": inspected,
+                            "order": dto,
+                            "processed": run["processed_orders"],
                             "total": run["total_orders"],
+                            "progress": run["progress"],
                         },
                     )
-                    checked_status = _inspection_status(order)
-                    effective_checked_status = (
-                        "processing"
-                        if checked_status in {"passed", "warning"}
-                        and bool(getattr(context.adapter, "pitstop_enabled", False))
-                        else checked_status
-                    )
-                    run["orders"][aggregate_id] = order_check_to_dto(
-                        order,
-                        status=effective_checked_status,
-                        source_status=checked_status,
-                    )
-                    self._save_and_emit_locked(
-                        run,
-                        "order.checked",
-                        {
-                            "aggregate_id": order.aggregate_id,
-                            "order_id": order.order_id,
-                            "customer_id": order.customer_id,
-                            "status": effective_checked_status,
-                            "source_status": checked_status,
-                        },
-                    )
-                    self._changed.notify_all()
+                continue
+            future = executor.submit(self._process_one, run_id, order)
+            processing_futures[future] = order
+            submitted_at[future] = time.monotonic()
 
-                pending_files = context.adapter.pending_files(order)
-                correction_policy = run["options"].get("correction_policy", "ask")
-                auto_approve = (
-                    run["options"].get("approve_corrections")
-                    or correction_policy == "auto"
-                )
-                auto_reject = correction_policy == "reject"
-                if pending_files and (auto_approve or auto_reject):
-                    context.adapter.decide(order, auto_approve)
-                    self._emit_locked(
-                        run_id,
-                        (
-                            "order.correction_confirmed"
-                            if auto_approve
-                            else "order.correction_rejected"
-                        ),
-                        {
-                            "aggregate_id": order.aggregate_id,
-                            "order_id": order.order_id,
-                            "customer_id": order.customer_id,
-                            "automatic": True,
-                        },
-                    )
-                elif pending_files:
-                    with self._lock:
-                        run = self.get_run(run_id)
-                        dto = order_check_to_dto(
-                            order, status="waiting_confirmation"
-                        )
-                        run["orders"][aggregate_id] = dto
-                        self._update_counts(run)
-                        self._save_and_emit_locked(
-                            run,
-                            "order.waiting_confirmation",
-                            {
-                                "aggregate_id": order.aggregate_id,
-                                "order_id": order.order_id,
-                                "customer_id": order.customer_id,
-                                "order": dto,
-                                "processed": run["processed_orders"],
-                                "total": run["total_orders"],
-                                "progress": run["progress"],
-                            },
-                        )
-                    continue
-                processing_futures.append(executor.submit(self._process_one, run_id, order))
-
-            for future in processing_futures:
-                future.result()
+        finished: set[Future[None]] = set()
+        timed_out = False
+        while len(finished) < len(processing_futures):
+            remaining = [future for future in processing_futures if future not in finished]
+            now = time.monotonic()
+            expired = [
+                future for future in remaining
+                if not future.done()
+                and now - submitted_at[future] >= self.order_timeout_seconds
+            ]
+            for future in expired:
+                finished.add(future)
+                timed_out = True
+                self._mark_order_timeout(run_id, processing_futures[future])
+            remaining = [future for future in processing_futures if future not in finished]
+            if not remaining:
+                break
+            next_deadline = min(
+                submitted_at[future] + self.order_timeout_seconds
+                for future in remaining
+            )
+            done, _ = wait(
+                remaining,
+                timeout=max(0.0, next_deadline - time.monotonic()),
+                return_when=FIRST_COMPLETED,
+            )
+            for future in done:
+                finished.add(future)
+                try:
+                    future.result()
+                except Exception:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise
+        if timed_out:
+            # A Python thread cannot be killed safely; release the run and let
+            # the daemon worker continue while cancelling tasks not yet started.
+            executor.shutdown(wait=False, cancel_futures=True)
+        else:
+            executor.shutdown(wait=True)
 
         with self._lock:
             run = self.get_run(run_id)
@@ -711,11 +779,37 @@ class RunCoordinator:
         with self._lock:
             self._settle_run_locked(self.get_run(run_id))
 
+    def _mark_order_timeout(self, run_id: str, order: OrderCheck) -> None:
+        with self._lock:
+            run = self.get_run(run_id)
+            key = self._contexts[run_id].key_for(order)
+            dto = order_check_to_dto(order, status="error")
+            dto["processing_errors"] = [
+                f"Превышено время обработки заказа ({self.order_timeout_seconds:g} с); результат не принят."
+            ]
+            run["orders"][key] = dto
+            run["stage_label"] = "Завершение обработки после превышения времени"
+            self._update_counts(run)
+            self._save_and_emit_locked(
+                run, "order.completed", {
+                    "aggregate_id": order.aggregate_id,
+                    "order_id": order.order_id,
+                    "customer_id": order.customer_id,
+                    "status": "error", "order": dto,
+                    "processed": run["processed_orders"],
+                    "total": run["total_orders"], "progress": run["progress"],
+                }
+            )
+            self._changed.notify_all()
+
     def _process_one(self, run_id: str, order: OrderCheck) -> None:
         context = self._contexts[run_id]
         artifacts = context.adapter.process_order(order)
         with self._lock:
             run = self.get_run(run_id)
+            current = run["orders"].get(context.key_for(order), {})
+            if any("не завершился за" in str(error) for error in current.get("processing_errors", [])):
+                return
             status = _completed_order_status(order, artifacts)
             source_status = _inspection_status(order)
             pitstop = artifacts.pitstop
@@ -811,6 +905,7 @@ class RunCoordinator:
         if waiting:
             run["status"] = "waiting_confirmation"
             run["stage"] = "waiting_confirmation"
+            run["stage_label"] = "Ожидает решения оператора"
             run["progress"] = self._progress(run)
             self.repository.save_run(run)
             if self._active_run_id == run["id"]:
@@ -819,6 +914,7 @@ class RunCoordinator:
         elif terminal == run["total_orders"]:
             run["status"] = "completed"
             run["stage"] = "completed"
+            run["stage_label"] = "Готово"
             run["progress"] = 100
             run["finished_at"] = _now()
             self._save_and_emit_locked(
@@ -838,6 +934,7 @@ class RunCoordinator:
     def _mark_cancelled_locked(self, run: dict[str, Any]) -> None:
         run["status"] = "cancelled"
         run["stage"] = "cancelled"
+        run["stage_label"] = "Остановлено"
         run["finished_at"] = _now()
         self._update_counts(run)
         self._save_and_emit_locked(run, "run.cancelled", self._summary(run))
@@ -855,6 +952,7 @@ class RunCoordinator:
                 return
             run["status"] = "failed"
             run["stage"] = "failed"
+            run["stage_label"] = "Ошибка обработки"
             run["finished_at"] = _now()
             run["error"] = f"{type(exc).__name__}: {exc}"
             self._save_and_emit_locked(

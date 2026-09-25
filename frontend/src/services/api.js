@@ -34,6 +34,7 @@ export const api = {
   cancel: (id) => request(`/api/checks/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
   correction: (runId, orderId, body) => request(`/api/checks/${encodeURIComponent(runId)}/orders/${encodeURIComponent(orderId)}/correction`, { method: "POST", body: JSON.stringify(body) }),
   uploadReturnPreview: (runId, orderId, file) => request(`/api/checks/${encodeURIComponent(runId)}/orders/${encodeURIComponent(orderId)}/return-preview`, { method: "POST", body: file, headers: { "Content-Type": file.type || "application/octet-stream" } }),
+  layeredTiffPreview: (url, method = "GET") => request(url, { method }),
   preparePrint: (body) => request("/api/orders/prepare-print", { method: "POST", body: JSON.stringify(body) }),
   prepareReject: (body) => request("/api/orders/prepare-reject", { method: "POST", body: JSON.stringify(body) }),
   history: (params = {}) => request(`/api/order-history?${new URLSearchParams(params)}`),

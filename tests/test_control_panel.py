@@ -146,6 +146,25 @@ class DuplexPdfAdapter(OneOrderAdapter):
         return OrderArtifacts(pdf_path=pdf, preview_paths=[face, back])
 
 
+class LayeredTiffAdapter(OneOrderAdapter):
+    def __init__(self, options):
+        super().__init__(options)
+        self.source = self.input_dir / "sample-face.tif"
+        self.source.write_bytes(b"original-layered-tiff")
+        item = self.order.files[0]
+        item.path = self.source
+        item.actual_format = "TIFF"
+        item.has_unflattened_layers = True
+
+
+class OutsideTiffAdapter(LayeredTiffAdapter):
+    def __init__(self, options):
+        super().__init__(options)
+        outside = self.input_dir.parent / "outside.tif"
+        outside.write_bytes(b"outside")
+        self.order.files[0].path = outside
+
+
 class ControlPanelTests(unittest.TestCase):
     def setUp(self):
         self.temporary_directory = tempfile.TemporaryDirectory(
@@ -460,30 +479,100 @@ class ControlPanelTests(unittest.TestCase):
         self.assertEqual(return_without_comment.status_code, 200)
         self.assertEqual(
             return_without_comment.json()["items"],
-            [
-                {
-                    "order_id": "1001",
-                    "status": "pending",
-                    "message": "Задача поставлена в очередь. Загрузка продолжается в фоне.",
-                }
-            ],
+            [{
+                "order_id": "1001", "status": "pending",
+                "message": "Задача поставлена в очередь. Загрузка продолжается в фоне.",
+            }],
         )
         deadline = time.monotonic() + 2
         history = self.client.get("/api/order-history", params={"action": "reject"})
         while not history.json()["items"] and time.monotonic() < deadline:
             time.sleep(0.02)
-            history = self.client.get(
-                "/api/order-history", params={"action": "reject"}
-            )
+            history = self.client.get("/api/order-history", params={"action": "reject"})
         self.assertEqual(history.status_code, 200)
         item = history.json()["items"][0]
         self.assertEqual(item["order_id"], "1001")
         self.assertEqual(item["action"], "reject")
         self.assertNotIn("pdf_url", item)
-        self.assertEqual(
-            self.client.get(item["previews"][0]["url"]).content,
-            b"preview-image",
+        self.assertEqual(self.client.get(item["previews"][0]["url"]).content, b"preview-image")
+
+    def test_layered_tiff_export_is_separate_and_scoped_to_order(self):
+        from core.inspector import TiffStructure
+
+        self.adapter_type = LayeredTiffAdapter
+        self.login()
+        response = self.client.post(
+            "/api/checks",
+            json={
+                "input_path": str(self.root), "direction": "digital",
+                "create_pdfs": True, "generate_previews": True,
+                "copy_failures": False,
+            },
         )
+        run_id = response.json()["id"]
+        self.client.app.state.coordinator.wait_for(run_id, timeout=2)
+        order = self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]
+        file = order["files"][0]
+        production_pdf = self.root / "PDF" / "sample.pdf"
+        original_tiff = (self.root / "sample-face.tif").read_bytes()
+        original_pdf = production_pdf.read_bytes()
+        with patch(
+            "control_panel.inspect_tiff_structure",
+            return_value=TiffStructure(1, True, False, "cmyk  4.0"),
+        ), patch("control_panel.shutil.which", return_value="/usr/bin/magick"), patch(
+            "control_panel.run_command",
+            side_effect=lambda command, **_kwargs: self._write_test_pdf(command[-1]),
+        ) as run_command:
+            result = self.client.post(file["layered_tiff_export_url"])
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json()["status"], "completed")
+        self.assertIn("-define", run_command.call_args.args[0])
+        command = run_command.call_args.args[0]
+        self.assertLess(command.index("-define"), command.index(str(self.root / "sample-face.tif")))
+        self.assertEqual((self.root / "PDF" / "sample-face_layered-composite.pdf").read_bytes()[:5], b"%PDF-")
+        self.assertEqual((self.root / "sample-face.tif").read_bytes(), original_tiff)
+        self.assertEqual(production_pdf.read_bytes(), original_pdf)
+        self.assertEqual(self.client.get(result.json()["pdf_url"]).status_code, 200)
+        preview = self.client.get(result.json()["preview_url"])
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.headers["content-type"], "image/png")
+        self.assertTrue(preview.content.startswith(b"\x89PNG\r\n\x1a\n"))
+        refreshed = self.client.get(file["layered_tiff_export_url"]).json()
+        self.assertEqual(refreshed["status"], "completed")
+        self.assertEqual(refreshed["preview_url"], result.json()["preview_url"])
+
+    @staticmethod
+    def _write_test_pdf(path):
+        import pymupdf
+
+        document = pymupdf.open()
+        document.new_page()
+        document.save(path)
+        document.close()
+
+    def test_layered_tiff_export_rejects_source_outside_order_folder(self):
+        from core.inspector import TiffStructure
+
+        self.adapter_type = OutsideTiffAdapter
+        self.login()
+        response = self.client.post(
+            "/api/checks",
+            json={
+                "input_path": str(self.root), "direction": "digital",
+                "create_pdfs": True, "generate_previews": True,
+                "copy_failures": False,
+            },
+        )
+        run_id = response.json()["id"]
+        self.client.app.state.coordinator.wait_for(run_id, timeout=2)
+        order = self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]
+        file = order["files"][0]
+        with patch(
+            "control_panel.inspect_tiff_structure",
+            return_value=TiffStructure(1, True, False, "cmyk  4.0"),
+        ):
+            result = self.client.post(file["layered_tiff_export_url"])
+        self.assertEqual(result.status_code, 403)
 
     def test_operator_can_upload_small_return_preview(self):
         self.adapter_type = OneOrderAdapter

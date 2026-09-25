@@ -9,7 +9,7 @@ SIZE_RE = re.compile(
     re.IGNORECASE,
 )
 COLORS_RE = re.compile(r"[_*](\d+)-(\d+)(?=_)")
-ORDER_RE = re.compile(r"[_*]\((\d+)-{1,2}(\d+)\)(?=_|$)")
+ORDER_RE = re.compile(r"[_*]\((\d+)-{1,2}(\d+)\)(?=_|-|$)")
 # Some production names omit the closing parenthesis, but retain the final
 # side marker.  Keep this fallback narrow so arbitrary numbers in a filename
 # are not mistaken for an order identifier.

@@ -15,6 +15,7 @@ def convert_image_to_pdf(
     output_pdf_path: str,
     dpi: Union[float, str] = 300.0,
     compression: str = "none",
+    ignore_tiff_layers: bool = False,
 ) -> str:
     """Конвертирует одиночное изображение в PDF с сохранением DPI и размера."""
     magick_cmd = shutil.which("magick")
@@ -23,8 +24,10 @@ def convert_image_to_pdf(
 
     os.makedirs(os.path.dirname(os.path.abspath(output_pdf_path)), exist_ok=True)
 
-    cmd = [
-        magick_cmd,
+    cmd = [magick_cmd]
+    if ignore_tiff_layers:
+        cmd += ["-define", "tiff:ignore-layers=true"]
+    cmd += [
         input_image_path,
         "-units", "PixelsPerInch",
         "-density", str(dpi),

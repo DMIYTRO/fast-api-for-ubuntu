@@ -6,6 +6,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass
+import hashlib
 import logging
 import json
 from pathlib import Path
@@ -22,6 +23,8 @@ from .coordinator import RunCoordinator
 from .domain import validate_operator_transition
 from .file_lifecycle import FileConflictError, FileLifecycle, FileLifecycleError
 from .return_preview import custom_return_preview_path, prepare_return_preview_name
+from .layered_tiff_print import build_reviewed_layered_print_pdf
+from core.pdf_inspector import inspect_pdf
 
 
 logger = logging.getLogger("image_magic.order_workflow")
@@ -51,6 +54,7 @@ class OrderWorkflowService:
         prepress_sender: Callable[[str | list[str], str | None], dict[str, Any]] | None = None,
         rework_sender: Callable[[str, str, str, bool, str], dict[str, Any]] | None = None,
         preview_uploader: Callable[[list[Path]], list[str]] | None = None,
+        reviewed_pdf_pitstop_service_factory: Callable[[Path, str], Any] | None = None,
     ) -> None:
         self.coordinator = coordinator
         self.session_factory = session_factory
@@ -59,6 +63,7 @@ class OrderWorkflowService:
         self.prepress_sender = prepress_sender
         self.rework_sender = rework_sender
         self.preview_uploader = preview_uploader
+        self.reviewed_pdf_pitstop_service_factory = reviewed_pdf_pitstop_service_factory
         self._action_locks_guard = Lock()
         self._action_locks: dict[int, tuple[Lock, str]] = {}
         self._background_guard = Lock()
@@ -271,11 +276,18 @@ class OrderWorkflowService:
             (action == "print" and self.prepress_sender is not None)
             or (action == "reject" and self.rework_sender is not None)
         )
+        has_reviewed_layered_files = any(
+            file.get("has_unflattened_layers")
+            and str(file.get("path") or "").lower().endswith((".tif", ".tiff"))
+            for _, _, order in resolved_orders
+            for file in order.get("files") or []
+        )
         if (
             action == "print"
             and self.prepress_sender is not None
             and len(external_order_ids) > 1
             and not duplicate_external_ids
+            and not has_reviewed_layered_files
         ):
             batch_prepress_result = self.prepress_sender(external_order_ids, None)
         with self.session_factory() as session:
@@ -480,6 +492,50 @@ class OrderWorkflowService:
                         add_result(self._busy_result(order_id, action, active))
                         continue
                     try:
+                        transition_order = order
+                        reviewed_pitstop = None
+                        reviewed_revision = None
+                        reviewed_sha256 = None
+                        if action == "print":
+                            input_root = Path(run["options"]["input_path"]).resolve()
+                            reviewed_pdf = build_reviewed_layered_print_pdf(
+                                order, input_root
+                            )
+                            if reviewed_pdf is not None:
+                                inspection = inspect_pdf(reviewed_pdf)
+                                if inspection.errors:
+                                    raise FileLifecycleError(
+                                        "Итоговый PDF из просмотренных TIFF не прошёл проверку: "
+                                        + "; ".join(inspection.errors)
+                                    )
+                                reviewed_revision = int(order.get("current_pdf_revision") or 0) + 1
+                                reviewed_sha256 = hashlib.sha256(reviewed_pdf.read_bytes()).hexdigest()
+                                if self.reviewed_pdf_pitstop_service_factory is not None:
+                                    pitstop_service = self.reviewed_pdf_pitstop_service_factory(
+                                        input_root, str(run["options"].get("direction") or "")
+                                    )
+                                    pitstop_result = pitstop_service.check_pdf(
+                                        reviewed_pdf,
+                                        profile_id=str(run["options"].get("direction") or ""),
+                                    )
+                                    from .batch_adapter import _pitstop_result_to_dto
+
+                                    reviewed_pitstop = _pitstop_result_to_dto(
+                                        pitstop_result,
+                                        checked_revision=reviewed_revision,
+                                    )
+                                    if not pitstop_result.passed:
+                                        reason = pitstop_result.technical_error or (
+                                            "PDF содержит ошибки по результатам PitStop."
+                                        )
+                                        raise FileLifecycleError(
+                                            f"Итоговый PDF из просмотренных TIFF не отправлен в печать: {reason}"
+                                        )
+                                elif order.get("pitstop"):
+                                    raise FileLifecycleError(
+                                        "Для повторной проверки итогового PDF не настроен PitStop."
+                                    )
+                                transition_order = {**order, "pdf_path": str(reviewed_pdf)}
                         lifecycle = self.lifecycle_factory(
                             Path(run["options"]["input_path"])
                         )
@@ -487,7 +543,7 @@ class OrderWorkflowService:
                             lifecycle.accept_for_print
                             if action == "print"
                             else lifecycle.return_for_rework,
-                            order,
+                            transition_order,
                             command.conflict_strategy,
                         )
                     except FileLifecycleError as exc:
@@ -538,6 +594,9 @@ class OrderWorkflowService:
                             source_paths=transition.source_paths,
                             pdf_path=transition.pdf_path,
                             preview_paths=transition.preview_paths,
+                            pitstop=reviewed_pitstop,
+                            current_pdf_revision=reviewed_revision,
+                            current_pdf_sha256=reviewed_sha256,
                         )
                         prepress_result = None
                         if batch_prepress_result is not None:

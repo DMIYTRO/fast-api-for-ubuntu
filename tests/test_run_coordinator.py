@@ -52,6 +52,7 @@ class FakeAdapter:
         self.calls = calls if calls is not None else []
         self.scan_error = scan_error
         self.processing_errors = processing_errors or {}
+        self.stage_entered = None
 
     def scan_and_inspect(self):
         self.calls.append("scan")
@@ -76,6 +77,8 @@ class FakeAdapter:
                 item.errors.append("коррекция отклонена")
 
     def process_order(self, order):
+        if self.stage_entered:
+            self.stage_entered.set()
         self.calls.append(("process", order.order_id))
         errors = self.processing_errors.get(order.order_id, [])
         return OrderArtifacts(
@@ -409,6 +412,37 @@ class RunCoordinatorTests(unittest.TestCase):
             [event.type for event in self.coordinator.events(broken_id)][-1],
             "run.failed",
         )
+
+    def test_stuck_order_times_out_run_and_next_run_completes(self):
+        blocked = threading.Event()
+        release = threading.Event()
+
+        class HungAdapter(FakeAdapter):
+            def process_order(self, order):
+                blocked.set()
+                release.wait()
+                return super().process_order(order)
+
+        self.coordinator.shutdown()
+        self.coordinator = RunCoordinator(
+            self.repository,
+            adapter_factory=lambda options: self.adapters[options.input_path],
+            order_timeout_seconds=0.05,
+        )
+        self.adapters["hung"] = HungAdapter([make_order("hung")])
+        self.adapters["after-hung"] = FakeAdapter([make_order("healthy")])
+        failed_id = self.submit("hung")["id"]
+        self.assertTrue(blocked.wait(timeout=1))
+        failed = self.coordinator.wait_for(failed_id, {"completed"}, timeout=1)
+        order = failed["orders"]["hung"]
+        self.assertEqual(order["status"], "error")
+        self.assertIn("Превышено время", order["processing_errors"][0])
+        self.assertEqual(failed["stage_label"], "Готово")
+
+        healthy_id = self.submit("after-hung")["id"]
+        healthy = self.coordinator.wait_for(healthy_id, {"completed"}, timeout=1)
+        self.assertEqual(healthy["orders"]["healthy"]["status"], "passed")
+        release.set()
 
     def test_stale_terminal_active_id_does_not_block_new_run(self):
         self.adapters["first"] = FakeAdapter([])

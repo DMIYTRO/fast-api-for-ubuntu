@@ -16,6 +16,17 @@ class ResamplerCommandTests(unittest.TestCase):
         self.assertFalse(any(value.endswith("!") for value in command))
         self.assertNotIn("-colorspace", command)
 
+    @patch("core.resampler.run_command")
+    @patch("core.resampler.shutil.which", return_value="/usr/bin/magick")
+    def test_single_layer_resample_ignores_photoshop_layer_scenes(self, _which, run):
+        resample_image(
+            "input.tif", "/tmp/output.tif", 94.0, 54.0,
+            ignore_tiff_layers=True,
+        )
+        command = run.call_args.args[0]
+        self.assertEqual(command[1:3], ["-define", "tiff:ignore-layers=true"])
+        self.assertEqual(command[3], "input.tif")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,6 +17,16 @@ class PdfColorPreservationTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertNotIn("-colorspace", command)
 
+    @patch("core.pdf_exporter.run_command")
+    @patch("core.pdf_exporter.shutil.which", return_value="/usr/bin/magick")
+    def test_single_layer_composite_define_precedes_tiff_input(self, _which, run):
+        convert_image_to_pdf(
+            "input.tif", "/tmp/output.pdf", dpi=300, ignore_tiff_layers=True
+        )
+        command = run.call_args.args[0]
+        self.assertLess(command.index("-define"), command.index("input.tif"))
+        self.assertEqual(command[command.index("-define") + 1], "tiff:ignore-layers=true")
+
     @staticmethod
     def _make_pdf(path, page_specs):
         document = pymupdf.open()

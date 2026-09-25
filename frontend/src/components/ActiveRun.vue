@@ -33,7 +33,7 @@ const progressLabel = computed(() => {
     <div class="run-summary">
       <div class="run-identity">
         <p class="eyebrow">Текущая проверка</p>
-        <div><strong>{{ run.stage || "Подготовка" }}</strong><span class="muted">{{ run.current_order ? `Заказ ${run.current_order}` : run.input_path }}</span></div>
+        <div><strong>{{ run.stage_label || run.stage || "Подготовка" }}</strong><span class="muted">{{ run.current_order ? `Заказ ${run.current_order}` : run.input_path }}</span></div>
       </div>
       <div class="run-progress-compact" role="status" aria-live="polite">
         <span v-if="processing" class="run-throbber" aria-hidden="true"></span>

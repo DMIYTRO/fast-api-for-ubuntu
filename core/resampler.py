@@ -46,6 +46,7 @@ def resample_image(
     target_height_mm: float,
     target_dpi: float = 300.0,
     rotation_degrees: int = 0,
+    ignore_tiff_layers: bool = False,
 ) -> str:
     """Proportionally fill and center-crop to the target without stretching."""
     magick_cmd = shutil.which("magick")
@@ -58,7 +59,10 @@ def resample_image(
     target_w_px = round(target_width_mm * (target_dpi / 25.4))
     target_h_px = round(target_height_mm * (target_dpi / 25.4))
 
-    cmd = [magick_cmd, input_path]
+    cmd = [magick_cmd]
+    if ignore_tiff_layers:
+        cmd += ["-define", "tiff:ignore-layers=true"]
+    cmd += [input_path]
     if rotation_degrees:
         cmd += ["-rotate", str(rotation_degrees)]
     cmd += [

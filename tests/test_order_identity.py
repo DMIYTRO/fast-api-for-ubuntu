@@ -37,6 +37,21 @@ class OrderIdentityTests(unittest.TestCase):
                     ("1069", "25694739", 90.0, 90.0, 4, 4, "face"),
                 )
 
+    def test_parses_order_number_followed_by_hyphenated_side(self):
+        names = (
+            "12_NP_Bezlam_285_SD_quartz_(170x80)*4-4_L2_T10*"
+            "(24266-25878868)-face.tif",
+            "12_NP_Bezlam_285_SD_quartz_(170x80)*4-4_L2_T10*"
+            "(24266-25878868)-back.tif",
+        )
+
+        for name, side in zip(names, ("face", "back")):
+            with self.subTest(name=name):
+                parsed = parse_filename(Path(name))
+                self.assertEqual(parsed.customer_id, "24266")
+                self.assertEqual(parsed.order_id, "25878868")
+                self.assertEqual(parsed.side, side)
+
     def test_does_not_accept_ambiguous_order_numbers(self):
         invalid_names = (
             "job_(90x90)*4-4*(1069---25694739)_offset-face.tif",

@@ -2,7 +2,8 @@
 import { computed, ref } from "vue";
 import PreviewImage from "./PreviewImage.vue";
 
-const props = defineProps({ files: Array });
+const props = defineProps({ files: Array, hasProductionPdf: { type: Boolean, default: false } });
+const emit = defineEmits(["retry-layered-tiff"]);
 const zoomed = ref(null);
 const rotation = ref({});
 
@@ -69,9 +70,16 @@ function imageTransform(file) {
           :src="previewUrl(file)"
           :alt="`${side}: ${file.filename}`"
           :style="{ transform: imageTransform(file) }"
+          :process-on-retry="Boolean(file.layered_tiff_export_url)"
+          :processing="Boolean(file.layered_tiff_export_processing)"
+          :retry-label="file.layered_tiff_export_error ? 'Повторить создание PDF' : 'Повторить загрузку'"
+          @retry="emit('retry-layered-tiff', file)"
         />
       </div>
-      <div v-else class="preview-empty">{{ file ? "Превью создается..." : "Нет файла" }}</div>
+      <small v-if="file?.layered_tiff_export_error" class="preview-export-error" role="alert">{{ file.layered_tiff_export_error }}</small>
+      <a v-if="file?.layered_tiff_export_pdf_url" class="preview-export-pdf-link" :href="file.layered_tiff_export_pdf_url" target="_blank">Открыть сгенерированный PDF ↗</a>
+      <div v-if="!file && !props.hasProductionPdf" class="preview-empty">Нет файла</div>
+      <div v-else-if="file && !previewUrl(file) && !props.hasProductionPdf" class="preview-empty">Превью создается...</div>
       <div v-if="file" class="preview-filename" :title="file.filename">{{ file.filename }}</div>
     </div>
   </div>

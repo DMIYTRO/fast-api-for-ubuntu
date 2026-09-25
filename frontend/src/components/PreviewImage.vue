@@ -1,8 +1,8 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 
-const props = defineProps({ src: { type: String, required: true }, alt: { type: String, default: "" }, eager: { type: Boolean, default: false } });
-const emit = defineEmits(["load", "error"]);
+const props = defineProps({ src: { type: String, required: true }, alt: { type: String, default: "" }, eager: { type: Boolean, default: false }, processOnRetry: { type: Boolean, default: false }, processing: { type: Boolean, default: false }, retryLabel: { type: String, default: "Повторить загрузку" } });
+const emit = defineEmits(["load", "error", "retry"]);
 const image = ref(null);
 const status = ref("loading");
 let observer;
@@ -170,6 +170,6 @@ onBeforeUnmount(() => {
 <template>
   <span class="preview-loader" :class="{ 'preview-loader-error': status === 'error', 'preview-loader-loading': status === 'loading' }">
     <img ref="image" :class="{ 'preview-loader-placeholder': status !== 'loaded' }" :alt="alt" decoding="async" :aria-hidden="status !== 'loaded'">
-    <button v-if="status === 'error'" class="preview-load-retry" type="button" @click.stop="retry">Повторить загрузку</button>
+    <button v-if="status === 'error'" class="preview-load-retry" type="button" :disabled="processing" @click.stop="processOnRetry ? $emit('retry') : retry()">{{ processing ? "Создаём PDF…" : retryLabel }}</button>
   </span>
 </template>

@@ -40,6 +40,7 @@ class TiffStructure:
     has_unflattened_layers: bool
     has_alpha: bool
     channels: str
+    layer_count: int | None = 0
 
 
 def _identify_command() -> list[str]:
@@ -93,7 +94,7 @@ def inspect_tiff_structure(image_path: str) -> TiffStructure:
 
     layers_cmd = _identify_command() + [
         "-format",
-        "%[tiff:has-layers]\n",
+        "%p\t%[tiff:has-layers]\n",
         image_path,
     ]
     layers_result = run_command(
@@ -103,16 +104,23 @@ def inspect_tiff_structure(image_path: str) -> TiffStructure:
         errors="replace",
         check=True,
     )
+    layer_lines = [line for line in layers_result.stdout.splitlines() if line.strip()]
     has_unflattened_layers = any(
-        value.strip().lower() in {"true", "1", "yes"}
-        for value in layers_result.stdout.splitlines()
+        len(fields := line.split("\t", maxsplit=1)) == 2
+        and fields[1].strip().lower() in {"true", "1", "yes"}
+        for line in layer_lines
     )
+    layer_count = 0
+    if has_unflattened_layers:
+        decoded_layer_count = len(layer_lines) - len(composite_lines)
+        layer_count = decoded_layer_count if decoded_layer_count > 0 else None
 
     return TiffStructure(
         page_count=len(composite_lines),
         has_unflattened_layers=has_unflattened_layers,
         has_alpha=channel_mnemonic.endswith("a"),
         channels=channels,
+        layer_count=layer_count,
     )
 
 

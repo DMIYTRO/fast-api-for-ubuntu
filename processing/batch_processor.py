@@ -132,6 +132,7 @@ class BatchProcessor:
                         structure = inspect_tiff_structure(str(path))
                         check.tiff_page_count = structure.page_count
                         check.has_unflattened_layers = structure.has_unflattened_layers
+                        check.tiff_layer_count = structure.layer_count
                         check.has_alpha = structure.has_alpha
                         check.channels = structure.channels
                         if structure.has_alpha:
@@ -139,9 +140,21 @@ class BatchProcessor:
                                 "TIFF содержит альфа-канал; перед отправкой удалите прозрачность"
                             )
                         if structure.has_unflattened_layers:
-                            check.errors.append(
-                                "TIFF содержит несведённые слои; перед отправкой сведите изображение"
-                            )
+                            if structure.layer_count == 1:
+                                check.warnings.append(
+                                    "TIFF содержит один несведённый слой; в PDF будет включён "
+                                    "сохранённый композит ImageMagick (tiff:ignore-layers=true)"
+                                )
+                            elif structure.layer_count is not None and structure.layer_count > 1:
+                                check.errors.append(
+                                    f"В TIFF найдено несведённых слоёв: {structure.layer_count}; "
+                                    "требуется ручное решение"
+                                )
+                            else:
+                                check.errors.append(
+                                    "TIFF содержит несведённые слои, но ImageMagick не смог "
+                                    "определить их число; требуется ручное решение"
+                                )
                         if structure.page_count > 1:
                             check.errors.append(
                                 f"TIFF содержит {structure.page_count} страниц; "
@@ -576,6 +589,7 @@ class BatchProcessor:
                     target_height_mm=item.resample_target_mm[1],
                     target_dpi=self.min_dpi,
                     rotation_degrees=item.rotation_degrees,
+                    ignore_tiff_layers=item.tiff_layer_count == 1,
                 )
                 source_image_path = str(resampled_path)
                 dpi_arg = str(self.min_dpi)
@@ -586,6 +600,7 @@ class BatchProcessor:
                 str(page_path),
                 dpi=dpi_arg,
                 compression="none",
+                ignore_tiff_layers=item.tiff_layer_count == 1,
             )
             converted[item.path] = str(page_path)
             page_pdfs.append(str(page_path))

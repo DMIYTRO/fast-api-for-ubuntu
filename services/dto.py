@@ -47,6 +47,7 @@ def file_check_to_dto(
         "has_unflattened_layers": value.has_unflattened_layers,
         "channels": value.channels,
         "tiff_page_count": value.tiff_page_count,
+        "tiff_layer_count": value.tiff_layer_count,
         "page_count": value.page_count,
         "pdf_colorspaces": list(value.pdf_colorspaces),
         "pdf_min_dpi": value.pdf_min_dpi,

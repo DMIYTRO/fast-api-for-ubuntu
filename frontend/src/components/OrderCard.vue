@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref } from "vue";
 import { api } from "../services/api.js";
 import PreviewViewer from "./PreviewViewer.vue";
 import FileParameters from "./FileParameters.vue";
@@ -15,9 +15,21 @@ const busy = ref(false);
 const uploadInput = ref(null);
 const uploadError = ref("");
 const uploadingPreview = ref(false);
+const layeredTiffExports = ref({});
+const layeredTiffPolls = new Map();
 const id = computed(() => props.order.order_id ?? props.order.id);
 const actionId = computed(() => props.order.aggregate_id ?? id.value);
-const files = computed(() => props.order.files || props.order.file_results || []);
+const files = computed(() => (props.order.files || props.order.file_results || []).map((file) => {
+  const result = layeredTiffExports.value[file.id];
+  if (!result) return file;
+  return {
+    ...file,
+    ...(result.preview_url ? { preview_url: result.preview_url, thumbnail_url: result.preview_url, full_preview_url: result.preview_url } : {}),
+    layered_tiff_export_pdf_url: result.pdf_url || "",
+    layered_tiff_export_processing: result.status === "processing",
+    layered_tiff_export_error: result.status === "failed" ? result.error : "",
+  };
+}));
 const face = computed(() => files.value.find((file) => String(file.side || file.parsed?.side).toLowerCase() === "face") || files.value[0]);
 const back = computed(() => files.value.find((file) => String(file.side || file.parsed?.side).toLowerCase() === "back"));
 const parsed = computed(() => face.value?.parsed || {});
@@ -32,14 +44,14 @@ const expectedSize = computed(() => parsed.value.width_mm && parsed.value.height
 const issueText = (value) => typeof value === "string" ? value : value?.message || value?.code;
 const allErrors = computed(() => [
   ...(props.order.errors || []),
-  ...files.value.flatMap((file) => file.errors || []),
 ].map(issueText).filter(Boolean));
 const groupedErrors = computed(() => groupIssueMessages(allErrors.value));
+const fileErrors = computed(() => files.value.flatMap((file) => (file.errors || []).map(issueText).filter(Boolean).map((message) => ({ filename: file.filename || file.path || "Файл", message }))));
 const allWarnings = computed(() => [
   ...(props.order.warnings || []),
-  ...files.value.flatMap((file) => file.warnings || []),
 ].map(issueText).filter(Boolean));
 const groupedWarnings = computed(() => groupIssueMessages(allWarnings.value));
+const fileWarnings = computed(() => files.value.flatMap((file) => (file.warnings || []).map(issueText).filter(Boolean).map((message) => ({ filename: file.filename || file.path || "Файл", message }))));
 const statusLabel = { detected: "Обнаружен", passed: "Прошёл", completed: "Прошёл", warning: "Предупреждение", error: "Ошибка PDF", failed: "Ошибка", technical_error: "Сбой проверки", pitstop_checking: "PitStop проверяет", waiting_confirmation: "Нужно решение", processing: "Проверяется" };
 const successful = computed(() => {
   if (!["passed", "completed"].includes(props.order.status)) return false;
@@ -108,6 +120,38 @@ async function uploadPreview(file) {
 }
 function onDrop(event) { uploadPreview(event.dataTransfer?.files?.[0]); }
 function choosePreview() { uploadInput.value?.click(); }
+function withLayeredTiffPreview(file, result) {
+  if (result?.status === "completed" && result.pdf_url && !result.preview_url && file.layered_tiff_export_url) {
+    return { ...result, preview_url: `${file.layered_tiff_export_url}/preview` };
+  }
+  return result;
+}
+function pollLayeredTiffExport(file) {
+  clearTimeout(layeredTiffPolls.get(file.id));
+  layeredTiffPolls.set(file.id, setTimeout(async () => {
+    try {
+      const result = await api.layeredTiffPreview(file.layered_tiff_export_url);
+      layeredTiffExports.value[file.id] = withLayeredTiffPreview(file, result);
+      if (result.status === "processing") pollLayeredTiffExport(file);
+    } catch (error) {
+      layeredTiffExports.value[file.id] = { status: "failed", error: error.message };
+    }
+  }, 900));
+}
+async function retryLayeredTiffPreview(file) {
+  if (!file.layered_tiff_export_url || layeredTiffExports.value[file.id]?.status === "processing") return;
+  layeredTiffExports.value[file.id] = { status: "processing" };
+  try {
+    layeredTiffExports.value[file.id] = withLayeredTiffPreview(
+      file,
+      await api.layeredTiffPreview(file.layered_tiff_export_url, "POST"),
+    );
+    if (layeredTiffExports.value[file.id].status === "processing") pollLayeredTiffExport(file);
+  } catch (error) {
+    layeredTiffExports.value[file.id] = { status: "failed", error: error.message || "Не удалось создать PDF из TIFF." };
+  }
+}
+onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
 </script>
 
 <template>
@@ -146,7 +190,7 @@ function choosePreview() { uploadInput.value?.click(); }
     <div class="order-body">
       <section class="preview-column">
         <p class="section-title">Превью макетов</p>
-        <PreviewViewer :files="files" />
+        <PreviewViewer :files="files" :has-production-pdf="Boolean(order.pdf_path || order.pdf_url)" @retry-layered-tiff="retryLayeredTiffPreview" />
         <div class="custom-preview" @dragover.prevent @drop.prevent="onDrop">
           <input ref="uploadInput" type="file" accept="image/jpeg,image/png" hidden @change="uploadPreview($event.target.files?.[0])">
           <button type="button" class="button secondary small" :disabled="uploadingPreview" @click="choosePreview">{{ uploadingPreview ? "Загрузка…" : "Загрузить превью для возврата" }}</button>
@@ -175,9 +219,21 @@ function choosePreview() { uploadInput.value?.click(); }
           </table>
         </div>
 
-        <div v-if="allErrors.length" class="issue-list errors"><strong>Ошибки проверки</strong><ul><li v-for="(item, index) in groupedErrors" :key="index">{{ item.message }}<span v-if="item.count > 1"> — {{ item.count }} {{ issueObjectLabel(item.count) }}</span></li></ul></div>
-        <div v-if="allWarnings.length" class="issue-list warnings"><strong>Предупреждения</strong><ul><li v-for="(item, index) in groupedWarnings" :key="index">{{ item.message }}<span v-if="item.count > 1"> — {{ item.count }} {{ issueObjectLabel(item.count) }}</span></li></ul></div>
-        <div v-if="successful && !allErrors.length && !allWarnings.length" class="issue-list success-note"><strong>Заказ соответствует требованиям допечатной подготовки.</strong></div>
+        <div v-if="allErrors.length || fileErrors.length" class="issue-list errors">
+          <strong>Ошибки проверки</strong>
+          <ul>
+            <li v-for="(item, index) in groupedErrors" :key="`order-${index}`">{{ item.message }}<span v-if="item.count > 1"> — {{ item.count }} {{ issueObjectLabel(item.count) }}</span></li>
+            <li v-for="(item, index) in fileErrors" :key="`file-${index}`"><b>{{ item.filename }}:</b> {{ item.message }}</li>
+          </ul>
+        </div>
+        <div v-if="allWarnings.length || fileWarnings.length" class="issue-list warnings">
+          <strong>Предупреждения</strong>
+          <ul>
+            <li v-for="(item, index) in groupedWarnings" :key="`order-${index}`">{{ item.message }}<span v-if="item.count > 1"> — {{ item.count }} {{ issueObjectLabel(item.count) }}</span></li>
+            <li v-for="(item, index) in fileWarnings" :key="`file-${index}`"><b>{{ item.filename }}:</b> {{ item.message }}</li>
+          </ul>
+        </div>
+        <div v-if="successful && !allErrors.length && !fileErrors.length && !allWarnings.length && !fileWarnings.length" class="issue-list success-note"><strong>Заказ соответствует требованиям допечатной подготовки.</strong></div>
         <PitStopReport v-if="order.pitstop" :pitstop="order.pitstop" />
         <CorrectionDecision :order="order" :busy="busy" @decide="decide" />
         <p v-if="order.action_result" class="action-result" :class="`status-${order.action_result.status}`">Действие: {{ order.action_result.status === "prepared" ? "подготовлено" : (order.action_result.message || order.action_result.status) }}</p>

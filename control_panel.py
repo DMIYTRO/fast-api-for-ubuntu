@@ -15,7 +15,7 @@ import time
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -23,6 +23,8 @@ from sqlalchemy import desc, func, select
 
 from config.profiles import DEFAULT_DIRECTION, PROFILES
 from core.return_reasons import load_return_reasons
+from core.inspector import inspect_tiff_structure
+from core.tool_runner import run_command
 from server.auth import AuthService, create_auth_router, require_session
 from server.database import Database, configure_database, get_db, upgrade_database
 from server.errors import APIError, error_payload, install_error_handlers
@@ -195,6 +197,13 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
             item["width_mm"] = item.get("width_mm") or item.get("actual_width_mm")
             item["height_mm"] = item.get("height_mm") or item.get("actual_height_mm")
             item["source_url"] = f"/api/files/{file_id}/source"
+            if (
+                item.get("has_unflattened_layers")
+                and str(item.get("filename") or "").lower().endswith((".tif", ".tiff"))
+            ):
+                item["layered_tiff_export_url"] = (
+                    f"/api/checks/{run_id}/orders/{order_ref}/layered-tiff-export/{file_id}"
+                )
             if item.get("preview_path") or order.get("preview_paths"):
                 item["preview_url"] = f"/api/files/{file_id}/preview"
                 item["thumbnail_url"] = item["preview_url"] + "?size=thumbnail"
@@ -220,6 +229,109 @@ def _safe_result_path(run: dict[str, Any], raw_path: str | None) -> Path:
     if not _is_inside(target, root) or not target.is_file():
         raise APIError(404, "file_not_found", "Файл не найден.")
     return target
+
+
+def _layered_tiff_export_path(source: Path) -> Path:
+    return source.parent / "PDF" / f"{source.stem}_layered-composite.pdf"
+
+
+def _layered_tiff_export_preview_path(source: Path) -> Path:
+    return source.parent / "Previews" / f"{source.stem}_layered-composite.png"
+
+
+def _layered_tiff_export_urls(run_id: str, order_id: str, file_id: str) -> dict[str, str]:
+    base = f"/api/checks/{run_id}/orders/{order_id}/layered-tiff-export/{file_id}"
+    return {"pdf_url": f"{base}/artifact", "preview_url": f"{base}/preview"}
+
+
+def _layered_tiff_export_item(
+    coordinator: RunCoordinator,
+    run_id: str,
+    order_id: str,
+    file_id: str,
+    allowed_roots: tuple[Path, ...],
+    *,
+    verify_layers: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any], Path, Path, tuple[str, ...]]:
+    run, order = _find_order(coordinator, order_id, run_id)
+    input_root = Path((run.get("options") or {}).get("input_path", "")).resolve()
+    if not input_root.is_dir() or not any(_is_inside(input_root, root) for root in allowed_roots):
+        raise APIError(403, "folder_not_allowed", "Папка заказа находится за пределами разрешённой рабочей области.")
+    files = order.get("files") or []
+    order_number = str(order.get("order_id") or order.get("id") or "")
+    item = next((
+        entry for index, entry in enumerate(files)
+        if str(entry.get("id") or entry.get("file_result_id") or f"{run_id}:{order_number}:{index}") == file_id
+    ), None)
+    if item is None:
+        raise APIError(404, "file_not_found", "TIFF не найден в выбранном заказе.")
+    source_value = item.get("path")
+    if not source_value:
+        raise APIError(404, "file_not_ready", "Исходный файл недоступен.")
+    source = Path(source_value).resolve()
+    if not _is_inside(source, input_root):
+        raise APIError(403, "file_not_allowed", "Файл находится за пределами папки заказа.")
+    if source.suffix.lower() not in {".tif", ".tiff"} or not source.is_file():
+        raise APIError(422, "invalid_tiff", "Экспорт доступен только для существующего TIFF.")
+    if verify_layers:
+        structure = inspect_tiff_structure(str(source))
+        if not structure.has_unflattened_layers:
+            raise APIError(422, "tiff_has_no_layers", "В TIFF не обнаружены несведённые слои.")
+    output = _layered_tiff_export_path(source)
+    preview = _layered_tiff_export_preview_path(source)
+    if not _is_inside(output.resolve(), input_root):
+        raise APIError(403, "output_not_allowed", "Место сохранения находится за пределами папки заказа.")
+    if not _is_inside(preview.resolve(), input_root):
+        raise APIError(403, "output_not_allowed", "Место сохранения превью находится за пределами папки заказа.")
+    magick = shutil.which("magick")
+    if not magick:
+        raise APIError(503, "imagemagick_missing", "ImageMagick (magick) не найден на сервере.")
+    command = (
+        magick,
+        "-define", "tiff:ignore-layers=true",
+        str(source),
+        "-compress", "none",
+    )
+    return run, order, source, output, (*command, str(output))
+
+
+def _generate_layered_tiff_export(
+    app: FastAPI, job_key: tuple[str, str, str], source: Path, output: Path, preview: Path,
+    command: tuple[str, ...],
+) -> None:
+    jobs = app.state.layered_tiff_export_jobs
+    temporary = output.with_name(f".{output.stem}.{uuid4().hex}.tmp.pdf")
+    temporary_preview = preview.with_name(f".{preview.stem}.{uuid4().hex}.tmp.png")
+    jobs[job_key] = {"status": "processing", "error": None, "command": list(command)}
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        run_command([*command[:-1], str(temporary)], check=True)
+        if not temporary.is_file() or temporary.stat().st_size == 0:
+            raise ValueError("ImageMagick не создал PDF или создал пустой файл.")
+        import pymupdf
+        with pymupdf.open(temporary) as document:
+            if document.page_count < 1:
+                raise ValueError("Созданный PDF не содержит страниц.")
+            page = document.load_page(0)
+            longest_side = max(float(page.rect.width), float(page.rect.height), 1.0)
+            scale = min(1800.0 / longest_side, 4.0)
+            preview.parent.mkdir(parents=True, exist_ok=True)
+            page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False).save(temporary_preview)
+        os.replace(temporary, output)
+        os.replace(temporary_preview, preview)
+        jobs[job_key] = {
+            "status": "completed", "error": None, "command": list(command),
+            **_layered_tiff_export_urls(*job_key),
+        }
+    except Exception as exc:
+        logger.exception("Layered TIFF export failed for %s", source.name)
+        jobs[job_key] = {
+            "status": "failed", "error": f"Не удалось создать тестовый PDF: {exc}",
+            "command": list(command),
+        }
+    finally:
+        temporary.unlink(missing_ok=True)
+        temporary_preview.unlink(missing_ok=True)
 
 
 def _custom_preview_storage_id(run: dict[str, Any], order: dict[str, Any]) -> str:
@@ -393,25 +505,28 @@ def _pitstop_adapter_factory(settings: Settings):
         )
     )
 
-    def factory(options: ProcessingOptions) -> BatchProcessorAdapter:
-        if options.direction not in configured_profiles:
+    def service_for(input_dir: Path, profile_id: str) -> PitStopService:
+        if profile_id not in configured_profiles:
             raise ValueError(
-                f"Для направления {options.direction!r} не настроен профиль PitStop."
+                f"Для направления {profile_id!r} не настроен профиль PitStop."
             )
-        input_dir = Path(options.input_path).resolve()
-        service = PitStopService(
+        resolved_input = Path(input_dir).resolve()
+        return PitStopService(
             settings=PitStopServiceSettings(
                 cli_path=PureWindowsPath(settings.pitstop_cli_path),
                 mac_shared_root=settings.pitstop_mac_shared_root.resolve(),
                 windows_shared_root=PureWindowsPath(
                     settings.pitstop_windows_shared_root
                 ),
-                report_root=input_dir / "output_report" / "pitstop",
+                report_root=resolved_input / "output_report" / "pitstop",
                 command_timeout_seconds=settings.pitstop_command_timeout_seconds,
             ),
             profiles=catalog,
             transport=transport,
         )
+
+    def factory(options: ProcessingOptions) -> BatchProcessorAdapter:
+        service = service_for(Path(options.input_path), options.direction)
         return BatchProcessorAdapter(
             options,
             pitstop_service=service,
@@ -425,6 +540,7 @@ def _pitstop_adapter_factory(settings: Settings):
             ),
         )
 
+    factory.pitstop_service_for = service_for
     return factory
 
 
@@ -460,11 +576,12 @@ def create_app(
     repository = repository or _default_repository(database)
     coordinator_options: dict[str, Any] = {"autostart": False}
     if adapter_factory is not None:
-        coordinator_options["adapter_factory"] = adapter_factory
+        processor_factory = adapter_factory
     elif settings.pitstop_enabled:
-        coordinator_options["adapter_factory"] = _pitstop_adapter_factory(settings)
+        processor_factory = _pitstop_adapter_factory(settings)
     else:
-        coordinator_options["adapter_factory"] = _default_adapter_factory(settings)
+        processor_factory = _default_adapter_factory(settings)
+    coordinator_options["adapter_factory"] = processor_factory
     coordinator = RunCoordinator(repository, **coordinator_options)
     auth_service = AuthService(settings)
     protected = require_session(settings, auth_service)
@@ -528,6 +645,9 @@ def create_app(
         coordinator,
         database.session_factory,
         lambda order_id, run_id: _find_order(coordinator, order_id, run_id),
+        reviewed_pdf_pitstop_service_factory=getattr(
+            processor_factory, "pitstop_service_for", None
+        ),
         prepress_sender=(
             build_sender(
                 settings.sborka_api_dir,
@@ -552,6 +672,7 @@ def create_app(
     application.state.log_path = log_path
     application.state.allowed_roots = allowed_roots or ALLOWED_ROOTS
     application.state.default_input_dir = default_input_dir or DEFAULT_INPUT_DIR
+    application.state.layered_tiff_export_jobs = {}
     install_error_handlers(application)
 
     @application.middleware("http")
@@ -960,6 +1081,89 @@ def create_app(
             "filename": target.name,
             "url": f"/api/checks/{run_id}/orders/{order_id}/return-preview",
         }
+
+    @application.get(
+        "/api/checks/{run_id}/orders/{order_id}/layered-tiff-export/{file_id}",
+        dependencies=[Depends(protected)],
+    )
+    def layered_tiff_export_status(
+        request: Request, run_id: str, order_id: str, file_id: str,
+    ) -> dict[str, Any]:
+        _run, _order, _source, output, _command = _layered_tiff_export_item(
+            _get_coordinator(request), run_id, order_id, file_id, _get_roots(request),
+            verify_layers=False,
+        )
+        key = (run_id, order_id, file_id)
+        result = dict(request.app.state.layered_tiff_export_jobs.get(key) or {})
+        preview = _layered_tiff_export_preview_path(_source)
+        if result.get("status") in {None, "not_started"} and output.is_file() and preview.is_file():
+            result.update({
+                "status": "completed",
+                **_layered_tiff_export_urls(run_id, order_id, file_id),
+            })
+        return result or {"status": "not_started"}
+
+    @application.post(
+        "/api/checks/{run_id}/orders/{order_id}/layered-tiff-export/{file_id}",
+        dependencies=[Depends(protected)],
+    )
+    def start_layered_tiff_export(
+        request: Request, background_tasks: BackgroundTasks,
+        run_id: str, order_id: str, file_id: str,
+    ) -> dict[str, Any]:
+        _run, _order, source, output, command = _layered_tiff_export_item(
+            _get_coordinator(request), run_id, order_id, file_id, _get_roots(request)
+        )
+        key = (run_id, order_id, file_id)
+        current = request.app.state.layered_tiff_export_jobs.get(key) or {}
+        if current.get("status") == "processing":
+            return current
+        request.app.state.layered_tiff_export_jobs[key] = {
+            "status": "processing", "error": None, "command": list(command)
+        }
+        background_tasks.add_task(
+            _generate_layered_tiff_export, request.app, key, source, output,
+            _layered_tiff_export_preview_path(source), command,
+        )
+        return dict(request.app.state.layered_tiff_export_jobs[key])
+
+    @application.get(
+        "/api/checks/{run_id}/orders/{order_id}/layered-tiff-export/{file_id}/artifact",
+        dependencies=[Depends(protected)],
+    )
+    def layered_tiff_export_artifact(
+        request: Request, run_id: str, order_id: str, file_id: str,
+    ) -> FileResponse:
+        run, _order, _source, output, _command = _layered_tiff_export_item(
+            _get_coordinator(request), run_id, order_id, file_id, _get_roots(request),
+            verify_layers=False,
+        )
+        return FileResponse(
+            _safe_result_path(run, str(output)),
+            media_type="application/pdf",
+            filename=output.name,
+            content_disposition_type="inline",
+        )
+
+    @application.get(
+        "/api/checks/{run_id}/orders/{order_id}/layered-tiff-export/{file_id}/preview",
+        dependencies=[Depends(protected)],
+    )
+    def layered_tiff_export_preview(
+        request: Request, run_id: str, order_id: str, file_id: str,
+    ) -> FileResponse:
+        run, _order, source, _output, _command = _layered_tiff_export_item(
+            _get_coordinator(request), run_id, order_id, file_id, _get_roots(request),
+            verify_layers=False,
+        )
+        preview = _layered_tiff_export_preview_path(source)
+        if not _is_inside(preview.resolve(), Path(run["options"]["input_path"]).resolve()):
+            raise APIError(403, "output_not_allowed", "Превью находится за пределами папки заказа.")
+        return FileResponse(
+            _safe_result_path(run, str(preview)),
+            media_type="image/png",
+            headers={"Cache-Control": "private, no-cache, must-revalidate"},
+        )
 
     @application.get(
         "/api/orders/{order_id}/pdf", dependencies=[Depends(protected)]

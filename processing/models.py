@@ -31,6 +31,7 @@ class FileCheck:
     has_unflattened_layers: Optional[bool] = None
     channels: Optional[str] = None
     tiff_page_count: Optional[int] = None
+    tiff_layer_count: Optional[int] = None
     size_mb: float = 0.0
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
