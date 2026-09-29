@@ -112,3 +112,24 @@ class ReturnPreviewCollageTests(unittest.TestCase):
                 face_preview_path=self.face,
                 back_preview_path=self.processed_path / "missing-back_preview.png",
             )
+
+    def test_uses_layered_composite_previews_when_batch_previews_are_missing(self) -> None:
+        preview_dir = self.input_path / "Previews"
+        face_layered = preview_dir / "art-face_layered-composite.png"
+        back_layered = preview_dir / "art-back_layered-composite.png"
+        magick = shutil.which("magick")
+        assert magick
+        subprocess.run([magick, "-size", "300x200", "xc:red", str(face_layered)], check=True)
+        subprocess.run([magick, "-size", "300x200", "xc:blue", str(back_layered)], check=True)
+
+        result = prepare_return_preview_name(
+            "25625544",
+            input_path=self.input_path,
+            files=[
+                {"path": "/input/art-face.tif", "parsed": {"side": "face"}, "has_unflattened_layers": True},
+                {"path": "/input/art-back.tif", "parsed": {"side": "back"}, "has_unflattened_layers": True},
+            ],
+        )
+
+        self.assertEqual(result, "25625544_return-preview.png")
+        self.assertTrue((self.input_path / RETURN_PREVIEWS_RELATIVE_PATH / result).is_file())

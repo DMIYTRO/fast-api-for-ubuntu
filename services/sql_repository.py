@@ -1025,16 +1025,26 @@ class SqlRunRepository:
                 if field_name in pitstop_fields:
                     order[field_name] = getattr(order_record, field_name)
             if order_record.actions:
-                order["actions"] = [
-                    {
+                action_values = []
+                for action in sorted(order_record.actions, key=lambda item: item.id):
+                    action_value = {
                         "id": action.id,
                         "action": action.action,
                         "comment": action.comment,
                         "status": action.status,
                         "created_at": _iso(action.created_at),
                     }
-                    for action in sorted(order_record.actions, key=lambda item: item.id)
-                ]
+                    if action.cms_response_json:
+                        try:
+                            response_data = json.loads(action.cms_response_json)
+                        except (TypeError, ValueError):
+                            response_data = None
+                        if isinstance(response_data, dict) and isinstance(
+                            response_data.get("pitstop"), dict
+                        ):
+                            action_value["pitstop"] = response_data["pitstop"]
+                    action_values.append(action_value)
+                order["actions"] = action_values
             order.setdefault("preview_paths", preview_paths)
             storage_key = order.pop("__storage_key__", None)
             run["orders"][storage_key or order_record.order_id] = order

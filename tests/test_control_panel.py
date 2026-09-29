@@ -697,6 +697,35 @@ class ControlPanelTests(unittest.TestCase):
                 [],
             )
 
+    def test_rework_history_uses_the_uploaded_return_preview(self):
+        self.adapter_type = OneOrderAdapter
+        self.login()
+        response = self.client.post(
+            "/api/checks",
+            json={
+                "input_path": str(self.root), "direction": "digital",
+                "create_pdfs": True, "generate_previews": True,
+                "copy_failures": False,
+            },
+        )
+        run_id = response.json()["id"]
+        self.client.app.state.coordinator.wait_for(run_id, timeout=2)
+
+        return_preview = self.root / "Previews" / "Return" / "1001_return-preview.png"
+        return_preview.parent.mkdir(parents=True)
+        return_preview.write_bytes(b"uploaded-return-preview")
+        with self.client.app.state.database.session_factory() as session:
+            order = session.scalar(select(OrderResult).where(OrderResult.run_id == run_id))
+            self.assertIsNotNone(order)
+            session.add(OrderAction(order_result_id=order.id, action="reject", status="prepared"))
+            session.commit()
+
+        history = self.client.get("/api/order-history", params={"action": "reject"})
+        self.assertEqual(history.status_code, 200)
+        preview = history.json()["items"][0]["previews"][0]
+        self.assertEqual(preview["side"], "return")
+        self.assertEqual(self.client.get(preview["url"]).content, b"uploaded-return-preview")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -144,6 +144,29 @@ class SqlRunRepositoryTests(unittest.TestCase):
             self.assertEqual(file_record.source_path, "/orders/input/order-face.jpg")
             self.assertEqual(file_record.status, "waiting_confirmation")
 
+    def test_failed_action_preserves_reviewed_pdf_pitstop_details(self):
+        self.repository.create_run(sample_run())
+        pitstop = {
+            "verdict": "error",
+            "execution_status": "completed",
+            "counts": {"errors": 1, "warnings": 0},
+            "issues": [{"severity": "error", "message": "Проверка тестовой сборки"}],
+        }
+        with self.database.session_factory() as session, session.begin():
+            order = session.scalar(select(OrderResult))
+            session.add(
+                OrderAction(
+                    order_result_id=order.id,
+                    action="print",
+                    status="failed",
+                    cms_response_json=json.dumps({"pitstop": pitstop}),
+                )
+            )
+
+        order = self.repository.get_run("run-1")["orders"]["25506185"]
+
+        self.assertEqual(order["actions"][0]["pitstop"], pitstop)
+
     def test_round_trip_preserves_postpress_metadata(self):
         run = sample_run()
         run["orders"]["25506185"]["postpress"] = {

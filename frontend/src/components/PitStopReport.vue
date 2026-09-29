@@ -1,7 +1,10 @@
 <script setup>
 import { computed, ref } from "vue";
 
-const props = defineProps({ pitstop: { type: Object, required: true } });
+const props = defineProps({
+  pitstop: { type: Object, required: true },
+  sectionTitle: { type: String, default: "Проверка PDF" },
+});
 const expanded = ref(false);
 const counts = computed(() => props.pitstop.counts || {});
 const issues = computed(() => props.pitstop.issues || []);
@@ -46,7 +49,7 @@ const issuePage = (issue) => typeof issue === "object" && issue ? (issue.page ??
   <section class="pitstop-report" :class="`pitstop-${tone}`" :aria-label="title">
     <header class="pitstop-head">
       <div>
-        <p class="section-title">Проверка финального PDF</p>
+        <p class="section-title">{{ sectionTitle }}</p>
         <strong>{{ title }}</strong>
       </div>
       <span class="pitstop-mark" aria-hidden="true">{{ pending ? "…" : (technicalFailure || pdfError ? "!" : "✓") }}</span>

@@ -163,6 +163,7 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
                 "order_id": order_id,
                 "status": latest.get("status"),
                 "action": latest.get("action"),
+                **({"pitstop": latest["pitstop"]} if latest.get("pitstop") else {}),
             }
         if order.get("pdf_path"):
             order["pdf_url"] = f"/api/orders/{order_ref}/pdf?run_id={run_id}"
@@ -357,6 +358,20 @@ def _safe_history_preview_path(root_path: str, raw_path: str | None) -> Path | N
     if not _is_inside(target, root) or not target.is_file():
         return None
     return target
+
+
+def _safe_rework_history_preview_path(root_path: str, order_id: str) -> Path | None:
+    """Find the exact local preview selected for rework, confined to its run."""
+    if not order_id or Path(order_id).name != order_id:
+        return None
+    root = Path(root_path)
+    custom = custom_return_preview_path(order_id, input_path=root)
+    if custom is not None:
+        return _safe_history_preview_path(root_path, str(custom))
+    return _safe_history_preview_path(
+        root_path,
+        str(root / "Previews" / "Return" / f"{order_id}_return-preview.png"),
+    )
 
 
 def _find_order(
@@ -1293,19 +1308,36 @@ def create_app(
             for item in actions:
                 order = item.order_result
                 previews = []
-                for index, file in enumerate(order.files):
-                    source = _safe_history_preview_path(
-                        order.run.input_path, file.preview_path
+                rework_preview = (
+                    _safe_rework_history_preview_path(
+                        order.run.input_path, order.order_id
                     )
-                    if source is None:
-                        continue
+                    if item.action == "reject"
+                    else None
+                )
+                if rework_preview is not None:
+                    index = len(order.files)
                     preview_url = f"/api/order-history/{item.id}/previews/{index}"
                     previews.append(
                         {
-                            "side": file.side,
+                            "side": "return",
                             "url": preview_url,
                         }
                     )
+                else:
+                    for index, file in enumerate(order.files):
+                        source = _safe_history_preview_path(
+                            order.run.input_path, file.preview_path
+                        )
+                        if source is None:
+                            continue
+                        preview_url = f"/api/order-history/{item.id}/previews/{index}"
+                        previews.append(
+                            {
+                                "side": file.side,
+                                "url": preview_url,
+                            }
+                        )
                 items.append(
                     {
                         "id": item.id,
@@ -1338,6 +1370,13 @@ def create_app(
             if action is None:
                 raise APIError(404, "history_not_found", "Запись истории не найдена.")
             files = list(action.order_result.files)
+            if file_index == len(files) and action.action == "reject":
+                target = _safe_rework_history_preview_path(
+                    action.order_result.run.input_path,
+                    action.order_result.order_id,
+                )
+                if target is not None:
+                    return FileResponse(target)
             if file_index < 0 or file_index >= len(files):
                 raise APIError(404, "preview_not_found", "Превью не найдено.")
             target = _safe_history_preview_path(

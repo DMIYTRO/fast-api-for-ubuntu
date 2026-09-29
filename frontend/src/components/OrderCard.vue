@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { api } from "../services/api.js";
 import PreviewViewer from "./PreviewViewer.vue";
 import FileParameters from "./FileParameters.vue";
@@ -138,6 +138,19 @@ function pollLayeredTiffExport(file) {
     }
   }, 900));
 }
+async function refreshLayeredTiffExport(file) {
+  if (!file?.layered_tiff_export_url) return;
+  try {
+    const result = withLayeredTiffPreview(
+      file,
+      await api.layeredTiffPreview(file.layered_tiff_export_url),
+    );
+    layeredTiffExports.value[file.id] = result;
+    if (result.status === "processing") pollLayeredTiffExport(file);
+  } catch (error) {
+    layeredTiffExports.value[file.id] = { status: "failed", error: error.message };
+  }
+}
 async function retryLayeredTiffPreview(file) {
   if (!file.layered_tiff_export_url || layeredTiffExports.value[file.id]?.status === "processing") return;
   layeredTiffExports.value[file.id] = { status: "processing" };
@@ -151,6 +164,19 @@ async function retryLayeredTiffPreview(file) {
     layeredTiffExports.value[file.id] = { status: "failed", error: error.message || "Не удалось создать PDF из TIFF." };
   }
 }
+watch(
+  () => (props.order.action_result?.generated_layered_file_ids || []).join("|"),
+  (generatedIds) => {
+    if (!generatedIds) return;
+    const ids = new Set(generatedIds.split("|"));
+    (props.order.files || props.order.file_results || [])
+      .filter((file) => [file.id, file.file_result_id, file.filename, file.name]
+        .filter(Boolean)
+        .some((identity) => ids.has(String(identity))))
+      .forEach(refreshLayeredTiffExport);
+  },
+  { immediate: true },
+);
 onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
 </script>
 
@@ -234,7 +260,8 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
           </ul>
         </div>
         <div v-if="successful && !allErrors.length && !fileErrors.length && !allWarnings.length && !fileWarnings.length" class="issue-list success-note"><strong>Заказ соответствует требованиям допечатной подготовки.</strong></div>
-        <PitStopReport v-if="order.pitstop" :pitstop="order.pitstop" />
+        <PitStopReport v-if="order.pitstop" :pitstop="order.pitstop" section-title="Проверка PDF из первоначальной обработки" />
+        <PitStopReport v-if="order.action_result?.pitstop" :pitstop="order.action_result.pitstop" section-title="Повторная проверка печатного PDF из просмотренных TIFF" />
         <CorrectionDecision :order="order" :busy="busy" @decide="decide" />
         <p v-if="order.action_result" class="action-result" :class="`status-${order.action_result.status}`">Действие: {{ order.action_result.status === "prepared" ? "подготовлено" : (order.action_result.message || order.action_result.status) }}</p>
       </section>

@@ -23,7 +23,10 @@ from .coordinator import RunCoordinator
 from .domain import validate_operator_transition
 from .file_lifecycle import FileConflictError, FileLifecycle, FileLifecycleError
 from .return_preview import custom_return_preview_path, prepare_return_preview_name
-from .layered_tiff_print import build_reviewed_layered_print_pdf
+from .layered_tiff_print import (
+    ReviewedLayeredPdfError,
+    build_reviewed_layered_print_pdf,
+)
 from core.pdf_inspector import inspect_pdf
 
 
@@ -525,9 +528,30 @@ class OrderWorkflowService:
                                         checked_revision=reviewed_revision,
                                     )
                                     if not pitstop_result.passed:
-                                        reason = pitstop_result.technical_error or (
-                                            "PDF содержит ошибки по результатам PitStop."
-                                        )
+                                        # Local report paths are not browser URLs.
+                                        reviewed_pitstop["reports"] = {}
+                                        counts = reviewed_pitstop.get("counts") or {}
+                                        error_count = int(counts.get("errors") or 0)
+                                        warning_count = int(counts.get("warnings") or 0)
+                                        if pitstop_result.technical_error:
+                                            reason = pitstop_result.technical_error
+                                        elif error_count:
+                                            reason = (
+                                                f"PitStop: ошибок {error_count}, "
+                                                f"предупреждений {warning_count}."
+                                            )
+                                            issue_messages = [
+                                                str(issue.get("message") or "")
+                                                for issue in reviewed_pitstop.get("issues", [])
+                                                if issue.get("severity") == "error"
+                                                and issue.get("message")
+                                            ][:3]
+                                            if issue_messages:
+                                                reason += " Причины: " + "; ".join(issue_messages)
+                                        else:
+                                            reason = (
+                                                "PitStop не завершил проверку итогового PDF."
+                                            )
                                         raise FileLifecycleError(
                                             f"Итоговый PDF из просмотренных TIFF не отправлен в печать: {reason}"
                                         )
@@ -546,8 +570,30 @@ class OrderWorkflowService:
                             transition_order,
                             command.conflict_strategy,
                         )
+                    except ReviewedLayeredPdfError as exc:
+                        action_record.status = "failed"
+                        session.commit()
+                        add_result(
+                            {
+                                "order_id": order_id,
+                                "status": "review_required"
+                                if exc.generated_file_ids
+                                else "error",
+                                "message": str(exc),
+                                **(
+                                    {"generated_layered_file_ids": exc.generated_file_ids}
+                                    if exc.generated_file_ids
+                                    else {}
+                                ),
+                            }
+                        )
+                        continue
                     except FileLifecycleError as exc:
                         action_record.status = "failed"
+                        if reviewed_pitstop is not None:
+                            action_record.cms_response_json = json.dumps(
+                                {"pitstop": reviewed_pitstop}, ensure_ascii=False
+                            )
                         session.commit()
                         conflict = None
                         if isinstance(exc, FileConflictError):
@@ -566,6 +612,11 @@ class OrderWorkflowService:
                                 else "error",
                                 "message": str(exc),
                                 **({"conflict": conflict} if conflict else {}),
+                                **(
+                                    {"pitstop": reviewed_pitstop}
+                                    if reviewed_pitstop is not None
+                                    else {}
+                                ),
                             }
                         )
                         continue

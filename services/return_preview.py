@@ -156,16 +156,24 @@ def prepare_return_preview_name(
 
     normalized_files = list(files or [])
     sides: dict[str, str] = {}
+    generated_preview_dir = input_path / "Previews"
     for item in normalized_files:
         parsed = item.get("parsed") or {}
-        side = str(parsed.get("side") or "").lower()
+        side = str(parsed.get("side") or item.get("side") or "").lower()
         source_path = item.get("path")
         if side in {"face", "back"} and source_path:
-            expected_name = f"{Path(str(source_path)).stem}_preview.png"
+            source_stem = Path(str(source_path)).stem
+            expected_name = f"{source_stem}_preview.png"
             sides[side] = expected_name
             processed_path = preview_dir / expected_name
             if processed_path.is_file():
                 candidates[expected_name] = processed_path
+            # Layered TIFF orders already have a rendered composite preview
+            # alongside their experimental PDF. Use that image for a rework
+            # request if the ordinary batch preview has gone missing.
+            layered_preview = generated_preview_dir / f"{source_stem}_layered-composite.png"
+            if item.get("has_unflattened_layers") and layered_preview.is_file():
+                candidates[expected_name] = layered_preview
 
     if preview_dir.is_dir():
         order_marker = f"-{str(order_id).strip()})"
@@ -207,6 +215,11 @@ def prepare_return_preview_name(
     if len(candidates) == 1:
         return next(iter(candidates))
     if not candidates:
+        # Some legacy/one-sided actions are allowed to return without an
+        # attached preview. Keep that behavior when no face/back sides were
+        # identified; a two-sided order still fails clearly above.
+        if not sides:
+            return ""
         raise ReturnPreviewNotFoundError(
             f"Не найдено сформированное превью для заказа №{order_id} в {preview_dir}"
         )
