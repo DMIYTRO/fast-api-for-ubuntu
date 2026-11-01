@@ -39,6 +39,16 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.pitstop_command_timeout_seconds, 75)
         self.assertEqual(settings.pitstop_profiles[0][0], "digital")
 
+    def test_pitstop_shared_roots_default_to_current_linux_smb_mapping(self):
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings.from_env()
+
+        self.assertEqual(str(settings.pitstop_mac_shared_root), "/mnt/shared")
+        self.assertEqual(
+            settings.pitstop_windows_shared_root,
+            "//192.168.88.100/shared",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

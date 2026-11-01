@@ -25,7 +25,7 @@ from .models import FileCheck, OrderCheck
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".pdf"}
 REJECTED_EXTENSIONS = {".psd", ".bmp", ".heic", ".heif"}
 # PDF point / pixel arithmetic can undershoot an exact boundary by several
-# millionths (e.g. 299.9999957 for a nominal 300 DPI image).
+# millionths (e.g. 249.9999957 for a nominal 250 DPI image).
 DPI_EPSILON = 0.01
 
 
@@ -587,12 +587,12 @@ class BatchProcessor:
                     str(resampled_path),
                     target_width_mm=item.resample_target_mm[0],
                     target_height_mm=item.resample_target_mm[1],
-                    target_dpi=self.min_dpi,
+                    target_dpi=self.profile.target_dpi,
                     rotation_degrees=item.rotation_degrees,
                     ignore_tiff_layers=item.tiff_layer_count == 1,
                 )
                 source_image_path = str(resampled_path)
-                dpi_arg = str(self.min_dpi)
+                dpi_arg = str(self.profile.target_dpi)
 
             page_path = temporary_dir / f"{page_number}_{ref.expected_side}.pdf"
             convert_image_to_pdf(

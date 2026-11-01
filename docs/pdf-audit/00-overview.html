@@ -1,0 +1,199 @@
+<title>Image Magic: PDF-аудит</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: одна колонка технического паспорта, серьёзность показана метками */
+:root{--bg:#f5f7f8;--surface:#fff;--fg:#17242b;--muted:#566872;--line:#d3dde2;--accent:#00708a;--crit:#b3261e;--high:#a85b00;--mid:#51658a;--body:"IBM Plex Sans",system-ui,sans-serif;--mono:"IBM Plex Mono",ui-monospace,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#10181c;--surface:#182328;--fg:#e4edf0;--muted:#9db0b9;--line:#30414a;--accent:#54c3dc;--crit:#ff8b82;--high:#f0b35f;--mid:#a9bbdc;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#10181c;--surface:#182328;--fg:#e4edf0;--muted:#9db0b9;--line:#30414a;--accent:#54c3dc;--crit:#ff8b82;--high:#f0b35f;--mid:#a9bbdc;color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font:16px/1.6 var(--body);padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:32px}
+main{max-width:920px;margin:auto;display:grid;gap:36px}
+main>*{min-width:0}
+h1{font-size:2.1rem;line-height:1.2;margin:0 0 8px;text-wrap:balance}
+h2{font-size:1.4rem;margin:0 0 12px;text-wrap:balance}
+h3{font-size:1.05rem;margin:20px 0 6px}
+p{margin:0 0 10px;max-width:70ch}
+ul,ol{margin:0;padding-left:22px}
+li{margin-bottom:6px}
+code{font:.88em var(--mono);overflow-wrap:anywhere}
+.lead{color:var(--muted)}
+.alert{border:2px solid var(--crit);background:var(--surface);padding:14px 16px}
+.scroll{overflow-x:auto;background:var(--surface);border:1px solid var(--line)}
+table{border-collapse:collapse;width:100%;min-width:640px}
+th,td{text-align:left;vertical-align:top;padding:9px 12px;border-bottom:1px solid var(--line)}
+th{font-size:.82rem;color:var(--muted);font-weight:600}
+.s{font:600 .75rem var(--mono);white-space:nowrap}
+.crit{color:var(--crit)}.high{color:var(--high)}.mid{color:var(--mid)}
+pre.mermaid{margin:0;padding:14px;min-width:640px}
+a{color:var(--accent)}
+</style>
+<main>
+<header>
+<h1>Image Magic: PDF-аудит и переход на callas</h1>
+<p class="lead">Обзор работы сервера и этапов PDF. Основа: шесть отчётов в <code>docs/pdf-audit/</code>, снимок на 1 ноября 2026 года. Код не менялся.</p>
+</header>
+
+<section class="alert">
+<h2>Сначала сделать это</h2>
+<p>Пароль SSH/sudo от production лежит открытым текстом в <code>deploy.py:15</code>, и файл опубликован в публичном <code>DMIYTRO/fast-api-for-ubuntu</code>. Смените пароль: удаление из git его уже не защитит.</p>
+<p>Запасной Argon2-хеш тестового пароля находится в <code>server/settings.py</code>. Переменная <code>IMAGE_MAGIC_PASSWORD_HASH</code> в настройках службы не найдена, поэтому production, вероятно, использует его. Это предположение, его нужно проверить.</p>
+<p>Этот каталог и есть production на 10.20.2.104. <code>pytest</code> здесь импортирует <code>control_panel</code> с рабочей БД, поэтому полный прогон тестов на этом хосте опасен.</p>
+</section>
+
+<section>
+<h2>Главные выводы</h2>
+<ul>
+<li><strong>Callas не заменит всё.</strong> Он заменит растр в PDF, слияние, рендер PDF и preflight. Ресэмплинг, рамки, превью исходников и лист возврата остаются на ImageMagick, PyMuPDF остаётся независимым контролем.</li>
+<li><strong>Самые опасные дефекты не в PDF.</strong> Они в координаторе и перемещении файлов, и callas их не исправит. Их нужно закрыть до подключения.</li>
+<li><strong>TIFF как результат превью в коде не создаётся.</strong> Сейчас путь такой: PDF, затем PNG через Ghostscript на 150 DPI. TIFF бывает только на входе.</li>
+<li><strong>Без PitStop оператор видит превью исходников, а не печатаемого PDF.</strong> PitStop по умолчанию выключен.</li>
+<li><strong>Лицензия callas может быть недействительной.</strong> По гиду тестовая истекала 16 сентября 2026 года. Текущий статус не проверялся.</li>
+</ul>
+</section>
+
+<section>
+<h2>Как заказ проходит систему сейчас</h2>
+<div class="scroll"><pre class="mermaid">
+flowchart TD
+  A[Папка с макетами] --> B[Разбор имён и группировка face/back]
+  B --> C[Инспекция ImageMagick или pdf_inspector]
+  C --> D{resample_policy}
+  D -->|отклонить| T[Troubles]
+  D -->|спросить| W[Ожидание подтверждения]
+  W --> E
+  D -->|принять или исправить| E[Коррекция ImageMagick]
+  E --> F[Страницы PDF: magick]
+  F --> G[Слияние PyMuPDF insert_pdf]
+  G --> H[Контрольный рендер Ghostscript]
+  H --> I[Публикация replace в PDF/]
+  I --> J{PitStop включён?}
+  J -->|да| K[Preflight SSH + SMB]
+  K --> L[PNG из PDF: gs 150 DPI]
+  J -->|нет| M[PNG из исходников]
+  L --> N[Рамки ImageMagick и кэш]
+  M --> N
+  N --> O{Решение оператора}
+  O -->|в печать| P[PDF/Print и Processed]
+  O -->|на доработку| Q[Лист возврата и FTP]
+  P --> R[Sborka]
+  Q --> R
+</pre></div>
+</section>
+
+<section>
+<h2>Целевая схема с callas</h2>
+<p>Рекомендация: тонкая HTTP-служба заданий на отдельном Linux-сервере запускает CLI, файлы идут через CIFS-шару. SSH отклонён: нет постоянного ID задания и надёжной отмены. Hotfolder отклонён из-за слабой диагностики и связи результата только по именам. Режим <code>--server</code> можно поставить внутрь службы позже, если подтвердится его поведение.</p>
+<div class="scroll"><pre class="mermaid">
+flowchart LR
+  subgraph APP[Сервер приложения]
+    C[RunCoordinator] --> AD[ProcessorAdapter без изменений]
+    AD --> PE[Порты PdfEngine и PreflightEngine]
+    PE --> V[Сверка SHA, PyMuPDF, публикация replace]
+  end
+  subgraph CAL[Сервер callas]
+    S[HTTP-служба заданий] --> L[Локальный диск]
+    L --> CLI[pdfToolbox CLI]
+  end
+  PE -->|job_id, срок, отмена| S
+  SH[(CIFS-шара: исходники только чтение)] --> L
+  CLI --> OUT[(.callas/job_id/)]
+  OUT --> V
+</pre></div>
+<ul>
+<li><code>job_id</code> складывается из хеша операции, SHA входов, параметров, хеша профиля и версии движка, поэтому поздний результат отсекается.</li>
+<li>У callas коды 1–8 означают находки, 100 и выше означают сбой. Коды 9–99 не документированы и считаются сбоем до уточнения.</li>
+<li>Сбой preflight никогда не даёт <code>passed</code>. Нужно добавить настоящую повторную проверку, сейчас её нет.</li>
+<li>Для сборки и проверки автоматического отката на локальный движок нет.</li>
+</ul>
+</section>
+
+<section>
+<h2>Что на что меняется</h2>
+<div class="scroll"><table>
+<tr><th>Этап</th><th>Сейчас</th><th>После перехода</th><th>Что подтвердить</th></tr>
+<tr><td>Растр в PDF</td><td>ImageMagick</td><td>callas</td><td><code>--topdf</code> по <code>--help</code>; боксы, Output Intent, 16 бит</td></tr>
+<tr><td>Слияние</td><td>PyMuPDF</td><td>callas</td><td>Режим слияния. PyMuPDF теряет OutputIntents, OCProperties и XMP</td></tr>
+<tr><td>Рендер PDF</td><td>Ghostscript в PNG</td><td>callas</td><td><code>--saveasimg</code>, фактический DPI, нужен ли TIFF</td></tr>
+<tr><td>Проверка</td><td>PitStop <code>.ppp</code></td><td>callas <code>.kfpx</code></td><td>Перевод профилей вручную; это основная работа</td></tr>
+<tr><td>Ресэмплинг, рамки, лист возврата</td><td>ImageMagick</td><td>Без изменений</td><td>Нет</td></tr>
+<tr><td>Статусы, файлы, Sborka</td><td>Приложение</td><td>Без изменений</td><td>Нет</td></tr>
+</table></div>
+</section>
+
+<section>
+<h2>Что ломает работу</h2>
+<p><span class="s crit">КРИТИЧНО</span> ломает данные или допускает брак. <span class="s high">ВЫСОКО</span> останавливает работу или вводит оператора в заблуждение. <span class="s mid">СРЕДНЕ</span> повышает риск.</p>
+<h3>Сервер и очередь</h3>
+<div class="scroll"><table>
+<tr><th>Уровень</th><th>Проблема</th><th>Где</th><th>Проверка</th></tr>
+<tr><td class="s crit">КРИТИЧНО</td><td>Поздний результат отменяет таймаут: <code>error</code> становится <code>passed</code>, заказ годен к печати</td><td><code>coordinator.py:788,811</code></td><td>Воспроизведено</td></tr>
+<tr><td class="s crit">КРИТИЧНО</td><td>Две быстрые подтверждённые коррекции навсегда блокируют очередь</td><td><code>coordinator.py:895-924</code></td><td>Воспроизведено</td></tr>
+<tr><td class="s high">ВЫСОКО</td><td>Ошибка БД убивает рабочий поток, а сервис выглядит живым</td><td><code>coordinator.py:576</code></td><td>Воспроизведено</td></tr>
+<tr><td class="s high">ВЫСОКО</td><td>Таймаут идёт от постановки в пул: заказы падают, не начав работу</td><td><code>coordinator.py:719</code></td><td>Воспроизведено</td></tr>
+<tr><td class="s high">ВЫСОКО</td><td>Отмена не останавливает потоки, новый запуск может пойти по той же папке</td><td><code>coordinator.py</code></td><td>Воспроизведено</td></tr>
+<tr><td class="s high">ВЫСОКО</td><td>Очереди живут в памяти. После рестартов 98 заказов застряли в ожидании подтверждения</td><td><code>sql_repository.py:497-588</code></td><td>БД и логи</td></tr>
+<tr><td class="s mid">СРЕДНЕ</td><td>БД и lock в event loop; зависший CIFS может остановить весь API</td><td><code>control_panel.py:606,941,952</code></td><td>По коду</td></tr>
+</table></div>
+<h3>Файлы и печать</h3>
+<div class="scroll"><table>
+<tr><th>Уровень</th><th>Проблема</th><th>Где</th><th>Проверка</th></tr>
+<tr><td class="s crit">КРИТИЧНО</td><td>Стратегия <code>replace</code> удаляет цель при планировании, откат её не вернёт. При гонке исходник удаляется без сравнения</td><td><code>file_lifecycle.py:186,207</code></td><td>По коду</td></tr>
+<tr><td class="s crit">КРИТИЧНО</td><td>Пакетная отправка в Sborka идёт до проверок статуса, PitStop и файлов; откатить её нельзя</td><td><code>order_workflow.py:295</code></td><td>По коду</td></tr>
+<tr><td class="s crit">КРИТИЧНО</td><td>«Просмотрено» означает только наличие экспорта; непроверенный layered TIFF может уйти в печать</td><td><code>layered_tiff_print.py:113</code></td><td>По коду</td></tr>
+<tr><td class="s high">ВЫСОКО</td><td>Принудительная печать заказа с ошибкой всегда откатывается, поэтому после сбоя PitStop нет выхода</td><td><code>coordinator.py:385</code></td><td>По коду</td></tr>
+<tr><td class="s high">ВЫСОКО</td><td>Таймаут Sborka откатывает файлы при неизвестном исходе; повтор может отправить заказ дважды</td><td><code>order_workflow.py:689-706</code></td><td>По коду</td></tr>
+<tr><td class="s high">ВЫСОКО</td><td>Рестарт посреди перемещения оставляет заказ разобранным: манифеста нет</td><td><code>sql_repository.py:503</code></td><td>По коду</td></tr>
+<tr><td class="s high">ВЫСОКО</td><td>Перед печатью сверяется номер ревизии, но не SHA файла</td><td><code>order_workflow.py:325</code></td><td>По коду</td></tr>
+</table></div>
+<h3>Генерация, превью и проверка</h3>
+<div class="scroll"><table>
+<tr><th>Уровень</th><th>Проблема</th><th>Где</th><th>Проверка</th></tr>
+<tr><td class="s crit">КРИТИЧНО</td><td>Разный DPI по осям молча портит макет: растяжение 20 %, срез около 22 мм, контроль пройден</td><td><code>resampler.py:72</code></td><td>Опыт</td></tr>
+<tr><td class="s crit">КРИТИЧНО</td><td>Пустой отчёт PitStop даёт <code>passed</code></td><td><code>pitstop/parser.py:136</code></td><td>Проба</td></tr>
+<tr><td class="s high">ВЫСОКО</td><td>PDF с <code>/Rotate 90</code> ложно падает на контроле</td><td><code>pdf_inspector.py:131</code></td><td>Опыт</td></tr>
+<tr><td class="s high">ВЫСОКО</td><td>Многокадровый TIFF ломает превью, и это затем блокирует приём в печать</td><td><code>preview_generator.py:177</code></td><td>Опыт</td></tr>
+<tr><td class="s high">ВЫСОКО</td><td>Рамки считаются от растра, TrimBox и CropBox игнорируются; цветопробы нет</td><td><code>batch_processor.py:756</code></td><td>Опыт</td></tr>
+<tr><td class="s high">ВЫСОКО</td><td>Блокировка PitStop живёт в экземпляре, поэтому параллельные запуски идут одновременно</td><td><code>pitstop/service.py:54</code></td><td>По коду</td></tr>
+<tr><td class="s mid">СРЕДНЕ</td><td>Ошибка инструмента показывается на английском с путями, stderr не сохраняется</td><td><code>pdf_exporter.py:37</code></td><td>Опыт</td></tr>
+<tr><td class="s mid">СРЕДНЕ</td><td>Кэш превью без инвалидации, а защита от отвала шары всегда возвращает True</td><td><code>preview_cache.py:14-66</code></td><td>Проверено</td></tr>
+</table></div>
+</section>
+
+<section>
+<h2>Порядок работ</h2>
+<ol>
+<li><strong>Безопасность.</strong> Сменить пароль, убрать секреты и файлы заказов из git, проверить репозитории, закрыть порт 8000 снаружи.</li>
+<li><strong>Защита данных.</strong> Настроить резервные копии SQLite, порог по диску и отдельную среду для тестов.</li>
+<li><strong>Координатор.</strong> Исправить таймауты, поздний результат, блокировку подтверждений, живучесть потока и блокировку папки.</li>
+<li><strong>Файлы.</strong> Добавить манифест перемещений, безопасный <code>replace</code>, сверку SHA и проверки до Sborka.</li>
+<li><strong>Логика проверки.</strong> Исправить расчёт DPI, <code>/Rotate</code>, парсер отчётов и добавить настоящую повторную проверку.</li>
+<li><strong>Callas, этапы 0–7.</strong> Основания, ручной стенд, профили, порты, тень preflight, тень сборки и рендера, переключение по одной операции, вывод старого кода. Сначала digital, потом offset.</li>
+</ol>
+<p>Каждый этап callas откатывается настройкой. PitStop остаётся финальным допуском на время теневого сравнения. Ветку <code>codex/callas-pdf</code> как есть не вливать: она позади <code>main</code> и меняет файл после контроля.</p>
+</section>
+
+<section>
+<h2>Нужны ваши решения</h2>
+<ol>
+<li>Подтвердите, что «Canvas PDF Toolbox» это callas pdfToolbox. Какая лицензия: CLI или Server, с каким лимитом параллельности?</li>
+<li>Нужен ли TIFF как результат превью, или достаточно PNG?</li>
+<li>Роль превью: только компоновка или ещё и цветовое решение?</li>
+<li>Callas только проверяет или также исправляет файлы (Fixup)?</li>
+<li>Что должно сохраняться в итоговом PDF: боксы, Output Intent, PDF/X, слои?</li>
+<li>Что делать при недоступности callas: остановить обработку или держать резервный путь?</li>
+<li>Кто забирает файлы из <code>PDF/Print/</code>, и идемпотентна ли отправка в Sborka?</li>
+</ol>
+<p>Полный список: раздел 7 в <code>01-generation.md</code> и раздел 11 в <code>06-callas-migration.md</code>.</p>
+</section>
+
+<section>
+<h2>Границы проверки</h2>
+<ul>
+<li>Реальные заказы, PitStop, callas, Sborka и слоёные TIFF из Photoshop не проверялись. Опыты шли на синтетических файлах и подставных адаптерах.</li>
+<li>Статистика взята из снимка БД без WAL и приблизительна.</li>
+<li>Флаги callas взяты из ветки, с <code>--help</code> не сверялись. Атомарность rename на CIFS не проверена.</li>
+<li><code>gh</code> на хосте нет, GitHub смотрели через анонимный публичный API. Рабочий origin: <code>fast-api-for-ubuntu</code>, а не <code>Image-Magic</code>.</li>
+<li>Отчёт 06 учитывает отчёт 05 только частично, потому что тот появился позже.</li>
+</ul>
+</section>
+</main>

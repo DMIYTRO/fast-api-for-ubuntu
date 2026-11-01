@@ -1,0 +1,16 @@
+# Licensed/vendor components and local activation
+pdfToolbox
+pdfToolbox.app/
+vendor/
+license/
+.callas-cache/
+License.txt
+Activation*.pdf
+
+# Customer input and generated artifacts
+input/
+output/
+reports/
+logs/
+*.log
+__pycache__/

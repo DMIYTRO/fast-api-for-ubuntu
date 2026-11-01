@@ -24,7 +24,7 @@ def analyze_resample(
     actual_mm: tuple[float, float],
     target_mm: tuple[float, float],
     dpi: tuple[float, float],
-    min_dpi: float = 300.0,
+    min_dpi: float = 250.0,
     metadata_tolerance_mm: float = 0.1,
     auto_crop_mm: float = 0.5,
     confirm_crop_mm: float = 2.0,
@@ -45,7 +45,7 @@ def analyze_resample(
     crop_max = max(crop)
     size_delta = max(abs(oriented[i] - target_mm[i]) for i in (0, 1))
 
-    epsilon = 1e-6
+    epsilon = 0.01
     if min(effective) + epsilon < min_dpi:
         decision = ResampleDecision.REJECT
         reason = f"после коррекции эффективное разрешение {min(effective):.0f} DPI ниже {min_dpi:.0f} DPI"

@@ -19,6 +19,26 @@ class ProfileTests(unittest.TestCase):
         )
         self.assertTrue(any("превышает лимит" in value for value in result.errors))
 
+    def test_minimum_dpi_is_250_with_small_rounding_tolerance(self):
+        profile = get_profile("digital")
+        at_limit = evaluate_metadata_rules(
+            profile=profile,
+            size_mb=1,
+            colorspace="CMYK",
+            dpi_x=250.0,
+            dpi_y=250.0,
+        )
+        below_limit = evaluate_metadata_rules(
+            profile=profile,
+            size_mb=1,
+            colorspace="CMYK",
+            dpi_x=249.4,
+            dpi_y=250.0,
+        )
+
+        self.assertFalse(any("разрешение" in error for error in at_limit.errors))
+        self.assertTrue(any("разрешение" in error for error in below_limit.errors))
+
     def test_digital_is_default_and_profiles_are_independent(self):
         self.assertIs(DEFAULT_PROFILE, PROFILES["digital"])
         self.assertEqual(get_profile("digital").direction, "digital")
@@ -33,6 +53,8 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(processor.size_extra_mm, profile.bleed_mm * 2)
         self.assertEqual(processor.tolerance_mm, profile.size_tolerance_mm)
         self.assertEqual(processor.min_dpi, profile.min_dpi)
+        self.assertEqual(profile.min_dpi, 250.0)
+        self.assertEqual(profile.target_dpi, 300.0)
         self.assertIn((4, 4), profile.allowed_color_modes)
 
     def test_unknown_direction_has_clear_error(self):

@@ -87,9 +87,18 @@ class PitStopService:
                 timeout_seconds=self._settings.command_timeout_seconds,
             )
             if execution.returncode != 0:
-                raise PitStopTransportError(
-                    f"PitStop Server завершился с кодом {execution.returncode}"
+                details = " ".join(
+                    part.strip()
+                    for part in (execution.stderr, execution.stdout)
+                    if part and part.strip()
                 )
+                message = f"PitStop Server завершился с кодом {execution.returncode}"
+                if details:
+                    available = max(0, 1000 - len(message) - 2)
+                    if len(details) > available:
+                        details = details[: max(0, available - 3)] + "..."
+                    message += f": {details}"
+                raise PitStopTransportError(message)
             report = parse_pitstop_report(report_json)
             if _sha256(input_pdf) != input_sha256:
                 raise PitStopTransportError(

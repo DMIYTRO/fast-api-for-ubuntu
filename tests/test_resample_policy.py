@@ -29,7 +29,7 @@ class ResamplePolicyTests(unittest.TestCase):
         self.assertEqual(back.decision, ResampleDecision.AUTO_CORRECT)
 
     def test_small_enlargement_below_minimum_dpi_is_rejected(self):
-        plan = analyze_resample((93.5, 54.0), (94.0, 54.0), (300.0, 300.0))
+        plan = analyze_resample((93.5, 54.0), (94.0, 54.0), (250.0, 250.0))
         self.assertEqual(plan.decision, ResampleDecision.REJECT)
 
 

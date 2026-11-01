@@ -57,8 +57,8 @@ class Settings:
     pitstop_identity_file: Path | None = None
     pitstop_connect_timeout_seconds: int = 10
     pitstop_command_timeout_seconds: float = 180.0
-    pitstop_mac_shared_root: Path = Path("/Users/admin")
-    pitstop_windows_shared_root: str = r"C:\Mac\Home"
+    pitstop_mac_shared_root: Path = Path("/mnt/shared")
+    pitstop_windows_shared_root: str = "//192.168.88.100/shared"
     pitstop_profiles: tuple[tuple[str, str, str], ...] = ()
 
     @classmethod
@@ -189,11 +189,12 @@ class Settings:
             ),
             pitstop_mac_shared_root=Path(
                 os.environ.get(
-                    "IMAGE_MAGIC_PITSTOP_MAC_SHARED_ROOT", "/Users/admin"
+                    "IMAGE_MAGIC_PITSTOP_MAC_SHARED_ROOT", "/mnt/shared"
                 )
             ).expanduser(),
             pitstop_windows_shared_root=os.environ.get(
-                "IMAGE_MAGIC_PITSTOP_WINDOWS_SHARED_ROOT", r"C:\Mac\Home"
+                "IMAGE_MAGIC_PITSTOP_WINDOWS_SHARED_ROOT",
+                "//192.168.88.100/shared",
             ).strip(),
             pitstop_profiles=pitstop_profiles,
         )

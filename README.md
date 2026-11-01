@@ -9,7 +9,7 @@ Image Magic проверяет растровые макеты перед печ
 - разбор размера, цветности, клиента, заказа и стороны из имени файла;
 - группировка односторонних и двусторонних заказов;
 - проверка физического размера, DPI, количества кадров TIFF и цветовой модели;
-- минимум 300 DPI после любой коррекции;
+- минимальное разрешение 250 DPI; автоматическая коррекция создаёт файл с целевым разрешением 300 DPI;
 - безопасное пропорциональное масштабирование без растягивания сторон;
 - центральная обрезка небольшого избытка макета;
 - подтверждение спорных коррекций перед созданием PDF;
@@ -34,7 +34,7 @@ Image Magic проверяет растровые макеты перед печ
 - отклонение/центральная обрезка от 0,1 до 0,5 мм корректируется автоматически с предупреждением;
 - центральная обрезка от 0,5 до 2 мм требует подтверждения пользователя;
 - более существенная обрезка отклоняется;
-- увеличение разрешается только при итоговом эффективном разрешении не ниже 300 DPI;
+- увеличение разрешается только при итоговом эффективном разрешении не ниже 250 DPI;
 - независимое растягивание ширины и высоты запрещено.
 
 Коррекция выполняется в режиме `cover`: изображение пропорционально заполняет целевой формат, после чего избыток симметрично обрезается по центру.
@@ -270,21 +270,21 @@ journalctl -u fastapi-app -n 100 --no-pager
 
 ### PitStop Server
 
-Интеграция выключена по умолчанию. Она использует SSH-ключ и общую папку
-macOS/Windows; пароль VM в конфигурации приложения не хранится.
+Интеграция выключена по умолчанию. Она использует SSH-ключ к PitStop VM и SMB-шару
+для передачи PDF и отчётов; пароль VM в конфигурации приложения не хранится.
 
 ```bash
 export IMAGE_MAGIC_PITSTOP_ENABLED=true
-export IMAGE_MAGIC_PITSTOP_HOST="10.211.55.3"
+export IMAGE_MAGIC_PITSTOP_HOST="192.168.88.102"
 export IMAGE_MAGIC_PITSTOP_PORT="22"
 export IMAGE_MAGIC_PITSTOP_USERNAME="Admin"
 export IMAGE_MAGIC_PITSTOP_CLI_PATH='C:\Program Files\Enfocus\Enfocus PitStop Server 23\PitStopServerCLI.exe'
-export IMAGE_MAGIC_PITSTOP_PROFILE_DIGITAL='C:\Profiles\Sborka_2Corel.ppp'
-export IMAGE_MAGIC_PITSTOP_PROFILE_OFFSET='C:\Profiles\Sborka_Offset.ppp'
+export IMAGE_MAGIC_PITSTOP_PROFILE_DIGITAL='\\192.168.88.100\shared\soft\Sborka_2Core.ppp'
+export IMAGE_MAGIC_PITSTOP_PROFILE_OFFSET='C:\Program Files\Enfocus\Enfocus PitStop Server 23\Resources\PDF Profiles\Standard PDFX Preflight Profiles\PDF_X-4.ppp'
 export IMAGE_MAGIC_PITSTOP_KNOWN_HOSTS="$HOME/.ssh/known_hosts"
 export IMAGE_MAGIC_PITSTOP_IDENTITY_FILE="$HOME/.ssh/id_ed25519"
-export IMAGE_MAGIC_PITSTOP_MAC_SHARED_ROOT="/Users/admin"
-export IMAGE_MAGIC_PITSTOP_WINDOWS_SHARED_ROOT='C:\Mac\Home'
+export IMAGE_MAGIC_PITSTOP_MAC_SHARED_ROOT="/mnt/shared"
+export IMAGE_MAGIC_PITSTOP_WINDOWS_SHARED_ROOT='//192.168.88.100/shared'
 ```
 
 Для каждого успешно собранного PDF порядок обработки такой: PitStop report-only,

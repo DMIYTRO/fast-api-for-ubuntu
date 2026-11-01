@@ -29,6 +29,21 @@ class PitStopPathTests(unittest.TestCase):
                     windows_shared_root=PureWindowsPath("C:/Mac/Home/project"),
                 )
 
+    def test_maps_linux_shared_root_to_smb_unc_share(self):
+        root = Path("/mnt/shared")
+        path = root / "inputFolders" / "PDF" / "order.pdf"
+
+        mapped = mac_shared_path_to_windows(
+            path,
+            mac_shared_root=root,
+            windows_shared_root=PureWindowsPath("//192.168.88.100/shared"),
+        )
+
+        self.assertEqual(
+            mapped,
+            PureWindowsPath("//192.168.88.100/shared/inputFolders/PDF/order.pdf"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

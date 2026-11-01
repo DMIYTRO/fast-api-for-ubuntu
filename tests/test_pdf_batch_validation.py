@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pymupdf
 
 from core.inspector import ImageMetadata
 from processing.batch_processor import BatchProcessor
+from processing.models import FileCheck, ParsedFilename
 
 
 def _make_pdf(path: Path, page_count: int, width_mm: float = 94, height_mm: float = 54) -> None:
@@ -16,6 +18,38 @@ def _make_pdf(path: Path, page_count: int, width_mm: float = 94, height_mm: floa
         document.new_page(width=points(width_mm), height=points(height_mm))
     document.save(str(path))
     document.close()
+
+
+def _check_pdf_with_effective_dpi(tmp_path: Path, dpi_x: float) -> FileCheck:
+    path = tmp_path / "job_(100x50)_4-0_(1-207).pdf"
+    path.write_bytes(b"PDF fixture")
+    image = SimpleNamespace(
+        effective_dpi_x=dpi_x,
+        effective_dpi_y=300.0,
+        colorspace_name="CMYK",
+    )
+    page = SimpleNamespace(
+        page_number=1,
+        width_mm=104.0,
+        height_mm=54.0,
+        rotation=0,
+        images=(image,),
+        content_type="raster",
+    )
+    inspection = SimpleNamespace(
+        page_count=1,
+        pages=(page,),
+        errors=(),
+        warnings=(),
+    )
+    check = FileCheck(
+        path=path,
+        parsed=ParsedFilename("1", "207", 100.0, 50.0, 4, 0, ""),
+    )
+    processor = _processor(tmp_path)
+    with patch("processing.batch_processor.inspect_pdf", return_value=inspection):
+        processor._inspect_pdf_file(check)
+    return check
 
 
 def _image_metadata(path: str) -> ImageMetadata:
@@ -51,6 +85,25 @@ def test_4_0_one_page_pdf_without_side_suffix_passes(tmp_path: Path) -> None:
     assert order.passed
     assert order.files[0].page_count == 1
     assert order.files[0].parsed.side == ""
+
+
+def test_effective_dpi_at_250_passes(tmp_path: Path) -> None:
+    check = _check_pdf_with_effective_dpi(tmp_path, dpi_x=250.0)
+
+    assert not any("effective DPI" in error for error in check.errors)
+    assert check.dpi_x == 250.0
+
+
+def test_effective_dpi_299_8_passes(tmp_path: Path) -> None:
+    check = _check_pdf_with_effective_dpi(tmp_path, dpi_x=299.8)
+
+    assert not any("effective DPI" in error for error in check.errors)
+
+
+def test_effective_dpi_below_250_fails(tmp_path: Path) -> None:
+    check = _check_pdf_with_effective_dpi(tmp_path, dpi_x=249.4)
+
+    assert any("effective DPI" in error for error in check.errors)
 
 
 def test_4_4_one_page_pdf_without_second_side_fails(tmp_path: Path) -> None:

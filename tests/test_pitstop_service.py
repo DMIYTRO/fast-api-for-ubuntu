@@ -23,10 +23,14 @@ class ReportWritingTransport:
         *,
         returncode: int = 0,
         input_pdf: Path | None = None,
+        stdout: str = "",
+        stderr: str = "",
     ):
         self.local_report_root = local_report_root
         self.returncode = returncode
         self.input_pdf = input_pdf
+        self.stdout = stdout
+        self.stderr = stderr
         self.commands = []
 
     def execute(self, remote_command: str, *, timeout_seconds: float):
@@ -37,7 +41,7 @@ class ReportWritingTransport:
             (job_dir / "report.xml").write_text("<report/>", encoding="utf-8")
             if self.input_pdf is not None:
                 self.input_pdf.write_bytes(b"modified")
-        return TransportResult(self.returncode, "", "")
+        return TransportResult(self.returncode, self.stdout, self.stderr)
 
 
 class PitStopServiceTests(unittest.TestCase):
@@ -79,6 +83,40 @@ class PitStopServiceTests(unittest.TestCase):
         self.assertEqual(result.status, PitStopExecutionStatus.FAILED)
         self.assertIn("кодом 23", result.technical_error)
         self.assertIsNone(result.report)
+
+    def test_nonzero_exit_includes_bounded_process_diagnostics(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pdf = root / "order.pdf"
+            pdf.write_bytes(b"%PDF")
+            report_root = root / "reports"
+            transport = ReportWritingTransport(
+                report_root,
+                returncode=1,
+                stdout="CLI detail",
+                stderr="profile not found",
+            )
+            service = self._service(root, report_root, transport)
+
+            result = service.check_pdf(pdf, profile_id="production_check")
+
+        self.assertEqual(result.status, PitStopExecutionStatus.FAILED)
+        self.assertIn("profile not found CLI detail", result.technical_error)
+
+    def test_nonzero_exit_truncates_long_process_diagnostics(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pdf = root / "order.pdf"
+            pdf.write_bytes(b"%PDF")
+            report_root = root / "reports"
+            transport = ReportWritingTransport(
+                report_root, returncode=1, stderr="x" * 1500
+            )
+            service = self._service(root, report_root, transport)
+
+            result = service.check_pdf(pdf, profile_id="production_check")
+
+        self.assertEqual(len(result.technical_error), 1000)
 
     def test_detects_unexpected_input_pdf_modification(self):
         with TemporaryDirectory() as directory:

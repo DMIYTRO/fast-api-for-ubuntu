@@ -40,7 +40,7 @@ def evaluate_metadata_rules(
         dpi_x if dpi_x is not None else 0.0,
         dpi_y if dpi_y is not None else 0.0,
     )
-    if minimum_dpi < profile.min_dpi and not correction_has_enough_dpi:
+    if minimum_dpi + 0.01 < profile.min_dpi and not correction_has_enough_dpi:
         actual = (
             f"{dpi_x:.1f}x{dpi_y:.1f}"
             if dpi_x is not None and dpi_y is not None
