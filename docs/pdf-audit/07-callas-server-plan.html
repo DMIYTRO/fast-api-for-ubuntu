@@ -1,0 +1,198 @@
+<title>План сервера callas</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: одна колонка рабочей инструкции, где порядок шагов является содержанием */
+:root{--bg:#f5f7f8;--surface:#fff;--fg:#17242b;--muted:#566872;--line:#d3dde2;--accent:#00708a;--warn:#a85b00;--body:"IBM Plex Sans",system-ui,sans-serif;--mono:"IBM Plex Mono",ui-monospace,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#10181c;--surface:#182328;--fg:#e4edf0;--muted:#9db0b9;--line:#30414a;--accent:#54c3dc;--warn:#f0b35f;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#10181c;--surface:#182328;--fg:#e4edf0;--muted:#9db0b9;--line:#30414a;--accent:#54c3dc;--warn:#f0b35f;color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font:16px/1.6 var(--body);padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:32px}
+main{max-width:920px;margin:auto;display:grid;gap:36px}
+main>*{min-width:0}
+h1{font-size:2.1rem;line-height:1.2;margin:0 0 8px;text-wrap:balance}
+h2{font-size:1.4rem;margin:0 0 12px;text-wrap:balance}
+h3{font-size:1.05rem;margin:20px 0 6px}
+p{margin:0 0 10px;max-width:70ch}
+ul,ol{margin:0 0 10px;padding-left:22px}
+li{margin-bottom:6px}
+code{font:.88em var(--mono);overflow-wrap:anywhere}
+pre.code{font:.84rem/1.5 var(--mono);background:var(--surface);border:1px solid var(--line);padding:12px;overflow-x:auto;margin:0 0 12px}
+.lead{color:var(--muted)}
+.note{border:2px solid var(--warn);background:var(--surface);padding:14px 16px}
+.scroll{overflow-x:auto;background:var(--surface);border:1px solid var(--line);margin-bottom:12px}
+table{border-collapse:collapse;width:100%;min-width:640px}
+th,td{text-align:left;vertical-align:top;padding:9px 12px;border-bottom:1px solid var(--line)}
+th{font-size:.82rem;color:var(--muted);font-weight:600}
+pre.mermaid{margin:0;padding:14px;min-width:640px}
+</style>
+<main>
+<header>
+<h1>План сервера callas</h1>
+<p class="lead">Инструкция для подключения выделенной VM с pdfToolbox CLI к Image Magic. Точки подключения сверены с текущим кодом 1 ноября 2026 года. Лицензия активирована, доступно 8 потоков.</p>
+</header>
+
+<section>
+<h2>Что строим</h2>
+<ul>
+<li>Callas делает две операции: объединяет страницы PDF и рендерит PDF в PNG для превью.</li>
+<li>ImageMagick по-прежнему создаёт страницы PDF, наносит рамки и сохраняет WebP.</li>
+<li>PitStop <code>.ppp</code> проверяет PDF, собранный callas. Его интеграция не меняется.</li>
+<li>Статусы, перемещение файлов, Sborka и публикация остаются в приложении.</li>
+</ul>
+<div class="scroll"><pre class="mermaid">
+sequenceDiagram
+  participant A as Image Magic
+  participant S as Шара /mnt/shared
+  participant C as Служба callas
+  participant P as PitStop
+  A->>S: страницы PDF в .callas/job_id/in
+  A->>C: PUT /jobs/job_id merge
+  C->>S: копия на локальный диск со сверкой SHA
+  C->>C: pdfToolbox --mergepdf
+  C->>S: результат и SHA в .callas/job_id/out
+  A->>C: GET /jobs/job_id
+  A->>S: сверка SHA и страниц, контроль gs, replace в PDF/
+  A->>P: проверка как сейчас
+  A->>C: PUT /jobs/job_id render
+  C->>S: PNG страниц
+  A->>A: рамки ImageMagick и WebP в Previews/
+</pre></div>
+</section>
+
+<section class="note">
+<h2>До начала</h2>
+<ol>
+<li>Смените production-пароль из <code>deploy.py:15</code> и настройте SSH по ключу.</li>
+<li>Заведите тестовый клон на отдельной машине. На 10.20.2.104 <code>pytest</code> работает с рабочей БД.</li>
+<li>Исправьте в <code>services/coordinator.py</code> сравнение текста таймаута (<code>:788</code>, <code>:811</code>) и отсчёт таймаута от постановки в пул (<code>:719</code>). Удалённая очередь сделает эти дефекты заметнее.</li>
+</ol>
+</section>
+
+<section>
+<h2>Часть 1. Что сделать на сервере callas</h2>
+<h3>1. Подготовить систему</h3>
+<pre class="code">sudo useradd --system --create-home --shell /usr/sbin/nologin callas
+sudo mkdir -p /opt/callas-service /var/lib/callas/{work,cache} /var/log/callas
+sudo chown -R callas:callas /var/lib/callas /var/log/callas
+sudo apt-get install -y python3-venv cifs-utils fontconfig libatomic1</pre>
+<p>Рабочий диск должен быть локальным. Для старта закладывайте минимум 200 ГБ и проверьте по замерам: заказы бывают до 2000 МБ, а в кадре одновременно до 8 заданий.</p>
+
+<h3>2. Смонтировать ту же шару</h3>
+<p>Путь на VM должен совпадать с приложением, иначе нужна подмена путей. Приложение работает через <code>/mnt/shared</code>, это <code>//192.168.88.100/shared</code>.</p>
+<pre class="code">//192.168.88.100/shared /mnt/shared cifs credentials=/etc/callas-smb.cred,uid=callas,gid=callas,vers=3.0,hard,_netdev,x-systemd.automount 0 0</pre>
+<p>Файл учётных данных: права <code>600</code>. Служба пишет только в <code>.callas/</code>. Исходники защищаются правами SMB-пользователя или вторым монтированием <code>ro</code>.</p>
+
+<h3>3. Проверить CLI под пользователем службы</h3>
+<pre class="code">sudo -u callas pdfToolbox --cachefolder=/var/lib/callas/cache/w1 --status
+pdfToolbox --help mergepdf
+pdfToolbox --help saveasimg</pre>
+<p>Зафиксируйте в документе: версию, поддержку 8 процессов, параметры <code>--imgformat</code>, <code>--resolution</code>, <code>--outputfolder</code>, шаблон имён PNG и поведение <code>--optimizepdf</code> и <code>--nooptimization</code>.</p>
+<p>Лицензию активировали с <code>--cachefolder</code>, поэтому проверьте, нужна ли она в каждой папке кэша. Безопасность одной папки для параллельных процессов не подтверждена. Если нужен один кэш, сначала проверьте его под нагрузкой из 8 процессов.</p>
+
+<h3>4. Развернуть службу заданий</h3>
+<p>Это маленькое приложение на Python и FastAPI в отдельной папке <code>callas_service/</code> нашего репозитория. Адрес предлагаю такой: порт <code>8765</code>, доступ только с 10.20.2.104.</p>
+<div class="scroll"><table>
+<tr><th>Запрос</th><th>Назначение</th></tr>
+<tr><td><code>PUT /jobs/{job_id}</code></td><td>Создать <code>merge</code> или <code>render</code>. Повтор с тем же ID не запускает работу заново</td></tr>
+<tr><td><code>GET /jobs/{job_id}</code></td><td>Статус, код выхода, файлы, SHA, stderr и длительность</td></tr>
+<tr><td><code>DELETE /jobs/{job_id}</code></td><td>Отменить задание и завершить группу процессов</td></tr>
+<tr><td><code>GET /health</code></td><td>Версия, свободные слоты, шара, диск</td></tr>
+</table></div>
+<ul>
+<li><strong>8 потоков:</strong> общий семафор на 8 процессов. Очередь хранится в SQLite на локальном диске, чтобы пережить рестарт.</li>
+<li><strong>Приоритет:</strong> слияние идёт раньше превью, потому что заказ без PDF не продолжит работу. Держите для слияния минимум 2 слота из 8.</li>
+<li><strong>Задание:</strong> вход копируется на локальный диск и сверяется по SHA, callas работает локально, результат пишется на шару как <code>.tmp</code> и переименовывается.</li>
+<li><strong>Безопасность:</strong> токен в заголовке <code>Authorization</code>, проверка путей внутри <code>/mnt/shared</code>, запуск без <code>shell=True</code>.</li>
+<li><strong>Коды выхода:</strong> до <code>--help</code> успехом считается только 0 при наличии результата. Всё остальное приходит как сбой со stderr.</li>
+<li><strong>Сроки:</strong> служба сама ограничивает выполнение: слияние 600 с, рендер 300 с. Значения стартовые, уточнятся по замерам.</li>
+<li><strong>Очистка:</strong> локальный диск после задания, <code>.callas/</code> на шаре через 24 часа.</li>
+</ul>
+<pre class="code"># /etc/systemd/system/callas-service.service
+[Service]
+User=callas
+WorkingDirectory=/opt/callas-service
+EnvironmentFile=/etc/callas-service.env
+ExecStart=/opt/callas-service/.venv/bin/uvicorn callas_service.app:app --host 0.0.0.0 --port 8765 --workers 1
+Restart=always
+KillMode=control-group
+TimeoutStopSec=60
+LimitNOFILE=65536</pre>
+<p>Нужен строго один worker: иначе лимит 8 будет считаться в каждом процессе отдельно.</p>
+
+<h3>5. Закрыть сеть и настроить наблюдение</h3>
+<pre class="code">sudo ufw allow from 10.20.2.104 to any port 8765 proto tcp
+sudo ufw allow OpenSSH
+sudo ufw enable</pre>
+<p>Перед <code>ufw enable</code> убедитесь, что не закроете себе SSH. Логи пишутся в <code>/var/log/callas</code> с ротацией. Следите за свободным местом и длиной очереди.</p>
+</section>
+
+<section>
+<h2>Часть 2. Что изменить в Image Magic</h2>
+<div class="scroll"><table>
+<tr><th>Место</th><th>Сейчас</th><th>Изменение</th></tr>
+<tr><td><code>core/pdf_exporter.py:79-134</code></td><td>Слияние PyMuPDF <code>insert_pdf</code></td><td>Вызов через движок. Проверки чтения и числа страниц после слияния остаются</td></tr>
+<tr><td><code>processing/batch_processor.py:751-780</code></td><td>Рендер <code>gs -r150</code> в <code>page-%03d.png</code></td><td>Движок выдаёт такие же имена. Цикл с рамками ниже не меняется</td></tr>
+<tr><td><code>processing/batch_processor.py:787-791, 887</code></td><td>Имена <code>*_preview.png</code></td><td>Имена <code>*_preview.webp</code>, в том числе для превью исходников</td></tr>
+<tr><td><code>services/return_preview.py:166, 183</code></td><td>Поиск <code>_preview.png</code></td><td>Искать WebP и PNG. Лист возврата <code>_return-preview.png</code> остаётся PNG</td></tr>
+<tr><td><code>core/report_builder.py:312</code></td><td>Ищет PNG</td><td>Искать WebP и PNG</td></tr>
+<tr><td><code>core/preview_cache.py</code>, <code>control_panel.py</code></td><td>Кэш и выдача PNG</td><td>Проверить тип ответа и новое расширение. Старая история должна открываться</td></tr>
+<tr><td><code>frontend/src</code></td><td>Тесты с <code>_preview.png</code></td><td>Обновить тесты, если логика зависит от расширения</td></tr>
+<tr><td><code>server/settings.py</code></td><td>Настройки <code>IMAGE_MAGIC_*</code></td><td>Добавить настройки ниже</td></tr>
+<tr><td><code>services/layered_tiff_print.py:197, 236</code></td><td>Постраничная сборка PyMuPDF</td><td>В первой версии не менять: нужна замена отдельных страниц</td></tr>
+</table></div>
+<h3>Новый модуль <code>services/callas/</code></h3>
+<ul>
+<li><code>engine.py</code>: интерфейс <code>merge(pages, target)</code> и <code>render(pdf, out_dir, dpi)</code>, локальная реализация поверх текущего кода.</li>
+<li><code>client.py</code>: HTTP-клиент, опрос статуса, отмена, понятные ошибки на русском.</li>
+<li><code>paths.py</code>: проверка, что файл внутри <code>/mnt/shared</code>, по образцу <code>services/pitstop/paths.py</code>.</li>
+</ul>
+<p>Если входная папка вне шары, задание должно завершаться понятной ошибкой. Страницы для слияния сначала копируются в <code>.callas/&lt;job_id&gt;/in/</code>, потому что сейчас они создаются во временной папке приложения.</p>
+<pre class="code">IMAGE_MAGIC_PDF_MERGE_ENGINE=pymupdf        # затем callas
+IMAGE_MAGIC_PREVIEW_RENDER_ENGINE=ghostscript  # затем callas
+IMAGE_MAGIC_PREVIEW_FORMAT=png              # затем webp
+IMAGE_MAGIC_CALLAS_URL=http://&lt;адрес-VM&gt;:8765
+IMAGE_MAGIC_CALLAS_TOKEN=...                # только в настройках службы
+IMAGE_MAGIC_CALLAS_SHARED_ROOT=/mnt/shared</pre>
+<h3>Важные условия</h3>
+<ul>
+<li>Параллельность заказов на сервере приложения равна числу ядер. Лимит callas 8 должен держать очередь службы, поэтому время ожидания не входит в срок выполнения.</li>
+<li>Таймаут клиента должен быть больше суммы очереди и выполнения, а поздний ответ отсекается по <code>job_id</code>.</li>
+<li>PNG из callas должен содержать фактический DPI, потому что от него зависят рамки. Если записи DPI нет, движок передаёт значение явно.</li>
+<li>Если callas недоступен, заказ получает понятную ошибку и может быть запущен повторно. Автоматического перехода на старый движок нет: движок меняют только настройкой.</li>
+<li>Проверьте WebP в ImageMagick: <code>magick -list format | grep -i webp</code>.</li>
+</ul>
+</section>
+
+<section>
+<h2>Порядок запуска</h2>
+<ol>
+<li><strong>Ручной стенд.</strong> Прогоните 20–50 реальных PDF вручную и сравните страницы, боксы, ICC и размер с PyMuPDF и Ghostscript.</li>
+<li><strong>Служба и тесты.</strong> Поддельный CLI в тестах службы, поддельная служба в тестах приложения. Настоящая VM в тестах не используется.</li>
+<li><strong>Нагрузка.</strong> 8 параллельных процессов, большие файлы, отключение шары, kill службы, отмена и повтор с тем же <code>job_id</code>.</li>
+<li><strong>Тень превью.</strong> Рабочий результат остаётся за Ghostscript, callas рендерит рядом для сравнения.</li>
+<li><strong>Переключение превью.</strong> Сначала <code>callas</code> и PNG, затем WebP, отдельным шагом.</li>
+<li><strong>Тень слияния.</strong> Собираем обоими движками и сравниваем страницы, боксы и результат PitStop.</li>
+<li><strong>Переключение слияния.</strong> Сначала digital, потом offset.</li>
+</ol>
+<p>Откат: вернуть значения <code>pymupdf</code>, <code>ghostscript</code>, <code>png</code> и перезапустить <code>fastapi-app</code>. Старый код удаляется только после полного рабочего цикла без откатов.</p>
+<h3>Предлагаемые критерии приёмки</h3>
+<ul>
+<li>Совпадают число и порядок страниц, размеры с допуском 0,5 pt, TrimBox и BleedBox.</li>
+<li>Результаты PitStop не хуже, чем у текущей сборки.</li>
+<li>Превью WebP дают замеренное уменьшение объёма без потери читаемости рамок.</li>
+<li>После kill службы, рестарта и обрыва шары нет ни одного ложного <code>passed</code> и ни одного подменённого файла.</li>
+</ul>
+</section>
+
+<section>
+<h2>Что осталось проверить и получить</h2>
+<ul>
+<li>Адрес VM, пользователь SSH, путь к CLI и версия Ubuntu.</li>
+<li>Есть ли сетевой путь 10.20.2.104 → VM:8765 и доступ VM к шаре.</li>
+<li>Флаги <code>--saveasimg</code> взяты из старой ветки и пока не сверены с <code>--help</code>.</li>
+<li>Лицензия: действуют ли 8 потоков как 8 одновременных CLI-процессов. Если они относятся к одному процессу, схема слотов изменится.</li>
+<li>Атомарность rename на CIFS и поведение callas с общей папкой кэша.</li>
+<li>Что должно сохраняться в итоговом PDF: Output Intent, слои, XMP, PDF/X.</li>
+</ul>
+</section>
+</main>
