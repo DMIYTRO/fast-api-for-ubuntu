@@ -44,6 +44,7 @@ const expectedSize = computed(() => parsed.value.width_mm && parsed.value.height
 const issueText = (value) => typeof value === "string" ? value : value?.message || value?.code;
 const allErrors = computed(() => [
   ...(props.order.errors || []),
+  ...(props.order.processing_errors || []),
 ].map(issueText).filter(Boolean));
 const groupedErrors = computed(() => groupIssueMessages(allErrors.value));
 const fileErrors = computed(() => files.value.flatMap((file) => (file.errors || []).map(issueText).filter(Boolean).map((message) => ({ filename: file.filename || file.path || "Файл", message }))));
@@ -251,6 +252,10 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
             <li v-for="(item, index) in groupedErrors" :key="`order-${index}`">{{ item.message }}<span v-if="item.count > 1"> — {{ item.count }} {{ issueObjectLabel(item.count) }}</span></li>
             <li v-for="(item, index) in fileErrors" :key="`file-${index}`"><b>{{ item.filename }}:</b> {{ item.message }}</li>
           </ul>
+        </div>
+        <div v-if="order.status === 'error' && !order.pitstop && order.pitstop_status === 'not_checked'" class="pitstop-skipped">
+          <strong>PitStop не проверял этот заказ</strong>
+          <span>Причины обработки указаны выше. Отчёт PitStop появится после успешного создания итогового PDF.</span>
         </div>
         <div v-if="allWarnings.length || fileWarnings.length" class="issue-list warnings">
           <strong>Предупреждения</strong>

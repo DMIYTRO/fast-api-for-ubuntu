@@ -8,6 +8,20 @@ const props = defineProps({
 const expanded = ref(false);
 const counts = computed(() => props.pitstop.counts || {});
 const issues = computed(() => props.pitstop.issues || []);
+const groupedIssues = computed(() => {
+  const groups = new Map();
+  issues.value.forEach((issue) => {
+    const message = issueText(issue);
+    const severity = typeof issue === "object" && issue ? issue.severity || "info" : "info";
+    const key = `${severity}\u0000${message}`;
+    const page = issuePage(issue);
+    if (!groups.has(key)) groups.set(key, { key, message, severity, count: 0, pages: [] });
+    const group = groups.get(key);
+    group.count += 1;
+    if (page != null && !group.pages.includes(page)) group.pages.push(page);
+  });
+  return [...groups.values()];
+});
 const executionStatus = computed(() => String(props.pitstop.execution_status || "").toLowerCase());
 const verdict = computed(() => String(props.pitstop.verdict || "").toLowerCase());
 const pending = computed(() => ["", "not_started", "queued", "pending", "running", "checking", "processing"].includes(executionStatus.value));
@@ -41,7 +55,6 @@ const profileLabel = computed(() => {
   return profile.version ? `${name} · ${profile.version}` : name;
 });
 const issueText = (issue) => typeof issue === "string" ? issue : (issue.message || issue.code || "Проблема без описания");
-const issueKey = (issue, index) => typeof issue === "string" ? `${index}:${issue}` : (issue.id || `${issue.action_id || "issue"}:${issue.page || 0}:${index}`);
 const issuePage = (issue) => typeof issue === "object" && issue ? (issue.page ?? issue.locations?.[0]?.page) : null;
 </script>
 
@@ -71,8 +84,9 @@ const issuePage = (issue) => typeof issue === "object" && issue ? (issue.page ??
       {{ expanded ? "Скрыть проблемы" : `Показать проблемы (${issues.length})` }}
     </button>
     <ul v-if="expanded" class="pitstop-issues">
-      <li v-for="(issue, index) in issues" :key="issueKey(issue, index)" :class="`issue-${issue.severity || 'info'}`">
-        <span>{{ issueText(issue) }}</span><small v-if="issuePage(issue)">Страница {{ issuePage(issue) }}</small>
+      <li v-for="issue in groupedIssues" :key="issue.key" :class="`issue-${issue.severity}`">
+        <span>{{ issue.message }}<small v-if="issue.count > 1" class="pitstop-issue-count">Повторений: {{ issue.count }}</small></span>
+        <small v-if="issue.pages.length">Страницы {{ issue.pages.join(", ") }}</small>
       </li>
     </ul>
 
