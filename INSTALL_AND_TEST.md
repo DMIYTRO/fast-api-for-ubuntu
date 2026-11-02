@@ -139,6 +139,17 @@ gs --version
 /etc/nginx/sites-enabled/fastapi-app
 ```
 
+Конфиг Nginx хранится в репозитории: `deploy/nginx/fastapi-app.conf`.
+Установка на новой VM (ставит nginx, создаёт каталог кэша превью, включает сайт,
+проверяет `nginx -t` и перезагружает сервис):
+
+```bash
+sudo deploy/nginx/install.sh [UPSTREAM_PORT] [PREVIEW_CACHE_DIR] [CACHE_OWNER]
+```
+
+Каталог кэша должен совпадать с `IMAGE_MAGIC_PREVIEW_CACHE_DIR` сервиса
+`fastapi-app`. Обновить конфиг на уже настроенной VM можно повторным запуском.
+
 После обновления Python-кода, frontend или миграций:
 
 ```bash
