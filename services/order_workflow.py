@@ -58,6 +58,7 @@ class OrderWorkflowService:
         rework_sender: Callable[[str, str, str, bool, str], dict[str, Any]] | None = None,
         preview_uploader: Callable[[list[Path]], list[str]] | None = None,
         reviewed_pdf_pitstop_service_factory: Callable[[Path, str], Any] | None = None,
+        pdf_merger: Callable[[Any, Path, str], None] | None = None,
     ) -> None:
         self.coordinator = coordinator
         self.session_factory = session_factory
@@ -67,6 +68,7 @@ class OrderWorkflowService:
         self.rework_sender = rework_sender
         self.preview_uploader = preview_uploader
         self.reviewed_pdf_pitstop_service_factory = reviewed_pdf_pitstop_service_factory
+        self.pdf_merger = pdf_merger
         self._action_locks_guard = Lock()
         self._action_locks: dict[int, tuple[Lock, str]] = {}
         self._background_guard = Lock()
@@ -502,7 +504,7 @@ class OrderWorkflowService:
                         if action == "print":
                             input_root = Path(run["options"]["input_path"]).resolve()
                             reviewed_pdf = build_reviewed_layered_print_pdf(
-                                order, input_root
+                                order, input_root, pdf_merger=self.pdf_merger
                             )
                             if reviewed_pdf is not None:
                                 inspection = inspect_pdf(reviewed_pdf)

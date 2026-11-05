@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from pathlib import Path
 
@@ -60,6 +60,18 @@ class Settings:
     pitstop_mac_shared_root: Path = Path("/mnt/shared")
     pitstop_windows_shared_root: str = "//192.168.88.100/shared"
     pitstop_profiles: tuple[tuple[str, str, str], ...] = ()
+    callas_url: str = ""
+    callas_token: str = field(default="", repr=False)
+    callas_share: Path = Path("/mnt/shared")
+    callas_server_share: str = "/mnt/shared"
+    callas_user: str = "image-magic"
+    callas_merge_enabled: bool = False
+    callas_render_enabled: bool = False
+    callas_request_timeout_seconds: float = 30.0
+    callas_job_timeout_seconds: float = 600.0
+    callas_poll_interval_seconds: float = 1.0
+    callas_max_concurrent_jobs: int = 2
+    callas_max_retries: int = 4
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -197,4 +209,35 @@ class Settings:
                 "//192.168.88.100/shared",
             ).strip(),
             pitstop_profiles=pitstop_profiles,
+            callas_url=os.environ.get("IMAGE_MAGIC_CALLAS_URL", "").strip(),
+            callas_token=os.environ.get("IMAGE_MAGIC_CALLAS_TOKEN", "").strip(),
+            callas_share=Path(
+                os.environ.get("IMAGE_MAGIC_CALLAS_SHARE", "/mnt/shared")
+            ).expanduser(),
+            callas_server_share=os.environ.get(
+                "IMAGE_MAGIC_CALLAS_SERVER_SHARE", "/mnt/shared"
+            ).strip()
+            or "/mnt/shared",
+            callas_user=os.environ.get("IMAGE_MAGIC_CALLAS_USER", "image-magic").strip()
+            or "image-magic",
+            callas_merge_enabled=_env_bool("IMAGE_MAGIC_CALLAS_MERGE_ENABLED", False),
+            callas_render_enabled=_env_bool("IMAGE_MAGIC_CALLAS_RENDER_ENABLED", False),
+            callas_request_timeout_seconds=max(
+                1.0,
+                float(os.environ.get("IMAGE_MAGIC_CALLAS_REQUEST_TIMEOUT_SECONDS", "30")),
+            ),
+            callas_job_timeout_seconds=max(
+                1.0,
+                float(os.environ.get("IMAGE_MAGIC_CALLAS_JOB_TIMEOUT_SECONDS", "600")),
+            ),
+            callas_poll_interval_seconds=max(
+                0.1,
+                float(os.environ.get("IMAGE_MAGIC_CALLAS_POLL_INTERVAL_SECONDS", "1")),
+            ),
+            callas_max_concurrent_jobs=max(
+                1, int(os.environ.get("IMAGE_MAGIC_CALLAS_MAX_CONCURRENT_JOBS", "2"))
+            ),
+            callas_max_retries=max(
+                0, int(os.environ.get("IMAGE_MAGIC_CALLAS_MAX_RETRIES", "4"))
+            ),
         )

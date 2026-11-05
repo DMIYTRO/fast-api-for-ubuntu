@@ -7,7 +7,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from core.preview_cache import preview_work_dir
+from core.preview_cache import (
+    jpeg_output_arguments,
+    normalize_preview_format,
+    preview_format_for_path,
+    preview_work_dir,
+)
 from core.tool_runner import run_command
 
 
@@ -149,8 +154,29 @@ def generate_preview(
     bleed_mm: float = 1.0,
     fold_overlay: FoldOverlay | Mapping[str, object] | None = None,
     full_preview_path: str | None = None,
+    preview_format: str | None = None,
+    jpeg_quality: int | None = None,
 ) -> str:
-    """Render a preview with either regular frames or confirmed fold guides."""
+    """Render a preview with either regular frames or confirmed fold guides.
+
+    The output format follows the suffix of ``output_preview_path`` (``.jpg`` /
+    ``.jpeg`` -> JPEG, anything else -> PNG as before).  Callers choose the
+    suffix with ``core.preview_cache.preview_extension()``.  ``preview_format``
+    (``'jpeg'`` | ``'png'``) is an optional assertion: when given and the suffix
+    disagrees, ``ValueError`` is raised instead of silently writing a mislabeled
+    file.  JPEG uses quality ``jpeg_quality`` (default 95 or
+    ``IMAGE_MAGIC_PREVIEW_JPEG_QUALITY``), 4:4:4 sampling and a white background.
+    """
+    output_format = preview_format_for_path(output_preview_path) or "png"
+    if preview_format is not None and normalize_preview_format(preview_format) != output_format:
+        raise ValueError(
+            f"Формат превью {preview_format!r} не совпадает с расширением {output_preview_path!r}."
+        )
+    if full_preview_path and (preview_format_for_path(full_preview_path) or "png") != output_format:
+        raise ValueError(
+            "Миниатюра и детальное превью должны иметь одинаковый формат: "
+            f"{output_preview_path!r}, {full_preview_path!r}."
+        )
     magick_cmd = shutil.which("magick")
     if not magick_cmd:
         raise FileNotFoundError("Утилита ImageMagick (`magick`) не найдена в системе.")
@@ -203,9 +229,12 @@ def generate_preview(
             "-fill", "none",
             "-draw", f"rectangle {gx1},{gy1} {gx2},{gy2}",
         ])
+    output_options = jpeg_output_arguments(jpeg_quality) if output_format == "jpeg" else []
     # Keep the old output path as the compact, API-compatible rendition.
-    cmd.extend(["-resize", f"{PREVIEW_MAX_PIXELS}x{PREVIEW_MAX_PIXELS}>"])
-    cmd.append(output_preview_path)
+    thumbnail_cmd = [
+        *cmd, "-resize", f"{PREVIEW_MAX_PIXELS}x{PREVIEW_MAX_PIXELS}>",
+        *output_options, output_preview_path,
+    ]
     work_root = preview_work_dir(Path(output_preview_path))
     with tempfile.TemporaryDirectory(prefix="magick-preview_", dir=work_root) as temp_scratch:
         scratch = Path(temp_scratch)
@@ -213,14 +242,15 @@ def generate_preview(
         env["TMPDIR"] = str(scratch)
         env["MAGICK_TMPDIR"] = str(scratch)
         env["MAGICK_TEMPORARY_PATH"] = str(scratch)
-        run_command(cmd, check=True, env=env)
+        run_command(thumbnail_cmd, check=True, env=env)
         if full_preview_path:
             full_target = Path(full_preview_path)
             full_target.parent.mkdir(parents=True, exist_ok=True)
             full_cmd = [
-                *cmd[:-3],
+                *cmd,
                 "-resize",
                 f"{PREVIEW_FULL_MAX_PIXELS}x{PREVIEW_FULL_MAX_PIXELS}>",
+                *output_options,
                 str(full_target),
             ]
             run_command(full_cmd, check=True, env=env)

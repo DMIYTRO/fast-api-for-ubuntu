@@ -77,3 +77,23 @@ def test_uses_press_when_account_is_already_in_inbox(tmp_path: Path):
 
     assert ("cwd", "inbox/press") in ftp.calls
     assert ("cwd", "press") in ftp.calls
+
+
+def test_uploads_jpeg_and_historical_png_previews_preserving_order(tmp_path: Path):
+    face = tmp_path / "order-face_preview.jpg"
+    back = tmp_path / "order-back_preview.png"
+    face.write_bytes(b"\xff\xd8\xffface")
+    back.write_bytes(b"\x89PNGback")
+    ftp = FakeFtp()
+    uploader = FtpPreviewUploader(
+        "ftp.example.test", "user", "password", ftp_factory=lambda: ftp
+    )
+
+    # The same path twice is uploaded once; extension does not matter.
+    result = uploader.upload([face, back, face])
+
+    assert result == ["order-face_preview.jpg", "order-back_preview.png"]
+    assert ftp.uploaded == [
+        ("STOR order-face_preview.jpg", b"\xff\xd8\xffface"),
+        ("STOR order-back_preview.png", b"\x89PNGback"),
+    ]

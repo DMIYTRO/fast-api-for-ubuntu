@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import shutil
 from uuid import uuid4
-from typing import Any
+from typing import Any, Callable, Sequence
 
 import pymupdf
 
@@ -71,7 +71,12 @@ def _page_index(file: dict[str, Any], ordered_files: list[dict[str, Any]]) -> in
     return ordered_files.index(file)
 
 
-def build_reviewed_layered_print_pdf(order: dict[str, Any], input_root: Path) -> Path | None:
+def build_reviewed_layered_print_pdf(
+    order: dict[str, Any],
+    input_root: Path,
+    *,
+    pdf_merger: Callable[[Sequence[Path], Path, str], None] | None = None,
+) -> Path | None:
     """Prepare one print part per order file and assemble the checked pages.
 
     Ordinary file pages are taken from the production PDF. Layered TIFF pages
@@ -217,37 +222,40 @@ def build_reviewed_layered_print_pdf(order: dict[str, Any], input_root: Path) ->
     production_name = production_pdf.stem if production_pdf.is_file() else str(order.get("order_id") or "order")
     output = output_dir / f"{production_name}_reviewed-layered.pdf"
     temporary = output.with_name(f".{output.stem}.{uuid4().hex}.tmp.pdf")
-    assembled = pymupdf.open()
-    opened_sources: list[pymupdf.Document] = []
     try:
+        ordered_parts: list[Path] = []
         for index in range(page_count):
             source_path = part_paths.get(index)
             if source_path is None:
                 raise ReviewedLayeredPdfError(
                     f"Не создана печатная версия файла для страницы {index + 1}."
                 )
-            document = pymupdf.open(source_path)
-            opened_sources.append(document)
-            source_page_index = 0
-            if source_page_index >= document.page_count:
-                raise ReviewedLayeredPdfError(
-                    f"В просмотренном PDF для страницы {index + 1} нет страницы."
-                )
-            assembled.insert_pdf(
-                document,
-                from_page=source_page_index,
-                to_page=source_page_index,
-            )
-        if assembled.page_count != page_count:
-            raise ReviewedLayeredPdfError("Не удалось собрать все страницы итогового PDF.")
-        assembled.save(temporary, garbage=3, deflate=True)
+            with pymupdf.open(source_path) as document:
+                if document.page_count == 0:
+                    raise ReviewedLayeredPdfError(
+                        f"В просмотренном PDF для страницы {index + 1} нет страницы."
+                    )
+            ordered_parts.append(source_path)
+        if pdf_merger is not None:
+            pdf_merger(ordered_parts, temporary, str(order.get("order_id") or production_name))
+        else:
+            assembled = pymupdf.open()
+            try:
+                for source_path in ordered_parts:
+                    with pymupdf.open(source_path) as document:
+                        assembled.insert_pdf(document, from_page=0, to_page=0)
+                if assembled.page_count != page_count:
+                    raise ReviewedLayeredPdfError("Не удалось собрать все страницы итогового PDF.")
+                assembled.save(temporary, garbage=3, deflate=True)
+            finally:
+                assembled.close()
+        with pymupdf.open(temporary) as result_doc:
+            if result_doc.page_count != page_count:
+                raise ReviewedLayeredPdfError("Не удалось собрать все страницы итогового PDF.")
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
     finally:
-        assembled.close()
-        for document in opened_sources:
-            document.close()
         if base is not None:
             base.close()
     try:

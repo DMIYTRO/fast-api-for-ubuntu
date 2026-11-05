@@ -1,0 +1,576 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "callas service",
+  "version": "0.1.0"
+ },
+ "paths": {
+  "/jobs/{job_id}": {
+   "put": {
+    "summary": "Put Job",
+    "operationId": "put_job_jobs__job_id__put",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     },
+     {
+      "name": "x-callas-user",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "X-Callas-User"
+      }
+     },
+     {
+      "name": "authorization",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Authorization"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "oneOf": [
+         {
+          "$ref": "#/components/schemas/MergeSpec"
+         },
+         {
+          "$ref": "#/components/schemas/RenderSpec"
+         },
+         {
+          "$ref": "#/components/schemas/ProcessSpec"
+         }
+        ],
+        "discriminator": {
+         "propertyName": "type",
+         "mapping": {
+          "merge": "#/components/schemas/MergeSpec",
+          "render": "#/components/schemas/RenderSpec",
+          "process": "#/components/schemas/ProcessSpec"
+         }
+        },
+        "title": "Spec"
+       }
+      }
+     }
+    },
+    "responses": {
+     "202": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "summary": "Get Job",
+    "operationId": "get_job_jobs__job_id__get",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     },
+     {
+      "name": "authorization",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Authorization"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "summary": "Delete Job",
+    "operationId": "delete_job_jobs__job_id__delete",
+    "parameters": [
+     {
+      "name": "job_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Job Id"
+      }
+     },
+     {
+      "name": "authorization",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Authorization"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/jobs": {
+   "get": {
+    "summary": "List Jobs",
+    "operationId": "list_jobs_jobs_get",
+    "parameters": [
+     {
+      "name": "status",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Status"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 200,
+       "minimum": 1,
+       "default": 50,
+       "title": "Limit"
+      }
+     },
+     {
+      "name": "authorization",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Authorization"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/profiles": {
+   "get": {
+    "summary": "List Profiles",
+    "operationId": "list_profiles_profiles_get",
+    "parameters": [
+     {
+      "name": "authorization",
+      "in": "header",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Authorization"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/health": {
+   "get": {
+    "summary": "Health",
+    "operationId": "health_health_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "schemas": {
+   "HTTPValidationError": {
+    "properties": {
+     "detail": {
+      "items": {
+       "$ref": "#/components/schemas/ValidationError"
+      },
+      "type": "array",
+      "title": "Detail"
+     }
+    },
+    "type": "object",
+    "title": "HTTPValidationError"
+   },
+   "InputFile": {
+    "properties": {
+     "path": {
+      "type": "string",
+      "title": "Path"
+     },
+     "sha256": {
+      "anyOf": [
+       {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{64}$"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Sha256"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "path"
+    ],
+    "title": "InputFile"
+   },
+   "MergeSpec": {
+    "properties": {
+     "type": {
+      "type": "string",
+      "const": "merge",
+      "title": "Type"
+     },
+     "inputs": {
+      "items": {
+       "$ref": "#/components/schemas/InputFile"
+      },
+      "type": "array",
+      "maxItems": 5000,
+      "minItems": 1,
+      "title": "Inputs"
+     },
+     "output": {
+      "type": "string",
+      "title": "Output"
+     },
+     "optimize": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Optimize"
+     },
+     "skip_corrupt": {
+      "type": "boolean",
+      "title": "Skip Corrupt",
+      "default": false
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "type",
+     "inputs",
+     "output"
+    ],
+    "title": "MergeSpec"
+   },
+   "ProcessSpec": {
+    "properties": {
+     "type": {
+      "type": "string",
+      "const": "process",
+      "title": "Type"
+     },
+     "input": {
+      "$ref": "#/components/schemas/InputFile"
+     },
+     "profile": {
+      "type": "string",
+      "maxLength": 300,
+      "minLength": 1,
+      "title": "Profile"
+     },
+     "mode": {
+      "type": "string",
+      "enum": [
+       "fix",
+       "analyze"
+      ],
+      "title": "Mode"
+     },
+     "report": {
+      "items": {
+       "type": "string",
+       "enum": [
+        "xml",
+        "pdf"
+       ]
+      },
+      "type": "array",
+      "maxItems": 2,
+      "minItems": 1,
+      "title": "Report"
+     },
+     "out_dir": {
+      "type": "string",
+      "title": "Out Dir"
+     },
+     "variables": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "type": "object",
+      "maxProperties": 50,
+      "title": "Variables"
+     },
+     "output_name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Output Name"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "type",
+     "input",
+     "profile",
+     "mode",
+     "out_dir"
+    ],
+    "title": "ProcessSpec",
+    "description": "Запуск профиля pdfToolbox: проверка (analyze) или проверка с исправлением (fix)."
+   },
+   "RenderSpec": {
+    "properties": {
+     "type": {
+      "type": "string",
+      "const": "render",
+      "title": "Type"
+     },
+     "input": {
+      "$ref": "#/components/schemas/InputFile"
+     },
+     "out_dir": {
+      "type": "string",
+      "title": "Out Dir"
+     },
+     "dpi": {
+      "type": "integer",
+      "maximum": 1200.0,
+      "minimum": 36.0,
+      "title": "Dpi",
+      "default": 150
+     },
+     "format": {
+      "type": "string",
+      "enum": [
+       "png",
+       "webp"
+      ],
+      "title": "Format",
+      "default": "png"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "type",
+     "input",
+     "out_dir"
+    ],
+    "title": "RenderSpec"
+   },
+   "ValidationError": {
+    "properties": {
+     "loc": {
+      "items": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      },
+      "type": "array",
+      "title": "Location"
+     },
+     "msg": {
+      "type": "string",
+      "title": "Message"
+     },
+     "type": {
+      "type": "string",
+      "title": "Error Type"
+     }
+    },
+    "type": "object",
+    "required": [
+     "loc",
+     "msg",
+     "type"
+    ],
+    "title": "ValidationError"
+   }
+  }
+ }
+}

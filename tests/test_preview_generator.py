@@ -132,3 +132,139 @@ def test_preview_cache_rejects_configured_local_disk_path(tmp_path: Path) -> Non
     }), patch("core.preview_cache._is_external_mount", return_value=True):
         cache = preview_cache_root()
         assert cache == share / ".preview-cache"
+
+
+def _identify(path: Path, fmt: str) -> list[str]:
+    import shutil
+    import subprocess
+
+    magick = shutil.which("magick")
+    assert magick
+    return subprocess.run(
+        [magick, "identify", "-format", fmt, str(path)],
+        check=True, capture_output=True, text=True,
+    ).stdout.split("|")
+
+
+def _share_env(share: Path):
+    return patch.dict("os.environ", {"IMAGE_MAGIC_INPUT_DIR": str(share)}), patch(
+        "core.preview_cache._is_external_mount", return_value=True
+    )
+
+
+def test_jpeg_output_arguments_are_explicit_in_command(tmp_path: Path) -> None:
+    thumbnail = tmp_path / "Previews" / "preview.jpg"
+    with patch("core.preview_generator.shutil.which", return_value="/usr/bin/magick"), patch(
+        "core.preview_generator.run_command"
+    ) as run_command, patch("core.preview_generator.preview_work_dir", return_value=tmp_path):
+        generate_preview(
+            "source.png", str(thumbnail), dpi=300, w_px=2400, h_px=1600,
+            full_preview_path=str(tmp_path / "full.jpg"), preview_format="jpeg",
+        )
+    for call, limit in zip(run_command.call_args_list, (PREVIEW_MAX_PIXELS, PREVIEW_FULL_MAX_PIXELS)):
+        cmd = call.args[0]
+        assert cmd[cmd.index("-resize") + 1] == f"{limit}x{limit}>"
+        assert cmd[cmd.index("-background") + 1] == "white"
+        assert "remove" in cmd and "off" in cmd
+        assert cmd[cmd.index("-sampling-factor") + 1] == "1x1"
+        assert cmd[cmd.index("-quality") + 1] == "95"
+        assert cmd[-1].endswith(".jpg")
+
+
+def test_png_output_has_no_jpeg_options_by_default(tmp_path: Path) -> None:
+    with patch("core.preview_generator.shutil.which", return_value="/usr/bin/magick"), patch(
+        "core.preview_generator.run_command"
+    ) as run_command, patch("core.preview_generator.preview_work_dir", return_value=tmp_path):
+        generate_preview("source.png", str(tmp_path / "p.png"), dpi=300, w_px=2400, h_px=1600)
+    cmd = run_command.call_args.args[0]
+    assert "-quality" not in cmd and "-sampling-factor" not in cmd
+    assert cmd[-1].endswith("p.png")
+
+
+def test_format_must_match_suffix_and_thumbnail_full_must_match(tmp_path: Path) -> None:
+    import pytest
+
+    with pytest.raises(ValueError):
+        generate_preview("s.png", str(tmp_path / "p.png"), 300, 100, 100, preview_format="jpeg")
+    with pytest.raises(ValueError):
+        generate_preview(
+            "s.png", str(tmp_path / "p.jpg"), 300, 100, 100,
+            full_preview_path=str(tmp_path / "full.png"),
+        )
+
+
+def test_real_jpeg_render_sizes_quality_sampling_and_white_background(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    import pytest
+
+    magick = shutil.which("magick")
+    if not magick:
+        pytest.skip("ImageMagick is required")
+    share = tmp_path / "share"
+    (share / "Previews").mkdir(parents=True)
+    source = share / "source.png"
+    # Fully transparent source: JPEG must show an explicit white backdrop.
+    subprocess.run([magick, "-size", "4000x2000", "xc:none", str(source)], check=True)
+    thumbnail = share / "Previews" / "source_preview.jpg"
+    full = share / "Previews" / "source_full.jpg"
+    env, mount = _share_env(share)
+    with env, mount:
+        result = generate_preview(
+            str(source), str(thumbnail), dpi=300, w_px=4000, h_px=2000,
+            full_preview_path=str(full), preview_format="jpeg",
+        )
+    assert result == str(thumbnail)
+    for path, limit in ((thumbnail, 480), (full, 1800)):
+        fmt, width, height, sampling = _identify(path, "%m|%w|%h|%[jpeg:sampling-factor]")
+        assert fmt == "JPEG"
+        assert max(int(width), int(height)) == limit
+        assert sampling == "1x1,1x1,1x1"
+    centre = subprocess.run(
+        [magick, str(thumbnail), "-format", "%[pixel:p{240,120}]", "info:"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert centre.lower() in {"srgb(255,255,255)", "white", "#ffffff"}
+    quality = _identify(thumbnail, "%Q")[0]
+    assert int(quality) >= 94
+
+
+def test_real_png_render_still_supported_for_historical_format(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    import pytest
+
+    magick = shutil.which("magick")
+    if not magick:
+        pytest.skip("ImageMagick is required")
+    share = tmp_path / "share"
+    (share / "Previews").mkdir(parents=True)
+    source = share / "source.png"
+    subprocess.run([magick, "-size", "1000x500", "xc:#336699", str(source)], check=True)
+    thumbnail = share / "Previews" / "source_preview.png"
+    env, mount = _share_env(share)
+    with env, mount:
+        generate_preview(str(source), str(thumbnail), dpi=300, w_px=1000, h_px=500)
+    assert _identify(thumbnail, "%m")[0] == "PNG"
+
+
+def test_real_jpeg_render_of_cmyk_source_is_rgb(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    import pytest
+
+    magick = shutil.which("magick")
+    if not magick:
+        pytest.skip("ImageMagick is required")
+    share = tmp_path / "share"
+    (share / "Previews").mkdir(parents=True)
+    source = share / "cmyk.tif"
+    subprocess.run([magick, "-size", "800x600", "xc:#336699", "-colorspace", "CMYK", str(source)], check=True)
+    thumbnail = share / "Previews" / "cmyk_preview.jpg"
+    env, mount = _share_env(share)
+    with env, mount:
+        generate_preview(str(source), str(thumbnail), dpi=300, w_px=800, h_px=600)
+    assert _identify(thumbnail, "%[colorspace]")[0] == "sRGB"

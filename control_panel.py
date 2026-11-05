@@ -59,7 +59,7 @@ from services.sborka_integration import (
 )
 from services.ftp_preview_uploader import build_ftp_preview_uploader
 from services.return_preview import CUSTOM_PREVIEWS_RELATIVE_PATH, custom_return_preview_path
-from core.preview_cache import full_preview_cache_path
+from core.preview_cache import full_preview_cache_path, preview_media_type, preview_variants
 from services.repository import InMemoryRunRepository, RunRepository
 from services.event_retention import run_event_retention
 
@@ -368,10 +368,9 @@ def _safe_rework_history_preview_path(root_path: str, order_id: str) -> Path | N
     custom = custom_return_preview_path(order_id, input_path=root)
     if custom is not None:
         return _safe_history_preview_path(root_path, str(custom))
-    return _safe_history_preview_path(
-        root_path,
-        str(root / "Previews" / "Return" / f"{order_id}_return-preview.png"),
-    )
+    # The return collage is JPEG or (historically) PNG; use the newest one.
+    collages = preview_variants(root / "Previews" / "Return" / f"{order_id}_return-preview")
+    return _safe_history_preview_path(root_path, str(collages[0]) if collages else None)
 
 
 def _find_order(
@@ -484,6 +483,33 @@ def _default_repository(database: Database) -> RunRepository:
     return InMemoryRunRepository()
 
 
+def _callas_processor_factory(settings: Settings):
+    """BatchProcessor factory with optional remote callas merge/render."""
+    from functools import partial
+
+    from processing.batch_processor import BatchProcessor
+    from services.callas import CallasClient
+
+    if not (settings.callas_merge_enabled or settings.callas_render_enabled):
+        return BatchProcessor
+    client = CallasClient.from_settings(settings)
+    return partial(
+        BatchProcessor,
+        callas_client=client,
+        callas_merge=settings.callas_merge_enabled,
+        callas_render=settings.callas_render_enabled,
+    )
+
+
+def _callas_pdf_merger(settings: Settings):
+    """Callas-склейка итогового reviewed-PDF, если merge включён; иначе None (PyMuPDF)."""
+    if not settings.callas_merge_enabled:
+        return None
+    from services.callas import CallasClient, make_callas_pdf_merger
+
+    return make_callas_pdf_merger(CallasClient.from_settings(settings))
+
+
 def _pitstop_adapter_factory(settings: Settings):
     required = {
         "IMAGE_MAGIC_PITSTOP_HOST": settings.pitstop_host,
@@ -540,10 +566,13 @@ def _pitstop_adapter_factory(settings: Settings):
             transport=transport,
         )
 
+    processor_factory = _callas_processor_factory(settings)
+
     def factory(options: ProcessingOptions) -> BatchProcessorAdapter:
         service = service_for(Path(options.input_path), options.direction)
         return BatchProcessorAdapter(
             options,
+            processor_factory=processor_factory,
             pitstop_service=service,
             order_info_fetcher=(
                 build_order_info_fetcher(
@@ -568,7 +597,10 @@ def _default_adapter_factory(settings: Settings):
         if settings.sborka_enabled
         else None
     )
-    return lambda options: BatchProcessorAdapter(options, order_info_fetcher=fetcher)
+    processor_factory = _callas_processor_factory(settings)
+    return lambda options: BatchProcessorAdapter(
+        options, processor_factory=processor_factory, order_info_fetcher=fetcher
+    )
 
 
 def create_app(
@@ -663,6 +695,7 @@ def create_app(
         reviewed_pdf_pitstop_service_factory=getattr(
             processor_factory, "pitstop_service_for", None
         ),
+        pdf_merger=_callas_pdf_merger(settings),
         prepress_sender=(
             build_sender(
                 settings.sborka_api_dir,
@@ -1015,10 +1048,12 @@ def create_app(
                 raise APIError(404, "preview_not_found", "Детальное превью ещё не создано.")
             return FileResponse(
                 rendition,
+                media_type=preview_media_type(rendition),
                 headers={"Cache-Control": "private, no-cache, must-revalidate"},
             )
         return FileResponse(
             thumbnail,
+            media_type=preview_media_type(thumbnail),
             headers={"Cache-Control": "private, no-cache, must-revalidate"},
         )
 

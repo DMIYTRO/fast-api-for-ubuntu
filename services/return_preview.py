@@ -12,7 +12,20 @@ from typing import Iterable
 import shutil
 import subprocess
 
+from core.preview_cache import (
+    PREVIEW_SUFFIXES,
+    default_preview_format,
+    jpeg_output_arguments,
+    normalize_preview_format,
+    preview_extension,
+    preview_name_key,
+    preview_variants,
+)
 from core.tool_runner import ExternalToolError, run_command
+
+# Generated previews: historical ``*_preview.png`` and new ``*_preview.jpg``.
+PREVIEW_FILE_RE = re.compile(r"_preview\.(?:jpe?g|png)$", re.IGNORECASE)
+_SIDE_PREVIEW_RE = re.compile(r"(?:_|-)(face|back)_preview\.(?:jpe?g|png)$", re.IGNORECASE)
 
 
 class ReturnPreviewNotFoundError(RuntimeError):
@@ -47,6 +60,7 @@ def create_return_preview_collage(
     input_path: Path,
     face_preview_path: Path,
     back_preview_path: Path,
+    output_format: str | None = None,
 ) -> Path:
     """Create the upload preview for a two-sided order.
 
@@ -66,6 +80,7 @@ def create_return_preview_collage(
         order_id,
         input_path=input_path,
         preview_paths=(face_preview_path, back_preview_path),
+        output_format=output_format,
     )
 
 
@@ -74,8 +89,15 @@ def create_return_preview_sheet(
     *,
     input_path: Path,
     preview_paths: Iterable[Path],
+    output_format: str | None = None,
 ) -> Path:
-    """Create one deterministic Sborka preview from ordered pages/sides."""
+    """Create one deterministic Sborka preview from ordered pages/sides.
+
+    Inputs may be historical PNG or new JPEG previews in any mix.  The collage
+    is written in ``output_format`` (``'jpeg'`` | ``'png'``; default
+    ``IMAGE_MAGIC_PREVIEW_FORMAT``, PNG unless enabled) as
+    ``<order>_return-preview.<jpg|png>``.
+    """
     normalized_order_id = str(order_id).strip()
     if not normalized_order_id or Path(normalized_order_id).name != normalized_order_id:
         raise ValueError("Номер заказа не должен быть пустым или содержать путь.")
@@ -95,7 +117,11 @@ def create_return_preview_sheet(
 
     output_dir = Path(input_path) / RETURN_PREVIEWS_RELATIVE_PATH
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{normalized_order_id}_return-preview.png"
+    resolved_format = normalize_preview_format(output_format)
+    output_path = output_dir / (
+        f"{normalized_order_id}_return-preview{preview_extension(resolved_format)}"
+    )
+    output_options = jpeg_output_arguments() if resolved_format == "jpeg" else []
 
     # Parenthesized image sequences keep each side independent before appending.
     # -resize x1000 changes only height, so the original aspect ratio is retained.
@@ -116,6 +142,7 @@ def create_return_preview_sheet(
         "white",
         "+smush",
         "28",
+        *output_options,
         str(output_path),
     ]
     try:
@@ -147,12 +174,14 @@ def prepare_return_preview_name(
         return custom_preview.name
     preview_dir = input_path / PROCESSED_PREVIEWS_RELATIVE_PATH
     candidates: dict[str, Path] = {}
+    # Names forced by a layered composite; they win over PNG/JPEG twins.
+    locked: set[str] = set()
     for preview_path in preview_paths or ():
         path = Path(str(preview_path))
         if path.is_file():
-            candidates[path.name] = path
+            _add_candidate(candidates, locked, path)
         elif (preview_dir / path.name).is_file():
-            candidates[path.name] = preview_dir / path.name
+            _add_candidate(candidates, locked, preview_dir / path.name)
 
     normalized_files = list(files or [])
     sides: dict[str, str] = {}
@@ -163,31 +192,44 @@ def prepare_return_preview_name(
         source_path = item.get("path")
         if side in {"face", "back"} and source_path:
             source_stem = Path(str(source_path)).stem
-            expected_name = f"{source_stem}_preview.png"
+            # Prefer whichever generated variant (JPEG or historical PNG) is
+            # newest; fall back to the name of the currently configured format.
+            variants = preview_variants(preview_dir / f"{source_stem}_preview")
+            expected_name = (
+                variants[0].name
+                if variants
+                else f"{source_stem}_preview{preview_extension(default_preview_format())}"
+            )
             sides[side] = expected_name
-            processed_path = preview_dir / expected_name
-            if processed_path.is_file():
-                candidates[expected_name] = processed_path
+            if variants:
+                _add_candidate(candidates, locked, variants[0])
             # Layered TIFF orders already have a rendered composite preview
             # alongside their experimental PDF. Use that image for a rework
             # request if the ordinary batch preview has gone missing.
-            layered_preview = generated_preview_dir / f"{source_stem}_layered-composite.png"
-            if item.get("has_unflattened_layers") and layered_preview.is_file():
-                candidates[expected_name] = layered_preview
+            layered_variants = preview_variants(
+                generated_preview_dir / f"{source_stem}_layered-composite"
+            )
+            if item.get("has_unflattened_layers") and layered_variants:
+                # Keep the historical contract: the entry is addressed by the
+                # expected ``*_preview.*`` name.
+                for name in [n for n in candidates if preview_name_key(n) == preview_name_key(expected_name)]:
+                    del candidates[name]
+                candidates[expected_name] = layered_variants[0]
+                locked.add(expected_name)
 
     if preview_dir.is_dir():
         order_marker = f"-{str(order_id).strip()})"
-        for item in preview_dir.iterdir():
+        for item in sorted(preview_dir.iterdir()):
             if (
                 item.is_file()
-                and item.name.endswith("_preview.png")
+                and PREVIEW_FILE_RE.search(item.name)
                 and order_marker in item.name
             ):
-                candidates.setdefault(item.name, item)
+                _add_candidate(candidates, locked, item)
 
     if {"face", "back"}.issubset(sides):
-        face_path = candidates.get(sides["face"])
-        back_path = candidates.get(sides["back"])
+        face_path = _find_candidate(candidates, sides["face"])
+        back_path = _find_candidate(candidates, sides["back"])
         if not face_path or not back_path:
             raise ReturnPreviewNotFoundError(
                 f"Не найдены превью face/back для заказа №{order_id}."
@@ -202,7 +244,7 @@ def prepare_return_preview_name(
     side_by_filename = {
         match.group(1).lower(): path
         for filename, path in candidates.items()
-        if (match := re.search(r"(?:_|-)(face|back)_preview\.png$", filename, re.IGNORECASE))
+        if (match := _SIDE_PREVIEW_RE.search(filename))
     }
     if set(side_by_filename) == {"face", "back"} and len(candidates) == 2:
         return create_return_preview_collage(
@@ -229,6 +271,43 @@ def prepare_return_preview_name(
         input_path=input_path,
         preview_paths=ordered,
     ).name
+
+
+def _add_candidate(candidates: dict[str, Path], locked: set[str], path: Path) -> None:
+    """Register a preview by name, collapsing PNG/JPEG twins of one preview.
+
+    When both ``x_preview.png`` and ``x_preview.jpg`` exist (for example after a
+    re-check with another format) only the newest is kept; ties prefer JPEG.
+    Entries in ``locked`` are never replaced.
+    """
+    key = preview_name_key(path.name)
+    twins = [name for name in candidates if preview_name_key(name) == key]
+    if any(name in locked for name in twins):
+        return
+    if twins:
+        current = candidates[twins[0]]
+        if _freshness(path) <= _freshness(current):
+            return
+        for name in twins:
+            del candidates[name]
+    candidates[path.name] = path
+
+
+def _find_candidate(candidates: dict[str, Path], name: str) -> Path | None:
+    """Look a preview up by name, accepting its PNG/JPEG twin."""
+    if name in candidates:
+        return candidates[name]
+    key = preview_name_key(name)
+    return next((path for item, path in candidates.items() if preview_name_key(item) == key), None)
+
+
+def _freshness(path: Path) -> tuple[int, int]:
+    suffix = path.suffix.lower()
+    priority = -PREVIEW_SUFFIXES.index(suffix) if suffix in PREVIEW_SUFFIXES else -len(PREVIEW_SUFFIXES)
+    try:
+        return (path.stat().st_mtime_ns, priority)
+    except OSError:
+        return (0, priority)
 
 
 def _preview_sort_key(filename: str) -> tuple[int, str]:

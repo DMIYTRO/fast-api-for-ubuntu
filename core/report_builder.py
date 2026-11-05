@@ -309,7 +309,17 @@ def build_orders_html_report(
                 continue
             img_src = ""
             if preview_dir:
-                p_candidate = preview_dir / f"{f_item.path.stem}_preview.png"
+                p_candidate = next(
+                    (
+                        candidate
+                        for candidate in (
+                            preview_dir / f"{f_item.path.stem}_preview.jpg",
+                            preview_dir / f"{f_item.path.stem}_preview.png",
+                        )
+                        if candidate.is_file()
+                    ),
+                    preview_dir / f"{f_item.path.stem}_preview.png",
+                )
                 if p_candidate.is_file():
                     try:
                         img_src = os.path.relpath(p_candidate, out_path.parent)

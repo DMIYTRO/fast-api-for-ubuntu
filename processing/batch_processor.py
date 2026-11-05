@@ -1,15 +1,21 @@
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import hashlib
+import logging
 import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Mapping, Optional
+from typing import TYPE_CHECKING, Mapping, Optional
+
+if TYPE_CHECKING:  # services.__init__ imports this module; avoid a cycle
+    from services.callas import CallasClient
 
 from core.inspector import count_frames, inspect_file, inspect_tiff_structure
 from core.pdf_inspector import inspect_pdf
 from core.pdf_exporter import convert_image_to_pdf, merge_pdfs_with_pymupdf
+from core.preview_cache import preview_extension
 from core.preview_generator import generate_preview
 from core.preview_cache import full_preview_cache_path, preview_work_dir
 from core.resampler import resample_image
@@ -21,6 +27,8 @@ from .profile_rules import evaluate_metadata_rules
 from .filename_parser import parse_filename
 from .models import FileCheck, OrderCheck
 
+
+logger = logging.getLogger("image_magic.callas")
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".pdf"}
 REJECTED_EXTENSIONS = {".psd", ".bmp", ".heic", ".heif"}
@@ -55,7 +63,13 @@ class BatchProcessor:
         min_dpi: float | None = None,
         *,
         profile: PrePressProfile = DEFAULT_PROFILE,
+        callas_client: "CallasClient | None" = None,
+        callas_merge: bool = False,
+        callas_render: bool = False,
     ):
+        self.callas_client = callas_client
+        self.callas_merge = bool(callas_merge and callas_client is not None)
+        self.callas_render = bool(callas_render and callas_client is not None)
         self.input_dir = input_dir
         self.output_dir = output_dir
         self.profile = profile
@@ -500,7 +514,7 @@ class BatchProcessor:
                     )
 
                     temporary_output = Path(temporary_dir) / "combined.pdf"
-                    merge_pdfs_with_pymupdf(page_pdfs, str(temporary_output))
+                    self._merge_page_pdfs(page_pdfs, temporary_output, order)
                     self._validate_created_pdf(
                         temporary_output,
                         page_refs,
@@ -511,6 +525,58 @@ class BatchProcessor:
             except Exception as exc:
                 results.append((order, output_path, str(exc)))
         return results
+
+    @staticmethod
+    def _file_sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _cleanup_callas_job(self, job_id: str) -> None:
+        assert self.callas_client is not None
+        try:
+            self.callas_client.delete(job_id)
+        except Exception:
+            pass
+        shutil.rmtree(self.callas_client.job_dir(job_id), ignore_errors=True)
+
+    def _merge_page_pdfs(self, page_pdfs, temporary_output: Path, order: OrderCheck) -> None:
+        """Merge via remote callas when enabled; otherwise via PyMuPDF."""
+        if not self.callas_merge:
+            merge_pdfs_with_pymupdf(page_pdfs, str(temporary_output))
+            return
+        from services.callas import deterministic_job_id
+
+        job_id = deterministic_job_id(
+            f"merge-{order.order_id}",
+            *(self._file_sha256(Path(item)) for item in page_pdfs),
+        )
+        logger.info("callas.merge.start order=%s job_id=%s inputs=%d", order.order_id, job_id, len(page_pdfs))
+        try:
+            result = self.callas_client.merge(
+                [Path(item) for item in page_pdfs], temporary_output.name, job_id=job_id
+            )
+            shutil.copyfile(result, temporary_output)
+            logger.info("callas.merge.done order=%s job_id=%s", order.order_id, job_id)
+        finally:
+            self._cleanup_callas_job(job_id)
+
+    def _render_pdf_with_callas(self, pdf_path: Path, render_dpi: float, target_dir: Path) -> None:
+        from services.callas import deterministic_job_id
+
+        job_id = deterministic_job_id(
+            f"render-{pdf_path.stem}", self._file_sha256(pdf_path), str(int(render_dpi))
+        )
+        logger.info("callas.render.start pdf=%s job_id=%s dpi=%d", pdf_path.name, job_id, int(render_dpi))
+        try:
+            pages = self.callas_client.render(pdf_path, int(render_dpi), job_id=job_id)
+            logger.info("callas.render.done pdf=%s job_id=%s pages=%d", pdf_path.name, job_id, len(pages))
+            for number, page in enumerate(pages, start=1):
+                shutil.copyfile(page, target_dir / f"page-{number:03d}.png")
+        finally:
+            self._cleanup_callas_job(job_id)
 
     @staticmethod
     def _ordered_files_for_creation(order: OrderCheck) -> list[FileCheck]:
@@ -742,7 +808,7 @@ class BatchProcessor:
         # Линия реза на превью исторически имеет толщину 1 мм; это не вылет.
         bleed_mm = 1.0 if bleed_mm is None else bleed_mm
         gs_cmd = shutil.which("gs")
-        if not gs_cmd:
+        if not gs_cmd and not self.callas_render:
             raise FileNotFoundError("Ghostscript (`gs`) не найден для рендеринга превью.")
 
         preview_dir.mkdir(parents=True, exist_ok=True)
@@ -752,28 +818,31 @@ class BatchProcessor:
             prefix=f".preview_{pdf_path.stem}_", dir=preview_work_dir(preview_dir / ".preview")
         ) as temp_dir:
             temp_path = Path(temp_dir)
-            page_pattern = temp_path / "page-%03d.png"
-            command = [
-                gs_cmd,
-                "-q",
-                "-dSAFER",
-                "-dBATCH",
-                "-dNOPAUSE",
-                "-sDEVICE=png16m",
-                f"-r{int(render_dpi)}",
-                f"-sOutputFile={page_pattern}",
-                str(pdf_path),
-            ]
-            tool_env = os.environ.copy()
-            tool_env["TMPDIR"] = str(temp_path)
-            tool_env["TEMP"] = str(temp_path)
-            tool_env["TMP"] = str(temp_path)
-            result = run_command(
-                command, capture_output=True, text=True, env=tool_env
-            )
-            if result.returncode != 0:
-                details = (result.stderr or result.stdout).strip()
-                raise ValueError(f"ошибка рендеринга PDF для превью: {details}")
+            if self.callas_render:
+                self._render_pdf_with_callas(pdf_path, render_dpi, temp_path)
+            else:
+                page_pattern = temp_path / "page-%03d.png"
+                command = [
+                    gs_cmd,
+                    "-q",
+                    "-dSAFER",
+                    "-dBATCH",
+                    "-dNOPAUSE",
+                    "-sDEVICE=png16m",
+                    f"-r{int(render_dpi)}",
+                    f"-sOutputFile={page_pattern}",
+                    str(pdf_path),
+                ]
+                tool_env = os.environ.copy()
+                tool_env["TMPDIR"] = str(temp_path)
+                tool_env["TEMP"] = str(temp_path)
+                tool_env["TMP"] = str(temp_path)
+                result = run_command(
+                    command, capture_output=True, text=True, env=tool_env
+                )
+                if result.returncode != 0:
+                    details = (result.stderr or result.stdout).strip()
+                    raise ValueError(f"ошибка рендеринга PDF для превью: {details}")
 
             rendered_pages = sorted(temp_path.glob("page-*.png"))
             if not rendered_pages:
@@ -784,11 +853,11 @@ class BatchProcessor:
                 meta = inspect_file(str(rendered_page))
                 if page_names and idx <= len(page_names):
                     base_name = page_names[idx - 1]
-                    preview_filename = f"{base_name}_preview.png"
+                    preview_filename = f"{base_name}_preview{preview_extension()}"
                 elif total_pages == 1:
-                    preview_filename = f"{pdf_path.stem}_preview.png"
+                    preview_filename = f"{pdf_path.stem}_preview{preview_extension()}"
                 else:
-                    preview_filename = f"{pdf_path.stem}_page{idx}_preview.png"
+                    preview_filename = f"{pdf_path.stem}_page{idx}_preview{preview_extension()}"
 
                 output_preview_path = preview_dir / preview_filename
                 page_overlay = self._overlay_for_page(fold_overlay, idx)
@@ -884,7 +953,7 @@ class BatchProcessor:
                     )
                 else:
                     meta = inspect_file(str(file_check.path))
-                    preview_path = preview_dir / f"{file_check.path.stem}_preview.png"
+                    preview_path = preview_dir / f"{file_check.path.stem}_preview{preview_extension()}"
                     generate_preview(
                         input_path=str(file_check.path),
                         output_preview_path=str(preview_path),
