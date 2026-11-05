@@ -331,6 +331,35 @@ class SqlRunRepositoryTests(unittest.TestCase):
                 session.scalar(select(func.count()).select_from(FileResult)), 1
             )
 
+    def test_confirmed_error_order_can_transition_to_print(self):
+        run = sample_run(status="completed")
+        run["orders"]["25506185"]["status"] = "error"
+        self.repository.create_run(run)
+        coordinator = RunCoordinator(self.repository, autostart=False)
+
+        with self.assertRaises(ValueError):
+            coordinator.apply_file_transition(
+                "run-1",
+                "25506185",
+                status="accepted_for_print",
+                source_paths={},
+                pdf_path=None,
+                preview_paths=[],
+            )
+        transitioned = coordinator.apply_file_transition(
+            "run-1",
+            "25506185",
+            status="accepted_for_print",
+            source_paths={},
+            pdf_path=None,
+            preview_paths=[],
+            confirm_failed_processing=True,
+        )
+
+        self.assertEqual(
+            transitioned["orders"]["25506185"]["status"], "accepted_for_print"
+        )
+
     def test_path_transition_keeps_file_row_and_correction_decision(self):
         run = sample_run(status="completed")
         run["orders"]["25506185"]["status"] = "passed"

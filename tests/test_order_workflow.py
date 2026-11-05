@@ -469,6 +469,48 @@ class OrderWorkflowTests(unittest.TestCase):
         self.assertEqual(calls, [(["1001", "1002"], None)])
         self.assertEqual([item["status"] for item in result["items"]], ["prepared", "prepared"])
 
+    def test_batch_print_does_not_send_orders_rejected_locally(self):
+        BlockingLifecycle.release.set()
+        self.order["order_id"] = "1001"
+        orders = {
+            "1001": self.order,
+            "1002": dict(self.order, order_id="1002"),
+            "1003": dict(self.order, order_id="1003", status="error"),
+        }
+        with self.database.session_factory() as session, session.begin():
+            for index, order_id in ((2, "1002"), (3, "1003")):
+                session.add(
+                    OrderResult(
+                        id=index,
+                        run_id="run-1",
+                        order_id=order_id,
+                        status=orders[order_id]["status"],
+                        passed=index == 2,
+                    )
+                )
+        calls = []
+        service = OrderWorkflowService(
+            self.coordinator,
+            self.database.session_factory,
+            lambda order_id, _run_id: (self.run, orders[order_id]),
+            lifecycle_factory=BlockingLifecycle,
+            prepress_sender=lambda order_ids, comment: (
+                calls.append((order_ids, comment))
+                or {"http_status": 200, "response": {"ok": True}}
+            ),
+        )
+
+        result = service.prepare(
+            OrderActionCommand(("1001", "1002", "1003"), run_id="run-1"),
+            "print",
+        )
+
+        self.assertEqual(calls, [(["1001", "1002"], None)])
+        self.assertEqual(
+            [item["status"] for item in result["items"]],
+            ["prepared", "prepared", "rejected"],
+        )
+
     def test_composite_print_for_customer_collision_never_calls_legacy_sender(self):
         calls = []
         first = dict(

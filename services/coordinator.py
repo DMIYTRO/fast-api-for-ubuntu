@@ -374,6 +374,7 @@ class RunCoordinator:
         pitstop: dict[str, Any] | None = None,
         current_pdf_revision: int | None = None,
         current_pdf_sha256: str | None = None,
+        confirm_failed_processing: bool = False,
     ) -> dict[str, Any]:
         """Persist paths/status after a deliberate operator file transition."""
         with self._lock:
@@ -382,7 +383,11 @@ class RunCoordinator:
             order = run["orders"].get(stored_key) if stored_key else None
             if order is None:
                 raise RunNotFoundError(f"{run_id}/{order_id}")
-            validate_operator_transition(str(order["status"]), status)
+            validate_operator_transition(
+                str(order["status"]),
+                status,
+                confirm_failed_processing=confirm_failed_processing,
+            )
             for item in order.get("files") or []:
                 old_path = str(item.get("path", ""))
                 if old_path in source_paths:

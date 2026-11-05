@@ -294,7 +294,18 @@ class OrderWorkflowService:
             and not duplicate_external_ids
             and not has_reviewed_layered_files
         ):
-            batch_prepress_result = self.prepress_sender(external_order_ids, None)
+            # Send only orders that will really pass the local validation:
+            # the external status change cannot be rolled back if a later
+            # local check rejects an order.
+            eligible_external_ids = [
+                str(order.get("order_id") or order.get("id") or order_ref)
+                for order_ref, _run, order in resolved_orders
+                if self._batch_print_eligible(order, command)
+            ]
+            if len(eligible_external_ids) > 1:
+                batch_prepress_result = self.prepress_sender(
+                    eligible_external_ids, None
+                )
         with self.session_factory() as session:
             for order_ref, run, order in resolved_orders:
                 order_id = str(order.get("order_id") or order.get("id") or order_ref)
@@ -650,6 +661,7 @@ class OrderWorkflowService:
                             pitstop=reviewed_pitstop,
                             current_pdf_revision=reviewed_revision,
                             current_pdf_sha256=reviewed_sha256,
+                            confirm_failed_processing=command.confirm_failed_processing,
                         )
                         prepress_result = None
                         if batch_prepress_result is not None:
@@ -721,6 +733,39 @@ class OrderWorkflowService:
                 finally:
                     self._release_action(stored.id)
         return {"items": results}
+
+    @staticmethod
+    def _batch_print_eligible(
+        order: dict[str, Any], command: OrderActionCommand
+    ) -> bool:
+        """Mirror the per-order checks that must pass before an external send."""
+        status = str(order.get("status") or "")
+        if status in {"accepted_for_print", "returned_for_rework"}:
+            return False
+        pitstop = order.get("pitstop") or None
+        pitstop_ready = pitstop is None or (
+            pitstop.get("execution_status") == "completed"
+            and pitstop.get("verdict") in {"passed", "warning"}
+            and (
+                order.get("current_pdf_revision") is None
+                or pitstop.get("checked_revision")
+                == order.get("current_pdf_revision")
+            )
+        )
+        if not (
+            (status in {"passed", "warning"} and pitstop_ready)
+            or (command.confirm_failed_processing and status == "error")
+        ):
+            return False
+        try:
+            validate_operator_transition(
+                status,
+                OrderWorkflowService._terminal_status_for_action("print"),
+                confirm_failed_processing=command.confirm_failed_processing,
+            )
+        except ValueError:
+            return False
+        return True
 
     @staticmethod
     def _suggested_conflict_name(destination: Path) -> str:
