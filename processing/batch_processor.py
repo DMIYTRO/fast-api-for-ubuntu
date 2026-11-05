@@ -66,7 +66,10 @@ class BatchProcessor:
         callas_client: "CallasClient | None" = None,
         callas_merge: bool = False,
         callas_render: bool = False,
+        strip_icc_cmyk: bool = False,
     ):
+        # Только CMYK-растры: убираем тег ICCBased без пересчёта значений.
+        self.strip_icc_cmyk = bool(strip_icc_cmyk)
         self.callas_client = callas_client
         self.callas_merge = bool(callas_merge and callas_client is not None)
         self.callas_render = bool(callas_render and callas_client is not None)
@@ -667,6 +670,8 @@ class BatchProcessor:
                 dpi=dpi_arg,
                 compression="none",
                 ignore_tiff_layers=item.tiff_layer_count == 1,
+                strip_icc=self.strip_icc_cmyk
+                and (item.colorspace or "").upper() == "CMYK",
             )
             converted[item.path] = str(page_path)
             page_pdfs.append(str(page_path))

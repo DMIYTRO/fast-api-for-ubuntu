@@ -491,6 +491,8 @@ def _callas_processor_factory(settings: Settings):
     from services.callas import CallasClient
 
     if not (settings.callas_merge_enabled or settings.callas_render_enabled):
+        if settings.strip_icc_cmyk:
+            return partial(BatchProcessor, strip_icc_cmyk=True)
         return BatchProcessor
     client = CallasClient.from_settings(settings)
     return partial(
@@ -498,6 +500,7 @@ def _callas_processor_factory(settings: Settings):
         callas_client=client,
         callas_merge=settings.callas_merge_enabled,
         callas_render=settings.callas_render_enabled,
+        strip_icc_cmyk=settings.strip_icc_cmyk,
     )
 
 
