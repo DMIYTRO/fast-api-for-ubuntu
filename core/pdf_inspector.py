@@ -107,12 +107,11 @@ def _page_content_type(page: pymupdf.Page, images: tuple[PdfImageInfo, ...]) -> 
     # get_image_info() reports displayed images only.  Drawings and text are
     # the observable vector/text content; PDF resource streams alone are not
     # treated as vector content.
-    text_blocks = [
-        block
-        for block in page.get_text("rawdict").get("blocks", [])
-        if block.get("type") == 0
-    ]
-    has_vector = bool(page.get_drawings() or text_blocks)
+    # Only a boolean answer is needed, so use the cheap "blocks" extraction
+    # (block[6] is the block type, 0 = text) and short-circuit before the
+    # drawings scan; "rawdict" and get_drawings() are very slow on large PDFs.
+    has_text = any(block[6] == 0 for block in page.get_text("blocks"))
+    has_vector = has_text or bool(page.get_cdrawings())
     if images and has_vector:
         return "mixed"
     if images:

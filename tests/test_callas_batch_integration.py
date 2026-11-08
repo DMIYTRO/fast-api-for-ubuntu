@@ -75,3 +75,58 @@ def test_merge_and_render_go_through_callas_when_enabled(tmp_path):
 def test_callas_is_off_by_default():
     proc = BatchProcessor(Path("."), Path("."), callas_client=object())
     assert not proc.callas_merge and not proc.callas_render
+
+
+class StickyJobCallas(FakeCallas):
+    """Как боевая служба: повторный job_id возвращает «done», но файлов уже нет."""
+
+    def __init__(self, root: Path):
+        super().__init__(root)
+        self.seen_job_ids: list[str] = []
+
+    def _register(self, job_id: str) -> None:
+        if job_id in self.seen_job_ids:
+            raise RuntimeError(f"Файл результата не появился в общей папке: {job_id}")
+        self.seen_job_ids.append(job_id)
+
+    def merge(self, inputs, output_name, *, job_id, **kwargs):
+        self._register(job_id)
+        return super().merge(inputs, output_name, job_id=job_id, **kwargs)
+
+    def render(self, input, dpi, *, job_id, **kwargs):
+        self._register(job_id)
+        return super().render(input, dpi, job_id=job_id, **kwargs)
+
+
+def _single_page_pdf(path: Path) -> Path:
+    doc = pymupdf.open()
+    doc.new_page(width=100, height=100)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def test_repeated_callas_operations_use_unique_valid_job_ids(tmp_path):
+    from types import SimpleNamespace
+    import re
+
+    fake = StickyJobCallas(tmp_path / "share")
+    proc = BatchProcessor(
+        tmp_path, tmp_path / "PDF", callas_client=fake, callas_merge=True, callas_render=True
+    )
+    pdf = _single_page_pdf(tmp_path / "order.pdf")
+    order = SimpleNamespace(order_id="100")
+
+    for index in range(2):
+        proc._merge_page_pdfs([pdf], tmp_path / f"merged-{index}.pdf", order)
+        pages_dir = tmp_path / f"pages-{index}"
+        pages_dir.mkdir()
+        proc._render_pdf_with_callas(pdf, 36, pages_dir)
+        assert (pages_dir / "page-001.png").is_file()
+
+    merge_ids = fake.seen_job_ids[0::2]
+    render_ids = fake.seen_job_ids[1::2]
+    assert len(set(fake.seen_job_ids)) == 4
+    assert merge_ids[0] != merge_ids[1] and render_ids[0] != render_ids[1]
+    assert all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", item) for item in fake.seen_job_ids)
+    assert fake.deleted == fake.seen_job_ids

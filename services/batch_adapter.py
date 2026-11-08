@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from concurrent.futures import Future
 import hashlib
 import logging
 from pathlib import Path
+import threading
+import time
 from typing import Any, Callable, Sequence
 
 from config.profiles import get_profile
@@ -68,6 +71,7 @@ class BatchProcessorAdapter:
         processor_factory: Callable[..., BatchProcessor] = BatchProcessor,
         pitstop_service: PitStopService | None = None,
         order_info_fetcher: Callable[[Sequence[str]], list[dict[str, Any]]] | None = None,
+        order_info_timeout_seconds: float = 30.0,
     ) -> None:
         self.options = options
         self.input_dir = Path(options.input_path)
@@ -76,51 +80,91 @@ class BatchProcessorAdapter:
         self.troubles_dir = self.input_dir / "Troubles"
         self.pitstop_service = pitstop_service
         self.order_info_fetcher = order_info_fetcher
+        self.order_info_timeout_seconds = order_info_timeout_seconds
+        self._order_info_future: Future[list[dict[str, Any]]] | None = None
+        self._order_info_deadline = 0.0
+        self._order_info_by_id: dict[str, dict[str, Any]] | None = None
+        self._order_info_failed = False
+        self._order_info_lock = threading.Lock()
         self.processor = processor_factory(
             self.input_dir,
             self.pdf_dir,
             profile=get_profile(options.direction),
         )
+        # Sborka is queried once, in the background, as soon as the processor
+        # knows all order ids (before the slow artwork inspection).
+        self.processor.on_orders_grouped = self._start_order_info_fetch
 
     @property
     def pitstop_enabled(self) -> bool:
         return self.pitstop_service is not None
 
     def scan_and_inspect(self) -> list[OrderCheck]:
-        return list(self._enrich_postpress(self.processor.inspect_orders()))
+        orders = list(self.iter_inspect_orders())
+        for order in orders:
+            self._apply_postpress(order, wait=True)
+        return orders
 
     def iter_inspect_orders(self):
-        # Sborka accepts several order IDs in one orderinfo request. Buffering
-        # keeps network work off the image-processing path without making one
-        # request per order.
-        batch: list[OrderCheck] = []
+        # Orders are published right after inspection. Sborka metadata is
+        # applied if it has already arrived; otherwise process_order waits
+        # for it (bounded by order_info_timeout_seconds) before using it.
+        self._order_info_future = None
+        self._order_info_by_id = None
+        self._order_info_failed = False
         for order in self.processor.iter_inspect_orders():
-            batch.append(order)
-            if len(batch) >= 50:
-                yield from self._enrich_postpress(batch)
-                batch = []
-        if batch:
-            yield from self._enrich_postpress(batch)
+            if self._order_info_future is None:
+                # Processor did not report the order ids up front.
+                self._start_order_info_fetch([order.order_id])
+            self._apply_postpress(order, wait=False)
+            yield order
 
-    def _enrich_postpress(self, orders: list[OrderCheck]):
-        if self.order_info_fetcher is None:
-            yield from orders
+    def _start_order_info_fetch(self, order_ids: list[str]) -> None:
+        if self.order_info_fetcher is None or self._order_info_future is not None:
+            return
+        future: Future[list[dict[str, Any]]] = Future()
+        self._order_info_future = future
+        self._order_info_deadline = time.monotonic() + self.order_info_timeout_seconds
+        fetcher = self.order_info_fetcher
+
+        def run() -> None:
+            try:
+                future.set_result(fetcher(list(order_ids)))
+            except BaseException as exc:
+                future.set_exception(exc)
+
+        threading.Thread(target=run, name="sborka-orderinfo", daemon=True).start()
+
+    def _apply_postpress(self, order: OrderCheck, *, wait: bool) -> None:
+        """Apply Sborka metadata to *order*; failures are logged, never raised."""
+        future = self._order_info_future
+        if future is None or self._order_info_failed:
+            return
+        if not wait and not future.done():
             return
         try:
-            records = self.order_info_fetcher([item.order_id for item in orders])
-            by_id = {
-                str(item["id"]): item
-                for item in self._order_info_records(records)
-                if item.get("id") is not None
-            }
-            for order in orders:
-                record = by_id.get(order.order_id)
-                if record is not None:
-                    order.postpress = normalize_postpress(record.get("post_text"))
+            records = future.result(
+                timeout=max(0.0, self._order_info_deadline - time.monotonic())
+            )
+            with self._order_info_lock:
+                if self._order_info_by_id is None:
+                    self._order_info_by_id = {
+                        str(item["id"]): item
+                        for item in self._order_info_records(records)
+                        if item.get("id") is not None
+                    }
+                record = self._order_info_by_id.get(order.order_id)
+            if record is not None:
+                order.postpress = normalize_postpress(record.get("post_text"))
         except Exception as exc:
             # Metadata failure must never block artwork validation.
-            logger.warning("sborka.orderinfo_failed error=%s", exc)
-        yield from orders
+            with self._order_info_lock:
+                first_failure = not self._order_info_failed
+                self._order_info_failed = True
+            if first_failure:
+                logger.warning(
+                    "sborka.orderinfo_failed error=%s", exc or type(exc).__name__
+                )
 
     @staticmethod
     def _order_info_records(records: Sequence[dict[str, Any]]):
@@ -186,6 +230,9 @@ class BatchProcessorAdapter:
             self.processor.confirm_resample(item, approved)
 
     def process_order(self, order: OrderCheck) -> OrderArtifacts:
+        # Fold overlays and previews depend on postpress; wait for Sborka here
+        # (bounded) rather than when the order is first shown.
+        self._apply_postpress(order, wait=True)
         result = OrderArtifacts()
         source_previews_created = False
 
