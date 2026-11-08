@@ -1,0 +1,196 @@
+<meta charset="utf-8">
+<title>Ускорение проверки заказов</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: одна колонка отчёта, сверху сводка, затем три изменения с одинаковой структурой, внизу тесты, риски и выкатка. */
+:root {
+  --bg: #f6f7f5;
+  --surface: #ffffff;
+  --fg: #1c2420;
+  --muted: #5b6760;
+  --line: #d9dfda;
+  --accent: #1f6f5c;
+  --accent-soft: #e0efe9;
+  --warn: #a15c00;
+  --warn-soft: #fbefd9;
+  --code-bg: #eef1ee;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111713; --surface: #18201b; --fg: #e6ece8; --muted: #9aa8a0; --line: #2a352e;
+    --accent: #5fc2a6; --accent-soft: #1b3029; --warn: #f0b45a; --warn-soft: #33270f; --code-bg: #202a24;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111713; --surface: #18201b; --fg: #e6ece8; --muted: #9aa8a0; --line: #2a352e;
+  --accent: #5fc2a6; --accent-soft: #1b3029; --warn: #f0b45a; --warn-soft: #33270f; --code-bg: #202a24;
+  color-scheme: dark;
+}
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.6;
+  padding-block: 32px 56px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+main { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
+h1 { font-size: 30px; line-height: 1.2; margin: 0; font-weight: 600; text-wrap: balance; }
+h2 { font-size: 20px; margin: 0 0 12px; font-weight: 600; text-wrap: balance; }
+h3 { font-size: 12px; margin: 0 0 6px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+p { margin: 0; max-width: 68ch; }
+code { font-family: var(--font-mono); font-size: .88em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+.meta { color: var(--muted); font-family: var(--font-mono); font-size: 12.5px; margin-top: 8px; }
+.lead { margin-top: 14px; font-size: 16px; }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.fact { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.fact b { font-family: var(--font-mono); font-size: 20px; font-weight: 500; color: var(--accent); }
+.fact span { color: var(--muted); font-size: 13px; }
+.change { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 20px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.change > header { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.tag { font-family: var(--font-mono); font-size: 12px; background: var(--accent-soft); color: var(--accent); padding: 2px 8px; border-radius: 4px; }
+.change ul, .plain ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.change li, .plain li { max-width: 68ch; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.cols > div { min-width: 0; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+td.num, th.num { text-align: right; font-family: var(--font-mono); white-space: nowrap; }
+.note { background: var(--warn-soft); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+.note h3 { color: var(--warn); }
+pre { margin: 0; background: var(--code-bg); border-radius: 8px; padding: 12px 14px; overflow-x: auto; font-family: var(--font-mono); font-size: 13px; line-height: 1.5; }
+.copy { align-self: flex-start; font: inherit; font-size: 13px; color: var(--accent); background: transparent; border: 1px solid var(--accent); border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+.copy:hover { background: var(--accent-soft); }
+.copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 640px) { .cols { grid-template-columns: 1fr; } h1 { font-size: 25px; } }
+</style>
+
+<main>
+  <header>
+    <h1>Ускорение проверки заказов</h1>
+    <p class="meta">ветка Admin/perf-jobid-inspect-sborka · основа 54a01e0 · не закоммичено</p>
+    <p class="lead">После подключения Callas контрольный прогон из 6 заказов занимал 94 с, а первый заказ появлялся на 31-й секунде. Три правки в коде убирают причины задержки. Службу Callas, число слотов и PitStop они не затрагивают.</p>
+  </header>
+
+  <section class="facts" aria-label="Что измерено на production">
+    <div class="fact"><b>94 с</b><span>прогон из 6 заказов до правок (раньше около 2 с на заказ)</span></div>
+    <div class="fact"><b>15 с</b><span>ожидание файла при залипшем job_id, затем ошибка</span></div>
+    <div class="fact"><b>23,5 с → 0,43 с</b><span>разбор PDF 179 МБ: <code>_page_content_type</code>, замер владельца</span></div>
+    <div class="fact"><b>31 с</b><span>через столько пользователь видел первый заказ</span></div>
+  </section>
+
+  <section class="change">
+    <header><span class="tag">1</span><h2 style="margin:0">Уникальный job_id на каждую операцию</h2></header>
+    <div class="cols">
+      <div>
+        <h3>Причина</h3>
+        <p>job_id строился из хеша файла. Служба Callas не удаляет завершённое задание по DELETE. Повторный PUT с тем же id сразу получал старое «done», а папку <code>out/</code> приложение уже стёрло. Клиент ждал файл 15 с и падал, занимая один из двух слотов.</p>
+      </div>
+      <div>
+        <h3>Что сделано</h3>
+        <p>В <code>_merge_page_pdfs</code> и <code>_render_pdf_with_callas</code> к job_id добавлено <code>uuid4().hex[:12]</code> один раз на вызов. Повторы HTTP внутри клиента идут с тем же id. Префикс по-прежнему обрезается до 40 символов, id проходит regex клиента.</p>
+      </div>
+    </div>
+    <p><code>processing/batch_processor.py</code>. Клиент <code>services/callas/client.py</code> не менялся.</p>
+  </section>
+
+  <section class="change">
+    <header><span class="tag">2</span><h2 style="margin:0">Быстрый _page_content_type</h2></header>
+    <div class="cols">
+      <div>
+        <h3>Причина</h3>
+        <p><code>get_text("rawdict")</code> занимал около 15 с, а <code>get_drawings()</code> около 2,5 с на страницу. Нужен только ответ «есть ли текст или векторы».</p>
+      </div>
+      <div>
+        <h3>Что сделано</h3>
+        <p><code>get_text("blocks")</code> с проверкой типа блока и короткое замыкание на <code>get_cdrawings()</code>. Результат raster, vector или mixed не меняется. Замер владельца: 179 МБ 16,3 → 0,43 с, 11 МБ 3,9 → 0,21 с.</p>
+      </div>
+    </div>
+    <p><code>core/pdf_inspector.py</code></p>
+  </section>
+
+  <section class="change">
+    <header><span class="tag">3</span><h2 style="margin:0">Запрос к Sborka не блокирует показ заказов</h2></header>
+    <div class="cols">
+      <div>
+        <h3>Причина</h3>
+        <p><code>iter_inspect_orders</code> копил до 50 заказов и только потом делал HTTPS-запрос к sborka.ua. Первый заказ был готов на 1-й секунде, а виден на 31-й.</p>
+      </div>
+      <div>
+        <h3>Что сделано</h3>
+        <ul>
+          <li>Процессор после разбора имён вызывает хук <code>on_orders_grouped(order_ids)</code>, до тяжёлой инспекции.</li>
+          <li>Адаптер запускает один запрос <code>order_info_fetcher</code> для всех номеров в фоновом потоке.</li>
+          <li>Заказы отдаются сразу. Готовый ответ применяется при выдаче, иначе <code>process_order</code> ждёт его до дедлайна.</li>
+          <li>Дедлайн задаёт <code>order_info_timeout_seconds</code> (30 с, отсчёт от старта запроса).</li>
+          <li>Ошибка и таймаут логируются один раз как <code>sborka.orderinfo_failed</code> и проверку не блокируют.</li>
+          <li>Без <code>order_info_fetcher</code> ничего не запускается.</li>
+        </ul>
+      </div>
+    </div>
+    <p><code>processing/batch_processor.py</code>, <code>services/batch_adapter.py</code>. Постпресс, применённый внутри <code>process_order</code>, доходит до UI через <code>order.completed</code>: DTO строится после обработки. <code>dto.py</code> и <code>coordinator.py</code> не менялись.</p>
+  </section>
+
+  <section>
+    <h2>Тесты</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Файл</th><th>Что проверяет</th><th class="num">Новых</th></tr></thead>
+        <tbody>
+          <tr><td><code>test_callas_batch_integration.py</code></td><td>Два вызова на одном PDF дают разные валидные job_id, fake-служба с залипанием не падает</td><td class="num">1</td></tr>
+          <tr><td><code>test_pdf_inspector.py</code></td><td>Пять фикстур дают прежние типы; медленные вызовы не используются</td><td class="num">2</td></tr>
+          <tr><td><code>test_batch_adapter.py</code></td><td>Первый заказ до конца fetcher; один запрос на все номера; postpress виден в <code>process_order</code>; ошибка и таймаут; без fetcher</td><td class="num">5</td></tr>
+          <tr><td><code>test_run_coordinator.py</code></td><td>Поздний postpress виден в <code>order.completed</code> и в состоянии run</td><td class="num">1</td></tr>
+          <tr><td><code>test_postpress.py</code></td><td>Существующий тест обновлён под фоновый запрос</td><td class="num">0</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:12px"><code>pytest -q --ignore=test_fetch.py</code>: 307 passed, 3 failed. Те же 3 теста падают на чистом HEAD: два в <code>test_control_panel.py</code> и <code>test_real_pdf_fixture_has_expected_one_and_two_page_documents</code>.</p>
+  </section>
+
+  <section class="note">
+    <h3>Что осталось сомнительным</h3>
+    <ul>
+      <li>Корневой <code>test_fetch.py</code> вызывает Sborka при импорте и ломает сбор тестов. Его стоит убрать из сбора.</li>
+      <li>DTO заказа в <code>waiting_confirmation</code> может выйти без postpress, он появится в <code>order.completed</code>.</li>
+      <li>Процессор, который не вызывает хук, запросит Sborka только для первого заказа. Боевой <code>BatchProcessor</code> хук вызывает.</li>
+      <li>Таймаут 30 с выбран без замеров. Живые Callas, PitStop и Sborka в тестах не использовались.</li>
+    </ul>
+  </section>
+
+  <section class="plain">
+    <h2>Выкатка</h2>
+    <ul>
+      <li>Код сначала нужно закоммитить и доставить в копию, из которой работает сервис на VM <code>10.20.2.104</code>.</li>
+      <li>Фронтенд и миграции не менялись.</li>
+      <li>Перед перезапуском проверьте, что нет активного прогона: незавершённые прогоны помечаются прерванными.</li>
+      <li>После перезапуска сравните <code>MainPID</code> и проверьте новый прогон, лучше два подряд на одном наборе заказов.</li>
+    </ul>
+    <pre id="cmd">sudo systemctl restart fastapi-app
+systemctl show fastapi-app -p MainPID -p ExecMainStartTimestamp -p ActiveState</pre>
+    <button class="copy" id="copy" type="button">Скопировать команды</button>
+  </section>
+</main>
+
+<script>
+document.getElementById('copy').addEventListener('click', function () {
+  var button = this;
+  var text = document.getElementById('cmd').textContent;
+  function done(ok) {
+    button.textContent = ok ? 'Скопировано' : 'Выделите текст вручную';
+    setTimeout(function () { button.textContent = 'Скопировать команды'; }, 2000);
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { done(true); }, function () {
+      var range = document.createRange();
+      range.selectNodeContents(document.getElementById('cmd'));
+      var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+      done(false);
+    });
+  } else { done(false); }
+});
+</script>
