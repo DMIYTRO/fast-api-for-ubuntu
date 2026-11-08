@@ -140,3 +140,62 @@ def test_vector_and_mixed_content_types(tmp_path: Path) -> None:
 def test_page_count_rule_is_filename_independent() -> None:
     assert expected_page_count_error(1, 1) is None
     assert expected_page_count_error(1, 2) == "PDF contains 1 pages; expected 2"
+
+
+def test_content_type_for_raster_text_only_lines_only_and_mixed(tmp_path: Path) -> None:
+    image = tmp_path / "image.png"
+    _rgb_png(image)
+    rect = pymupdf.Rect(10, 10, 80, 80)
+    cases = {
+        "raster": (lambda page: page.insert_image(pymupdf.Rect(0, 0, 100, 50), filename=str(image))),
+        "text": (lambda page: page.insert_text((20, 110), "only text")),
+        "lines": (lambda page: page.draw_line((10, 10), (100, 100), color=(0, 0, 0))),
+        "text_on_image": (
+            lambda page: (
+                page.insert_image(pymupdf.Rect(0, 0, 100, 50), filename=str(image)),
+                page.insert_text((20, 110), "caption"),
+            )
+        ),
+        "lines_on_image": (
+            lambda page: (
+                page.insert_image(pymupdf.Rect(0, 0, 100, 50), filename=str(image)),
+                page.draw_rect(rect, color=(1, 0, 0)),
+            )
+        ),
+    }
+    expected = {
+        "raster": "raster",
+        "text": "vector",
+        "lines": "vector",
+        "text_on_image": "mixed",
+        "lines_on_image": "mixed",
+    }
+    for name, draw in cases.items():
+        pdf = tmp_path / f"{name}.pdf"
+        document = pymupdf.open()
+        draw(document.new_page())
+        document.save(str(pdf))
+        document.close()
+        assert inspect_pdf(pdf).pages[0].content_type == expected[name], name
+
+
+def test_content_type_does_not_use_slow_rawdict_or_full_drawings(tmp_path: Path, monkeypatch) -> None:
+    pdf = tmp_path / "text.pdf"
+    document = pymupdf.open()
+    document.new_page().insert_text((20, 110), "text")
+    document.save(str(pdf))
+    document.close()
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("медленный вызов не должен использоваться")
+
+    monkeypatch.setattr(pymupdf.Page, "get_drawings", forbidden)
+    original_get_text = pymupdf.Page.get_text
+
+    def guarded_get_text(self, option="text", *args, **kwargs):
+        if option == "rawdict":
+            forbidden()
+        return original_get_text(self, option, *args, **kwargs)
+
+    monkeypatch.setattr(pymupdf.Page, "get_text", guarded_get_text)
+    assert inspect_pdf(pdf).pages[0].content_type == "vector"
