@@ -164,6 +164,17 @@ class IncrementalBlockingAdapter(FakeAdapter):
         yield self.orders[1]
 
 
+class LatePostpressAdapter(FakeAdapter):
+    """Sborka metadata is applied inside process_order, after order.detected."""
+
+    def iter_inspect_orders(self):
+        yield from self.orders
+
+    def process_order(self, order):
+        order.postpress = {"fold": {"type": "half-fold", "count": 1}}
+        return super().process_order(order)
+
+
 class RunCoordinatorTests(unittest.TestCase):
     def setUp(self):
         self.repository = InMemoryRunRepository()
@@ -212,6 +223,22 @@ class RunCoordinatorTests(unittest.TestCase):
         )
         self.assertIn("order.correction_confirmed", event_types)
         self.assertEqual(event_types[-1], "run.completed")
+
+    def test_late_postpress_reaches_order_completed_event_and_run_state(self):
+        self.adapters["postpress"] = LatePostpressAdapter([make_order("100")])
+        run_id = self.submit("postpress")["id"]
+        self.coordinator.wait_for(run_id, {"completed"}, timeout=2)
+
+        events = {event.type: event.data for event in self.coordinator.events(run_id)}
+        self.assertNotIn("postpress", events["order.detected"]["order"])
+        self.assertEqual(
+            events["order.completed"]["order"]["postpress"]["fold"]["type"],
+            "half-fold",
+        )
+        self.assertEqual(
+            self.coordinator.get_run(run_id)["orders"]["100"]["postpress"]["fold"]["type"],
+            "half-fold",
+        )
 
     def test_first_order_events_are_persisted_before_second_inspection_finishes(self):
         adapter = IncrementalBlockingAdapter(

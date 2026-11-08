@@ -49,9 +49,11 @@ def test_order_dto_includes_postpress_metadata():
 
 class _InspectingProcessor:
     def __init__(self, *_args, **_kwargs):
-        pass
+        self.on_orders_grouped = None
 
     def iter_inspect_orders(self):
+        if self.on_orders_grouped is not None:
+            self.on_orders_grouped(["100", "101"])
         yield OrderCheck("100", "42")
         yield OrderCheck("101", "42")
 
@@ -77,7 +79,7 @@ def test_adapter_fetches_orderinfo_in_one_batch_and_enriches_orders(tmp_path: Pa
         order_info_fetcher=fetcher,
     )
 
-    orders = list(adapter.iter_inspect_orders())
+    orders = adapter.scan_and_inspect()
 
     assert requested == [["100", "101"]]
     assert orders[0].postpress["fold"]["type"] == "c-fold"

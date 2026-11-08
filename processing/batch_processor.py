@@ -7,7 +7,8 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import TYPE_CHECKING, Mapping, Optional
+import uuid
+from typing import TYPE_CHECKING, Callable, Mapping, Optional
 
 if TYPE_CHECKING:  # services.__init__ imports this module; avoid a cycle
     from services.callas import CallasClient
@@ -83,6 +84,9 @@ class BatchProcessor:
         self.unparsed: list[FileCheck] = []
         self.unsupported: list[FileCheck] = []
         self.scanned_order_count = 0
+        # Optional hook called with the sorted order ids once filenames are
+        # parsed and grouped, before the slow per-order inspection starts.
+        self.on_orders_grouped: Callable[[list[str]], None] | None = None
 
     @staticmethod
     def _preview_worker_count(item_count: int) -> int:
@@ -138,6 +142,11 @@ class BatchProcessor:
 
         sorted_groups = sorted(grouped.items())
         self.scanned_order_count = len(sorted_groups)
+        if self.on_orders_grouped is not None:
+            try:
+                self.on_orders_grouped(list(dict.fromkeys(oid for (_c, oid), _f in sorted_groups)))
+            except Exception:
+                logger.exception("orders_grouped hook failed")
         for (_customer_id, order_id), files in sorted_groups:
             for check in files:
                 try:
@@ -552,9 +561,13 @@ class BatchProcessor:
             return
         from services.callas import deterministic_job_id
 
+        # Служба Callas не забывает завершённые задания, поэтому повтор того же
+        # job_id получил бы старый статус "done" без файлов. Идентификатор
+        # уникален на каждую операцию; повторы HTTP внутри клиента его сохраняют.
         job_id = deterministic_job_id(
             f"merge-{order.order_id}",
             *(self._file_sha256(Path(item)) for item in page_pdfs),
+            uuid.uuid4().hex[:12],
         )
         logger.info("callas.merge.start order=%s job_id=%s inputs=%d", order.order_id, job_id, len(page_pdfs))
         try:
@@ -569,8 +582,12 @@ class BatchProcessor:
     def _render_pdf_with_callas(self, pdf_path: Path, render_dpi: float, target_dir: Path) -> None:
         from services.callas import deterministic_job_id
 
+        # Уникальный job_id на операцию: см. комментарий в _merge_page_pdfs.
         job_id = deterministic_job_id(
-            f"render-{pdf_path.stem}", self._file_sha256(pdf_path), str(int(render_dpi))
+            f"render-{pdf_path.stem}",
+            self._file_sha256(pdf_path),
+            str(int(render_dpi)),
+            uuid.uuid4().hex[:12],
         )
         logger.info("callas.render.start pdf=%s job_id=%s dpi=%d", pdf_path.name, job_id, int(render_dpi))
         try:
