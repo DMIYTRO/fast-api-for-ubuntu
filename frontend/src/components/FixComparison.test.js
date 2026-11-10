@@ -53,15 +53,15 @@ describe("FixComparison", () => {
     expect(host.querySelector(".fix-distortion")).toBeNull();
   });
 
-  it("warns about non-uniform scaling with both axes and does not rely on colour only", async () => {
+  it("notes non-uniform scaling with both axes and does not rely on colour only", async () => {
     setup();
     const host = mount({ comparison: { ...base, status: "ready", summary: { ...base.summary, distortion: true } } });
     await nextTick();
     const warning = host.querySelector(".fix-distortion");
-    expect(warning.getAttribute("role")).toBe("alert");
-    expect(warning.textContent).toContain("Внимание");
-    expect(warning.textContent).toContain("Макет масштабирован неравномерно (по ширине ×0,990, по высоте ×1,049)");
-    expect(warning.textContent).toContain("нужно подтверждение");
+    expect(warning.getAttribute("role")).toBe("status");
+    expect(warning.textContent).toContain("Масштаб по осям");
+    expect(warning.textContent).toContain("Макет растянут неравномерно (по ширине ×0,990, по высоте ×1,049)");
+    expect(warning.textContent).toContain("Проверьте наложение перед принятием");
     expect(byText(host, "Принять").getAttribute("aria-describedby")).toBe(warning.id);
   });
 

@@ -52,7 +52,7 @@ const distortionText = computed(() => {
   const x = scale(summary.value.scale_x);
   const y = scale(summary.value.scale_y);
   const axes = x && y ? ` (по ширине ×${x}, по высоте ×${y})` : "";
-  return `Макет масштабирован неравномерно${axes} — нарушает правило пропорционального масштаба; нужно подтверждение`;
+  return `Макет растянут неравномерно${axes}. Проверьте наложение перед принятием`;
 });
 const decisionText = computed(() => status.value === "accepted"
   ? "Исправление принято: результат станет новой ревизией печатного PDF."
@@ -120,7 +120,7 @@ function close() {
         <span v-if="changedText">{{ changedText }}</span>
       </p>
 
-      <p v-if="summary.distortion" :id="noteId" class="fix-distortion" role="alert"><i aria-hidden="true">⚠</i><span><b>Внимание.</b> {{ distortionText }}</span></p>
+      <p v-if="summary.distortion" :id="noteId" class="fix-distortion" role="status"><i aria-hidden="true">ℹ</i><span><b>Масштаб по осям.</b> {{ distortionText }}</span></p>
 
       <div v-if="status === 'ready'" class="fix-actions">
         <button type="button" class="button success" :disabled="busy" aria-label="Принять исправление Callas" :aria-describedby="summary.distortion ? noteId : null" @click="emit('accept')">✓ Принять</button>
