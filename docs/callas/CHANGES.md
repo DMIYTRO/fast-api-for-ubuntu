@@ -83,3 +83,10 @@ DELETE /jobs/{id}; заголовки Authorization: Bearer <token>, X-Callas-Us
 - `services/callas/merger.py`: `make_callas_pdf_merger(client)`; `build_reviewed_layered_print_pdf(..., pdf_merger=None)` — финальная склейка частей через merger, иначе PyMuPDF; число страниц результата проверяется; части по-прежнему извлекаются локально.
 - `OrderWorkflowService(pdf_merger=...)`, `control_panel._callas_pdf_merger(settings)` — включается тем же флагом `IMAGE_MAGIC_CALLAS_MERGE_ENABLED`.
 - Тесты `tests/test_layered_print_merge.py`; живая проверка адаптера против callas — OK. Нужна перезагрузка fastapi-app.
+
+## [claude] 2026-11-10 — сверка сервера, новый контракт, план проверки и исправления
+- `docs/callas/openapi.json` заменён снимком с сервера: добавлены `InfoSpec`, `SplitSpec`, `VisualizerSpec`, `SeparationsSpec`, `InkCoverageSpec`. Абзац «Контракт API» в начале этого файла описывает только `merge`/`render` и устарел.
+- На сервере включены `process`, `visualizer`, `separations`, `inkcoverage`; клиенту `image-magic` разрешены все профили и типы. Живая проверка трёх типов на копии реального заказа — OK (1,0–1,5 с на задание).
+- Подробности `process` — в XML-отчёте (`hits`/`hit` с правилом, страницей, координатами); `rule_id` порядковый, устойчивый ключ — название правила.
+- Новый план: `docs/callas-preflight-plan.md`. Код приложения не менялся; в клиенте по-прежнему только `merge` и `render`.
+- Нужно от владельца: собственные `.kfpx` в каталог профилей сервера; решение о включении callas в production.
