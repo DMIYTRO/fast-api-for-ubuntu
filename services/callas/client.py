@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import email.utils
 import hashlib
+import json
 import logging
 import os
 import random
@@ -61,6 +62,13 @@ _CANCELLED_STATUSES = frozenset({"cancelled", "canceled"})
 _MAX_ERROR_TEXT = 500
 _MAX_RETRY_AFTER_SECONDS = 120.0
 _HASH_CHUNK = 1024 * 1024
+_PROCESS_MODES = frozenset({"analyze", "fix"})
+_PROCESS_REPORTS = frozenset({"xml", "pdf"})
+_PROCESS_FIXED_NAME = "fixed.pdf"
+_PROCESS_SUMMARY_KEYS = ("errors", "warnings", "infos", "fixups_applied", "fixups_failed")
+# Коды завершения pdfToolbox: 0 — чисто; 1–8 — найдены проблемы или выполнены
+# исправления (это результат проверки, не сбой); 100+ — ошибка выполнения.
+_EXIT_OK_MAX = 8
 
 
 def deterministic_job_id(prefix: str, *parts: str) -> str:
@@ -101,6 +109,27 @@ class CallasConfig:
             max_concurrent_jobs=settings.callas_max_concurrent_jobs,
             max_retries=settings.callas_max_retries,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessResult:
+    """Итог задания ``process`` (проверка или исправление процесс-планом pdfToolbox).
+
+    ``status`` — ``result_status`` службы (например ``ok``/``warnings``/``errors``);
+    если служба его не передала, выводится из счётчиков. ``summary`` содержит ключи
+    errors, warnings, infos, fixups_applied, fixups_failed. ``output_pdf`` задан только
+    для режима ``fix`` и всегда указывает на новый файл в папке задания (``job_dir``),
+    а не на исходный PDF. ``report_xml`` — проверенный по SHA-256 XML-отчёт.
+    Папку ``job_dir(job_id)`` после использования удаляет вызывающий код.
+    """
+
+    job_id: str
+    mode: str
+    status: str
+    exit_code: int
+    summary: dict[str, int]
+    output_pdf: Path | None
+    report_xml: Path | None
 
 
 @dataclass(slots=True)
@@ -249,6 +278,122 @@ class CallasClient:
                     job_id=job_id,
                 )
             return [path for _, path in pages]
+
+    def process(
+        self,
+        pdf: Path | str,
+        profile: str,
+        mode: str,
+        *,
+        variables: Mapping[str, str] | None = None,
+        report: Sequence[str] = ("xml",),
+        cancel: threading.Event | None = None,
+        job_id: str | None = None,
+    ) -> ProcessResult:
+        """Запускает процесс-план pdfToolbox: ``analyze`` (только проверка) или ``fix``.
+
+        Исходный PDF только читается: служба получает его копию в папке задания, а
+        результат ``fix`` — всегда новый файл в ``<share>/.callas/<job_id>/out``.
+        Коды завершения 1–8 (найдены проблемы / выполнены исправления) не являются
+        ошибкой; 9 и выше (в том числе 100+) — ошибка выполнения.
+        ``job_id`` по умолчанию детерминирован (PDF, профиль, режим, переменные); для
+        повторного запуска с теми же параметрами после завершения задания на службе
+        передайте новый ``job_id``.
+        """
+        if mode not in _PROCESS_MODES:
+            raise CallasConfigError("Режим callas должен быть «analyze» или «fix».")
+        profile_name = self._validate_profile(profile)
+        report_kinds = self._validate_reports(report)
+        variable_map = self._validate_variables(variables)
+        source = Path(pdf)
+        if not source.is_file():
+            raise CallasConfigError(f"Входной файл не найден: {source.name}")
+        try:
+            before = source.stat()
+            source_digest = _sha256_file(source)
+        except OSError as exc:
+            raise CallasConfigError(
+                f"Не удалось прочитать {source.name}: {exc.strerror or exc}"
+            ) from exc
+        if job_id is None:
+            job_id = deterministic_job_id(
+                f"callas-{mode}",
+                mode,
+                profile_name,
+                source_digest,
+                json.dumps(variable_map, sort_keys=True, ensure_ascii=False),
+                ",".join(report_kinds),
+            )
+        self._validate_job_id(job_id)
+        ctx = self._new_ctx(job_id, cancel)
+        with self._slot(ctx):
+            staged = self._stage_inputs(job_id, [source])
+            server_path, digest = staged[0]
+            spec: dict[str, Any] = {
+                "type": "process",
+                "input": {"path": server_path, "sha256": digest},
+                "profile": profile_name,
+                "mode": mode,
+                "report": list(report_kinds),
+                "out_dir": str(self._server_job_dir(job_id) / "out"),
+            }
+            if variable_map:
+                spec["variables"] = variable_map
+            if mode == "fix":
+                spec["output_name"] = _PROCESS_FIXED_NAME
+            try:
+                job = self._execute(ctx, spec, [source])
+            except CallasValidationError as exc:
+                if "profile" in exc.message.lower():
+                    raise CallasValidationError(
+                        f"Callas не принял профиль «{profile_name}»: {exc.message} "
+                        "Проверьте имя профиля в каталоге профилей сервера.",
+                        job_id=job_id,
+                    ) from exc
+                raise
+            except CallasJobFailedError as exc:
+                hint = self._unknown_profile_hint(exc, profile_name)
+                if hint is None:
+                    raise
+                raise CallasJobFailedError(
+                    hint,
+                    job_id=job_id,
+                    status=exc.status,
+                    error_class=exc.error_class,
+                    bad_inputs=exc.bad_inputs,
+                ) from exc
+            exit_code = self._process_exit_code(ctx, job)
+            summary = self._process_summary(ctx, job)
+            files = self._verify_files(ctx, job)
+            output_pdf = self._process_output_pdf(ctx, files, mode)
+            report_xml = self._process_report_xml(ctx, files, "xml" in report_kinds)
+            try:
+                after = source.stat()
+            except OSError as exc:
+                raise CallasResultError(
+                    f"Исходный файл {source.name} стал недоступен во время обработки.",
+                    job_id=job_id,
+                ) from exc
+            if (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
+                raise CallasResultError(
+                    f"Исходный файл {source.name} изменился во время обработки callas; "
+                    "результат отклонён.",
+                    job_id=job_id,
+                )
+            if output_pdf is not None and output_pdf.resolve() == source.resolve():
+                raise CallasResultError(
+                    "Callas вернул исходный файл вместо нового; результат отклонён.",
+                    job_id=job_id,
+                )
+            return ProcessResult(
+                job_id=job_id,
+                mode=mode,
+                status=self._process_status(job, summary),
+                exit_code=exit_code,
+                summary=summary,
+                output_pdf=output_pdf,
+                report_xml=report_xml,
+            )
 
     def delete(self, job_id: str, *, cancel: threading.Event | None = None) -> None:
         """Удаляет/отменяет задание на стороне службы; 404 не считается ошибкой."""
@@ -579,6 +724,150 @@ class CallasClient:
             if parts:
                 return "; ".join(parts)
         return "подробности недоступны."
+
+    # -- process
+
+    @staticmethod
+    def _validate_profile(profile: str) -> str:
+        if not isinstance(profile, str):
+            raise CallasConfigError("Имя профиля callas должно быть строкой.")
+        name = profile.strip()
+        parts = name.split("/")
+        if (
+            not name
+            or len(name) > 300
+            or "\x00" in name
+            or "\\" in name
+            or name.startswith("/")
+            or any(part in {"", ".", ".."} for part in parts)
+        ):
+            raise CallasConfigError(
+                "Некорректное имя профиля callas: нужно имя из каталога профилей сервера "
+                "(до 300 символов, без путей и '..')."
+            )
+        return name
+
+    @staticmethod
+    def _validate_reports(report: Sequence[str]) -> tuple[str, ...]:
+        if isinstance(report, str):
+            report = (report,)
+        kinds: list[str] = []
+        for item in report:
+            if item not in _PROCESS_REPORTS:
+                raise CallasConfigError("Тип отчёта callas должен быть «xml» или «pdf».")
+            if item not in kinds:
+                kinds.append(item)
+        if not kinds:
+            raise CallasConfigError("Нужен хотя бы один тип отчёта callas («xml» или «pdf»).")
+        return tuple(kinds)
+
+    @staticmethod
+    def _validate_variables(variables: Mapping[str, str] | None) -> dict[str, str]:
+        if not variables:
+            return {}
+        if len(variables) > 50:
+            raise CallasConfigError("Переменных профиля callas может быть не больше 50.")
+        result: dict[str, str] = {}
+        for key, value in variables.items():
+            if not isinstance(key, str) or not key or not isinstance(value, str):
+                raise CallasConfigError(
+                    "Переменные профиля callas должны быть парами «строка: строка»."
+                )
+            result[key] = value
+        return result
+
+    @staticmethod
+    def _unknown_profile_hint(exc: CallasJobFailedError, profile: str) -> str | None:
+        text = f"{exc.error_class or ''} {exc.message}".lower()
+        if "profile" in text or "профил" in text:
+            if any(
+                word in text
+                for word in ("not found", "unknown", "no such", "не найден", "не существует")
+            ):
+                return (
+                    f"Профиль callas «{profile}» не найден на сервере. "
+                    "Проверьте имя в каталоге профилей (GET /profiles)."
+                )
+        return None
+
+    def _process_exit_code(self, ctx: _Ctx, job: Mapping[str, Any]) -> int:
+        code = job.get("exit_code")
+        if not isinstance(code, int) or isinstance(code, bool) or code < 0:
+            raise CallasProtocolError(
+                "Callas не вернул корректный код завершения проверки.", job_id=ctx.job_id
+            )
+        if code > _EXIT_OK_MAX:
+            detail = self._redact(str(job.get("error") or ""))
+            error_class = job.get("error_class")
+            raise CallasJobFailedError(
+                f"Callas завершил проверку с ошибкой выполнения (код {code})."
+                + (f" {detail}" if detail else ""),
+                job_id=ctx.job_id,
+                status="failed",
+                error_class=error_class if isinstance(error_class, str) else None,
+            )
+        return code
+
+    def _process_summary(self, ctx: _Ctx, job: Mapping[str, Any]) -> dict[str, int]:
+        raw = job.get("summary")
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, dict):
+            raise CallasProtocolError("Callas вернул некорректную сводку проверки.", job_id=ctx.job_id)
+        summary: dict[str, int] = {}
+        for key in _PROCESS_SUMMARY_KEYS:
+            value = raw.get(key, 0)
+            if value is None:
+                value = 0
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise CallasProtocolError(
+                    "Callas вернул некорректную сводку проверки.", job_id=ctx.job_id
+                )
+            summary[key] = value
+        return summary
+
+    @staticmethod
+    def _process_status(job: Mapping[str, Any], summary: Mapping[str, int]) -> str:
+        status = job.get("result_status")
+        if isinstance(status, str) and status.strip():
+            return status.strip().lower()
+        if summary["errors"]:
+            return "errors"
+        if summary["warnings"]:
+            return "warnings"
+        return "ok"
+
+    @staticmethod
+    def _process_output_pdf(ctx: _Ctx, files: Mapping[str, Path], mode: str) -> Path | None:
+        if mode != "fix":
+            return None
+        direct = files.get(_PROCESS_FIXED_NAME)
+        if direct is not None:
+            return direct
+        candidates = [
+            path
+            for name, path in files.items()
+            if name.lower().endswith(".pdf") and "report" not in name.lower()
+        ]
+        if len(candidates) != 1:
+            raise CallasResultError(
+                "Callas не вернул исправленный PDF: результат исправления отсутствует. "
+                "Исходный файл не изменён.",
+                job_id=ctx.job_id,
+            )
+        return candidates[0]
+
+    @staticmethod
+    def _process_report_xml(ctx: _Ctx, files: Mapping[str, Path], required: bool) -> Path | None:
+        candidates = sorted(
+            (name for name in files if name.lower().endswith(".xml")),
+            key=lambda name: ("report" not in name.lower(), name),
+        )
+        if not candidates:
+            if required:
+                raise CallasResultError("Callas не вернул XML-отчёт проверки.", job_id=ctx.job_id)
+            return None
+        return files[candidates[0]]
 
     # -- результат
 
