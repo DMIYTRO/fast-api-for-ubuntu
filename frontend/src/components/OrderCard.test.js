@@ -39,4 +39,17 @@ describe("OrderCard processing failures", () => {
     expect(host.querySelector(".pitstop-skipped")?.textContent)
       .toContain("успешного создания итогового PDF");
   });
+
+  it("shows the Callas fix block only when there is a PDF or a comparison", async () => {
+    const plain = mount({ order_id: "1", status: "passed", files: [] });
+    const withPdf = mount({ order_id: "2", status: "passed", files: [], pdf_url: "/api/orders/2/pdf" });
+    const withFix = mount({
+      order_id: "3", status: "passed", files: [],
+      callas_fix: { comparison: { status: "failed", plan: { key: "size", title: "Коррекция размера" }, error: "boom" } },
+    });
+    await nextTick();
+    expect(plain.querySelector(".callas-fix")).toBeNull();
+    expect(withPdf.textContent).toContain("Исправить");
+    expect(withFix.querySelector(".fix-comparison")?.textContent).toContain("Коррекция размера");
+  });
 });
