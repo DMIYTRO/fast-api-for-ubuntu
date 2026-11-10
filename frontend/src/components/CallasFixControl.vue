@@ -7,6 +7,7 @@ const POLL_MS = 1500;
 const UNAVAILABLE = [404, 405, 501];
 
 const props = defineProps({
+  runId: { type: String, required: true },
   orderId: { type: [String, Number], required: true },
   // order.callas_fix from the order payload: { comparison: {...} }
   initial: { type: Object, default: null },
@@ -51,7 +52,7 @@ function schedulePoll() {
     timer = undefined;
     if (disposed) return;
     try {
-      const payload = await api.callasFixStatus(props.orderId);
+      const payload = await api.callasFixStatus(props.runId, props.orderId);
       if (disposed) return;
       error.value = "";
       apply(payload);
@@ -96,7 +97,7 @@ async function start(key = planKey.value) {
   busy.value = true;
   error.value = "";
   try {
-    const payload = await api.startCallasFix(props.orderId, key);
+    const payload = await api.startCallasFix(props.runId, props.orderId, key);
     if (disposed) return;
     panelOpen.value = false;
     stopPolling();
@@ -115,7 +116,7 @@ async function decide(decision) {
   busy.value = true;
   error.value = "";
   try {
-    const payload = await api.decideCallasFix(props.orderId, decision);
+    const payload = await api.decideCallasFix(props.runId, props.orderId, decision);
     if (disposed) return;
     const next = extract(payload);
     if (next) apply(payload);

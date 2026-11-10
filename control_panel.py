@@ -26,6 +26,7 @@ from core.return_reasons import load_return_reasons
 from core.inspector import inspect_tiff_structure
 from core.tool_runner import run_command
 from server.auth import AuthService, create_auth_router, require_session
+from server.callas_fix_routes import create_callas_fix_router
 from server.database import Database, configure_database, get_db, upgrade_database
 from server.errors import APIError, error_payload, install_error_handlers
 from server.logging_config import configure_logging
@@ -57,6 +58,7 @@ from services.sborka_integration import (
     build_rework_sender,
     build_sender,
 )
+from services.callas_fix import comparison_payload as callas_fix_payload, read_state_file as read_callas_fix_state
 from services.ftp_preview_uploader import build_ftp_preview_uploader
 from services.return_preview import CUSTOM_PREVIEWS_RELATIVE_PATH, custom_return_preview_path
 from core.preview_cache import full_preview_cache_path, preview_media_type, preview_variants
@@ -167,6 +169,13 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
             }
         if order.get("pdf_path"):
             order["pdf_url"] = f"/api/orders/{order_ref}/pdf?run_id={run_id}"
+            fix_state = read_callas_fix_state(order["pdf_path"])
+            if fix_state:
+                order["callas_fix"] = {
+                    "comparison": callas_fix_payload(
+                        fix_state, f"/api/checks/{run_id}/orders/{order_ref}/callas/fix"
+                    )
+                }
         preview_storage_id = order_ref
         if input_path and custom_return_preview_path(preview_storage_id, input_path=input_path):
             order["custom_preview_url"] = (
@@ -483,6 +492,33 @@ def _default_repository(database: Database) -> RunRepository:
     return InMemoryRunRepository()
 
 
+def _callas_fix_order(
+    request: Request, run_id: str, order_id: str
+) -> tuple[dict[str, Any], dict[str, Any], Path]:
+    """Запуск, заказ и безопасный путь его PDF для операций исправления Callas."""
+    run, order = _find_order(_get_coordinator(request), order_id, run_id)
+    input_root = Path((run.get("options") or {}).get("input_path", "")).resolve()
+    if not input_root.is_dir() or not any(
+        _is_inside(input_root, root) for root in _get_roots(request)
+    ):
+        raise APIError(
+            403,
+            "folder_not_allowed",
+            "Папка заказа находится за пределами разрешённой рабочей области.",
+        )
+    return run, order, _safe_result_path(run, order.get("pdf_path"))
+
+
+def _callas_fix_service(settings: Settings):
+    """Сервис исправления Callas или ``None``, если он выключен или не настроен."""
+    if not (settings.callas_process_enabled and settings.callas_url):
+        return None
+    from services.callas import CallasClient
+    from services.callas_fix import CallasFixService
+
+    return CallasFixService(CallasClient.from_settings(settings))
+
+
 def _callas_processor_factory(settings: Settings):
     """BatchProcessor factory with optional remote callas merge/render."""
     from functools import partial
@@ -613,6 +649,7 @@ def create_app(
     allowed_roots: tuple[Path, ...] | None = None,
     default_input_dir: Path | None = None,
     adapter_factory=None,
+    callas_fix_service=None,
     initialize_schema: bool = False,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
@@ -691,6 +728,11 @@ def create_app(
     application.state.settings = settings
     application.state.database = database
     application.state.coordinator = coordinator
+    callas_fix_service = (
+        callas_fix_service
+        if callas_fix_service is not None
+        else _callas_fix_service(settings)
+    )
     application.state.order_workflow = OrderWorkflowService(
         coordinator,
         database.session_factory,
@@ -699,6 +741,9 @@ def create_app(
             processor_factory, "pitstop_service_for", None
         ),
         pdf_merger=_callas_pdf_merger(settings),
+        accepted_pdf_provider=(
+            callas_fix_service.publish_accepted if callas_fix_service else None
+        ),
         prepress_sender=(
             build_sender(
                 settings.sborka_api_dir,
@@ -724,6 +769,7 @@ def create_app(
     application.state.allowed_roots = allowed_roots or ALLOWED_ROOTS
     application.state.default_input_dir = default_input_dir or DEFAULT_INPUT_DIR
     application.state.layered_tiff_export_jobs = {}
+    application.state.callas_fix_service = callas_fix_service
     install_error_handlers(application)
 
     @application.middleware("http")
@@ -769,6 +815,9 @@ def create_app(
         return _json_error(422, "validation_error", "Проверьте заполненные поля.")
 
     application.include_router(create_auth_router(settings, auth_service))
+    application.include_router(
+        create_callas_fix_router(protected=protected, resolve_order=_callas_fix_order)
+    )
 
     @application.get("/api/config", dependencies=[Depends(protected)])
     def get_config(request: Request) -> dict[str, Any]:

@@ -7,7 +7,7 @@ const mounted = [];
 function mount(props = {}) {
   const host = document.createElement("div");
   document.body.append(host);
-  const app = createApp(CallasFixControl, { orderId: "agg-1", ...props });
+  const app = createApp(CallasFixControl, { runId: "run-1", orderId: "agg-1", ...props });
   app.mount(host);
   mounted.push(() => { app.unmount(); host.remove(); });
   return { host, app };
@@ -35,15 +35,15 @@ describe("api methods", () => {
     const fetchMock = vi.fn(() => Promise.resolve({ ok: true, status: 200, headers: new Headers({ "content-type": "application/json" }), json: async () => ({}) }));
     vi.stubGlobal("fetch", fetchMock);
     await api.callasPlans();
-    await api.startCallasFix("a b", "size");
-    await api.callasFixStatus("a b");
-    await api.decideCallasFix("a b", "accept");
+    await api.startCallasFix("r 1", "a b", "size");
+    await api.callasFixStatus("r 1", "a b");
+    await api.decideCallasFix("r 1", "a b", "accept");
     const calls = fetchMock.mock.calls.map(([url, init]) => [url, init.method || "GET", init.body]);
     expect(calls).toEqual([
       ["/api/callas/plans", "GET", undefined],
-      ["/api/orders/a%20b/callas/fix", "POST", JSON.stringify({ plan: "size" })],
-      ["/api/orders/a%20b/callas/fix", "GET", undefined],
-      ["/api/orders/a%20b/callas/fix/decision", "POST", JSON.stringify({ decision: "accept" })],
+      ["/api/checks/r%201/orders/a%20b/callas/fix", "POST", JSON.stringify({ plan: "size" })],
+      ["/api/checks/r%201/orders/a%20b/callas/fix", "GET", undefined],
+      ["/api/checks/r%201/orders/a%20b/callas/fix/decision", "POST", JSON.stringify({ decision: "accept" })],
     ]);
   });
 });
@@ -63,7 +63,7 @@ describe("CallasFixControl", () => {
     expect(host.querySelector("select option").textContent).toBe("Коррекция размера");
     byText(host, "Запустить").click();
     await flush();
-    expect(start).toHaveBeenCalledWith("agg-1", "size");
+    expect(start).toHaveBeenCalledWith("run-1", "agg-1", "size");
     expect(host.querySelector(".fix-processing")).not.toBeNull();
 
     await vi.advanceTimersByTimeAsync(1600);
@@ -96,7 +96,7 @@ describe("CallasFixControl", () => {
     await nextTick();
     byText(host, "Принять").click();
     await flush();
-    expect(decide).toHaveBeenCalledWith("agg-1", "accept");
+    expect(decide).toHaveBeenCalledWith("run-1", "agg-1", "accept");
     expect(host.querySelector(".fix-accepted")).not.toBeNull();
     expect(host.querySelector(".fix-actions")).toBeNull();
   });
@@ -108,7 +108,7 @@ describe("CallasFixControl", () => {
     await nextTick();
     byText(host, "Повторить").click();
     await flush();
-    expect(start).toHaveBeenCalledWith("agg-1", "size");
+    expect(start).toHaveBeenCalledWith("run-1", "agg-1", "size");
     expect(host.querySelector(".fix-processing")).not.toBeNull();
   });
 
