@@ -1,0 +1,477 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<pdfpreflight version="23.0">
+	<package>
+		<id3>a2fef9ffade1f731eaaeb083d047bf7e</id3>
+		<exportfingerprint>M6673ec07170faeb85b6b196ce3d305e7</exportfingerprint>
+		<pdfxoutintentlist>
+		</pdfxoutintentlist>
+		<iccprofilelist>
+		</iccprofilelist>
+		<ccpolicies>
+		</ccpolicies>
+		<occdsetups>
+		</occdsetups>
+		<curves>
+		</curves>
+		<fspolicies>
+		</fspolicies>
+		<resources>
+		</resources>
+		<variables>
+			<variable>
+				<id1>Vca82e33bed27f8210d2ac309ae35d270</id1>
+				<id2>V4aeb330638f6fe1b02f10845ae9f65f5</id2>
+				<id3>cfc0edd20eaec14d6b0399134df35526</id3>
+				<id4>c46e5d84ff706ae77563ccfba01c0cbf</id4>
+				<id5>V3c4189fba132baf44e48b94cec2d12bf</id5>
+				<name>page_selector</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20261110014406+02&apos;00&apos;</creation>
+				<modification>D:20261110014429+02&apos;00&apos;</modification>
+				<varkey>V_Field_Page_Selector</varkey>
+				<varscript>String(app.vars.pad_pages || &quot;all&quot;);</varscript>
+				<varlistvalues varval_type="0" varval_flags="0">
+				</varlistvalues>
+			</variable>
+			<variable>
+				<id1>Ve49fdd56ea07bb82af4f4f4512e0ded5</id1>
+				<id2>V4bb0dc2a240cd073b7b52db20ef51a8c</id2>
+				<id3>e816f9062b28c52766df2f00b6c95238</id3>
+				<id4>15562198add0e5d73d0bd700d863baab</id4>
+				<id5>V26067ca21ced54e89e01f14f6f0b6b8d</id5>
+				<name></name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20261110013303+02&apos;00&apos;</creation>
+				<modification>D:20261110025350+02&apos;00&apos;</modification>
+				<varkey>V_Check_Outer</varkey>
+				<varscript>(function () {&#10;    var v = app.vars;&#10;    var currentPages = app.doc &amp;&amp; app.doc.pages;&#10;    var source;&#10;    var rows;&#10;&#10;    v.box_config = &quot;{}&quot;;&#10;    v.size_error = &quot;&quot;;&#10;&#10;    if (typeof v.QC_Input === &quot;string&quot;) {&#10;        try {&#10;            source = JSON.parse(v.QC_Input);&#10;        } catch (e) {&#10;            v.size_error = &quot;QC_Input is not valid JSON: &quot; + e.message;&#10;            return 0;&#10;        }&#10;    } else {&#10;        source = v.QC_Input;&#10;    }&#10;&#10;    if (typeof v.geometry_report !== &quot;string&quot; || v.geometry_report.length === 0) {&#10;        v.size_error = &quot;geometry_report is missing or empty&quot;;&#10;        return 0;&#10;    }&#10;&#10;    try {&#10;        rows = JSON.parse(v.geometry_report);&#10;    } catch (e) {&#10;        v.size_error = &quot;geometry_report is not valid JSON: &quot; + e.message;&#10;        return 0;&#10;    }&#10;&#10;    var sourcePages = source &amp;&amp; source.aggregated &amp;&amp; source.aggregated.pages &amp;&amp; source.aggregated.pages.page;&#10;    var pages = currentPages &amp;&amp; {page: currentPages};&#10;    var instructions = [];&#10;    var mmPerPt = 25.4 / 72;&#10;    var eps = 0.2;&#10;&#10;    function addBox(page, type, left, bottom, right, top) {&#10;        instructions.push({&#10;            page_selector: String(page),&#10;            which_box: type,&#10;            from_box_or_absolute: &quot;absolute&quot;,&#10;            left: left, bottom: bottom, right: right, top: top,&#10;            unit: &quot;pt&quot;,&#10;            when: &quot;always&quot;&#10;        });&#10;    }&#10;&#10;    if (Boolean(pages) === false || Boolean(pages.page) === false ||&#10;        Array.isArray(rows) === false || rows.length === 0 ||&#10;        pages.page.length !== rows.length || Boolean(sourcePages) === false ||&#10;        sourcePages.length !== rows.length) {&#10;        v.size_error = &quot;Page geometry missing or page count changed&quot;;&#10;        return 0;&#10;    }&#10;&#10;    for (var i = 0; i &lt; rows.length; i++) {&#10;        var g = sourcePages[i].geometry || {};&#10;        var m = pages.page[i].mediaBox;&#10;        if (m) {&#10;            m = {left: m.left, right: m.right, bottom: m.bottom, top: m.top,&#10;                width_eff: m.right - m.left, height_eff: m.top - m.bottom};&#10;        }&#10;        var turned = Math.abs(g.Rotate || 0) % 180 === 90;&#10;        var targetW = Number(turned ? v.bleed_h_mm : v.bleed_w_mm);&#10;        var targetH = Number(turned ? v.bleed_w_mm : v.bleed_h_mm);&#10;        if (Boolean(m) === false || (m.width_eff &gt; 0) === false ||&#10;            (m.height_eff &gt; 0) === false ||&#10;            (g.UserUnit != null &amp;&amp; Number(g.UserUnit) !== 1) ||&#10;            Math.abs(m.width_eff * mmPerPt - targetW) &gt; eps ||&#10;            Math.abs(m.height_eff * mmPerPt - targetH) &gt; eps) {&#10;            v.size_error = &quot;Unexpected MediaBox on page &quot; + (i + 1);&#10;            return 0;&#10;        }&#10;        var page = i + 1;&#10;        var useSource = rows[i].operation === &quot;fields&quot;;&#10;        var w = useSource ? rows[i].original_width_pt : (targetW - 4) / mmPerPt;&#10;        var h = useSource ? rows[i].original_height_pt : (targetH - 4) / mmPerPt;&#10;        var cx = (m.left + m.right) / 2;&#10;        var cy = (m.bottom + m.top) / 2;&#10;        addBox(page, &quot;CropBox&quot;, m.left, m.bottom, m.right, m.top);&#10;        addBox(page, &quot;BleedBox&quot;, m.left, m.bottom, m.right, m.top);&#10;        addBox(page, &quot;TrimBox&quot;, cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2);&#10;    }&#10;    v.box_config = JSON.stringify({&#10;        quickfixes: [{quickfix: &quot;set_page_box&quot;, version: &quot;1.0&quot;, instructions: instructions}]&#10;    });&#10;    v.size_error = &quot;&quot;;&#10;    return v.pad_pages ? 1 : 0;&#10;})();&#10;</varscript>
+				<varlistvalues varval_type="0" varval_flags="0">
+				</varlistvalues>
+			</variable>
+			<variable>
+				<id1>V399d2ae43a61f61e3d60ac2f0a5d4674</id1>
+				<id2>V7367af14fbe1dfc3181f74684bd31b23</id2>
+				<id3>a45e2a97bda0e8dfd500147efe2fa035</id3>
+				<id4>567f6c13a36d3704195fd2701299e3c6</id4>
+				<id5>V1b830b96931a972744b04b74a49ecc0e</id5>
+				<name></name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20261110005433+02&apos;00&apos;</creation>
+				<modification>D:20261110005633+02&apos;00&apos;</modification>
+				<varkey>QC_Input_Config</varkey>
+				<varqcscript>({&#10;    app_vars_sub_path: &quot;QC_Input&quot;,&#10;    quickcheck_config: [&#10;        &quot;$.direct: false&quot;,&#10;        &quot;$.aggregated: false&quot;,&#10;        &quot;$.aggregated.file.name: true&quot;,&#10;        &quot;$.aggregated.pages.page.geometry: true&quot;&#10;    ]&#10;});</varqcscript>
+				<varlistvalues varval_type="0" varval_flags="0">
+				</varlistvalues>
+			</variable>
+			<variable>
+				<id1>V5359facecb30be3a52dbcb90908cc32c</id1>
+				<id2>V94ae7cd6a5163997ffcb2c890e4bf49c</id2>
+				<id3>9cb1df0803a38edc7638d07c9890d9ef</id3>
+				<id4>ac9b3be0061bbe8e2c70a073daad0deb</id4>
+				<id5>V87aec5e70b52a564d4e0a8308b277337</id5>
+				<name></name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20261109204449+02&apos;00&apos;</creation>
+				<modification>D:20261110012023+02&apos;00&apos;</modification>
+				<varkey>V_Compare_Geometry</varkey>
+				<varscript>(function () {&#10;    var v = app.vars;&#10;    var qc = typeof v.QC_Input === &quot;string&quot; ? JSON.parse(v.QC_Input) : v.QC_Input;&#10;    var pages = qc &amp;&amp; qc.aggregated &amp;&amp; qc.aggregated.pages;&#10;    var rows = [];&#10;    var padPages = [];&#10;    var scale = [];&#10;    var scaleBase = [];&#10;    var outputBoxes = [];&#10;    var enlarge = [];&#10;    var mmPerPt = 25.4 / 72;&#10;    var eps = 0.2;&#10;    var targetW = Number(v.bleed_w_mm);&#10;    var targetH = Number(v.bleed_h_mm);&#10;&#10;    v.geometry_report = &quot;[]&quot;;&#10;    v.pad_pages = &quot;&quot;;&#10;    v.resize_config = &quot;{}&quot;;&#10;    v.needs_resize = 0;&#10;    if (Number(v.size_valid) !== 1 || !pages || !pages.page || !pages.page.length) {&#10;        v.size_error = &quot;Missing target dimensions or page geometry&quot;;&#10;        return 0;&#10;    }&#10;&#10;    function sign(value) {&#10;        return value &gt; eps ? 1 : value &lt; -eps ? -1 : 0;&#10;    }&#10;&#10;    function addEdges(page, edges, distance) {&#10;        if (distance &gt; 0) {&#10;            enlarge.push({&#10;                page_selector: String(page),&#10;                which_edges: edges,&#10;                enlarge_by: distance,&#10;                unit: &quot;mm&quot;&#10;            });&#10;        }&#10;    }&#10;&#10;    for (var i = 0; i &lt; pages.page.length; i++) {&#10;        var g = pages.page[i].geometry || {};&#10;        var media = g.MediaBox;&#10;        var crop = g.CropBox;&#10;        var unit = g.UserUnit == null ? 1 : Number(g.UserUnit);&#10;        var rotate = g.Rotate == null ? 0 : Number(g.Rotate);&#10;        var turned = Math.abs(rotate) % 180 === 90;&#10;        var page = i + 1;&#10;        if (!media || !(media.width_eff &gt; 0) || !(media.height_eff &gt; 0) ||&#10;            !isFinite(media.width_eff) || !isFinite(media.height_eff) ||&#10;            unit !== 1 || !isFinite(rotate) || rotate % 90 !== 0) {&#10;            v.size_error = &quot;Unsupported or invalid page geometry: page &quot; + page;&#10;            return 0;&#10;        }&#10;        if (crop &amp;&amp; crop.present &amp;&amp; [&quot;left&quot;, &quot;bottom&quot;, &quot;right&quot;, &quot;top&quot;].some(function (edge) {&#10;            return Math.abs(crop[edge] - media[edge]) * mmPerPt &gt; eps;&#10;        })) {&#10;            v.size_error = &quot;CropBox differs from MediaBox: page &quot; + page;&#10;            return 0;&#10;        }&#10;&#10;        var w = (turned ? media.height_eff : media.width_eff) * mmPerPt;&#10;        var h = (turned ? media.width_eff : media.height_eff) * mmPerPt;&#10;        var dw = targetW - w;&#10;        var dh = targetH - h;&#10;        var x = sign(dw);&#10;        var y = sign(dh);&#10;        var operation = &quot;keep&quot;;&#10;        if (x * y &lt; 0 || x &lt; 0 || y &lt; 0) {&#10;            var mixed = x * y &lt; 0;&#10;            if (sign(targetW - targetH) !== 0 &amp;&amp; sign(w - h) !== sign(targetW - targetH)) {&#10;                v.size_error = &quot;Orientation requires review: page &quot; + page;&#10;                return 0;&#10;            }&#10;            operation = mixed ? &quot;stretch&quot; : &quot;scale&quot;;&#10;            scaleBase.push({&#10;                page_selector: String(page),&#10;                which_box: &quot;TrimBox&quot;,&#10;                from_box_or_absolute: &quot;absolute&quot;,&#10;                left: media.left, bottom: media.bottom, right: media.right, top: media.top,&#10;                unit: &quot;pt&quot;, when: &quot;always&quot;&#10;            });&#10;            outputBoxes.push({&#10;                page_selector: String(page),&#10;                which_box: &quot;TrimBox&quot;,&#10;                from_box_or_origin: &quot;CropBox&quot;,&#10;                relative_to: &quot;center&quot;,&#10;                hor_offset: 0, vert_offset: 0,&#10;                width: Number(turned ? v.trim_h_mm : v.trim_w_mm),&#10;                height: Number(turned ? v.trim_w_mm : v.trim_h_mm),&#10;                width_is_relative: false, height_is_relative: false,&#10;                unit: &quot;mm&quot;, when: &quot;always&quot;&#10;            });&#10;            outputBoxes.push(Object.assign({}, outputBoxes[outputBoxes.length - 1], {&#10;                which_box: &quot;BleedBox&quot;,&#10;                width: turned ? targetH : targetW,&#10;                height: turned ? targetW : targetH&#10;            }));&#10;            scale.push({&#10;                page_selector: String(page),&#10;                short_edge: Math.min(targetW, targetH),&#10;                long_edge: Math.max(targetW, targetH),&#10;                unit: &quot;mm&quot;,&#10;                page_scale_mode: mixed ? &quot;stretch_to_fill&quot; : &quot;fit_from_outside_cut_page&quot;&#10;            });&#10;        } else if (x &gt; 0 || y &gt; 0) {&#10;            operation = &quot;fields&quot;;&#10;            padPages.push(page);&#10;            addEdges(page, &quot;left_and_right&quot;, Math.max(0, turned ? dh : dw) / 2);&#10;            addEdges(page, &quot;top_and_bottom&quot;, Math.max(0, turned ? dw : dh) / 2);&#10;        }&#10;        rows.push({&#10;            page: page,&#10;            operation: operation,&#10;            original_width_pt: media.width_eff,&#10;            original_height_pt: media.height_eff,&#10;            w_mm: w,&#10;            h_mm: h&#10;        });&#10;    }&#10;&#10;    var fixes = [];&#10;    if (scale.length) {&#10;        fixes.push({quickfix: &quot;set_page_box&quot;, version: &quot;1.0&quot;, instructions: scaleBase});&#10;        fixes.push({quickfix: &quot;scale_pages&quot;, version: &quot;1.0&quot;, instructions: scale});&#10;        fixes.push({quickfix: &quot;set_page_box_by_dimensions&quot;, version: &quot;1.0&quot;, instructions: outputBoxes});&#10;    }&#10;    if (enlarge.length) fixes.push({quickfix: &quot;enlarge_pages&quot;, version: &quot;1.0&quot;, instructions: enlarge});&#10;    v.geometry_report = JSON.stringify(rows);&#10;    v.pad_pages = padPages.join(&quot;,&quot;);&#10;    v.resize_config = JSON.stringify({quickfixes: fixes});&#10;    v.needs_resize = fixes.length ? 1 : 0;&#10;    return v.needs_resize;&#10;})();</varscript>
+				<varlistvalues varval_type="0" varval_flags="0">
+				</varlistvalues>
+			</variable>
+			<variable>
+				<id1>Vc75559227612852a97e3aa79ffb2e75a</id1>
+				<id2>Vae0ff29c11c9de7616adfa2a6509e5e0</id2>
+				<id3>c3a7a551e0122a3fd810af65a351206e</id3>
+				<id4>6b7f66590b3d4e8f735a8ffdb960339a</id4>
+				<id5>V5738da48f2208f276071b0e4e9c969b8</id5>
+				<name></name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20261110005836+02&apos;00&apos;</creation>
+				<modification>D:20261110010015+02&apos;00&apos;</modification>
+				<varkey>V_Extract_Size</varkey>
+				<varscript>(function () {&#10;    var v = app.vars;&#10;    var qc = typeof v.QC_Input === &quot;string&quot; ? JSON.parse(v.QC_Input) : v.QC_Input;&#10;    var file = qc &amp;&amp; qc.aggregated &amp;&amp; qc.aggregated.file;&#10;    var name = file &amp;&amp; typeof file.name === &quot;string&quot; ? file.name : &quot;&quot;;&#10;    var pattern = /\(\s*(\d+(?:[.,]\d+)?)\s*[xX\u0445\u0425\u00D7]\s*(\d+(?:[.,]\d+)?)\s*\)/g;&#10;    var match = pattern.exec(name);&#10;&#10;    v.size_valid = 0;&#10;    v.size_error = &quot;&quot;;&#10;    v.trim_w_mm = v.trim_h_mm = v.bleed_w_mm = v.bleed_h_mm = 0;&#10;    if (!match || pattern.exec(name)) {&#10;        v.size_error = &quot;Expected exactly one (width x height) pair: &quot; + name;&#10;        return 0;&#10;    }&#10;    var w = Number(match[1].replace(&quot;,&quot;, &quot;.&quot;));&#10;    var h = Number(match[2].replace(&quot;,&quot;, &quot;.&quot;));&#10;    if (!isFinite(w) || !isFinite(h) || w &lt;= 0 || h &lt;= 0) {&#10;        v.size_error = &quot;Invalid dimensions: &quot; + name;&#10;        return 0;&#10;    }&#10;    v.trim_w_mm = w;&#10;    v.trim_h_mm = h;&#10;    v.bleed_w_mm = w + 4;&#10;    v.bleed_h_mm = h + 4;&#10;    v.size_valid = 1;&#10;    return 1;&#10;})();</varscript>
+				<varlistvalues varval_type="0" varval_flags="0">
+				</varlistvalues>
+			</variable>
+			<variable>
+				<id1>V6fc1f9bce2bb0c214b9e9fbfcf4ef12c</id1>
+				<id2>Vf3857ceffaf437baebef61056dffb430</id2>
+				<id3>90db30fb3bd91fce24e7b4c3f3151535</id3>
+				<id4>43ca9b62261c3c895dd66477abf5e96c</id4>
+				<id5>V22b6fefb475e29cfcab9a03f48d06beb</id5>
+				<name></name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20261110012502+02&apos;00&apos;</creation>
+				<modification>D:20261110013654+02&apos;00&apos;</modification>
+				<varkey>QC_Resized_Config</varkey>
+				<varqcscript>({&#10;    app_vars_sub_path: [&quot;QC&quot;, &quot;AfterResize&quot;].join(&quot;_&quot;),&#10;    quickcheck_config: [&#10;        &quot;$.direct: false&quot;,&#10;        &quot;$.aggregated: false&quot;,&#10;        &quot;$.aggregated.file.name: true&quot;,&#10;        &quot;$.aggregated.pages.page.geometry: true&quot;&#10;    ]&#10;});</varqcscript>
+				<varlistvalues varval_type="0" varval_flags="0">
+				</varlistvalues>
+			</variable>
+		</variables>
+		<conditions>
+		</conditions>
+		<rules>
+		</rules>
+		<rulesets>
+		</rulesets>
+		<fixups>
+			<fixup>
+				<id1>F2991d566a9a8cdb5856fe4a71f36426b</id1>
+				<id2>F04060c712546a1568e899185bac6346d</id2>
+				<id3>90bcaacf9093a175a39d873ffd845029</id3>
+				<id4>8a60950d3c8854a16a4406f39d35bb8c</id4>
+				<id5>F1e6e7151d19355018f019221740d7b01</id5>
+				<name>Set CropBox to MediaBox</name>
+				<comment></comment>
+				<flags user_units="1" scope="16" edit="1" visible="1"></flags>
+				<creation>D:20261110022500+02&apos;00&apos;</creation>
+				<modification>D:20261110022500+02&apos;00&apos;</modification>
+				<fcfgs>
+					<fcfg>
+						<ffeat>SetPageBoxEx</ffeat>
+						<fparams>
+							<fparam>CropBox</fparam>
+							<fparam>LowerLeft</fparam>
+							<fparam>MediaBox</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+							<fparam></fparam>
+							<fparam></fparam>
+							<fparam>pt</fparam>
+							<fparam>Always</fparam>
+							<fparam>allPages</fparam>
+							<fparam>BoxEdges</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+						</fparams>
+					</fcfg>
+				</fcfgs>
+				<reportFailed></reportFailed>
+				<proc_steps_options>0</proc_steps_options>
+			</fixup>
+			<fixup>
+				<id1>Fb6e19f25fa9bd916e7e524af0c9fcfe9</id1>
+				<id2>Fa86853c16fdae074fc0e41bcee289f8a</id2>
+				<id3>f529a5a07dee7c6e9601a3fe948855e2</id3>
+				<id4>7a6f77602c809126cad223f4f9da42c9</id4>
+				<id5>F5729802bf9c12e2f2272f4dc090d581d</id5>
+				<name>F_Generate_Fields</name>
+				<comment></comment>
+				<flags user_units="1" scope="16" edit="1" visible="1"></flags>
+				<creation>D:20261110014354+02&apos;00&apos;</creation>
+				<modification>D:20261110020526+02&apos;00&apos;</modification>
+				<fcfgs>
+					<fcfg>
+						<ffeat>GenerateBleed</ffeat>
+						<fparams>
+							<fparam>LastPixelCorners</fparam>
+							<fparam>0</fparam>
+							<fparam>mm</fparam>
+							<fparam>1200</fparam>
+							<fparam>OI</fparam>
+							<fparam>0</fparam>
+							<fparam>1</fparam>
+							<fparam>1</fparam>
+							<fparam>1</fparam>
+							<fparam>1</fparam>
+							<fparam>All</fparam>
+							<fparam>Never</fparam>
+							<fparam>0</fparam>
+							<fparam>All</fparam>
+							<fparam>TrimB</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+							<fparam>1</fparam>
+							<fparam>5</fparam>
+							<fparam>5</fparam>
+							<fparam>5</fparam>
+							<fparam>5</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+							<fparam></fparam>
+							<fparam>0</fparam>
+							<fparam>3</fparam>
+							<fparam></fparam>
+							<fparam>2</fparam>
+							<fparam>2</fparam>
+							<fparam>2</fparam>
+							<fparam>2</fparam>
+							<fparam>2</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+						</fparams>
+					</fcfg>
+				</fcfgs>
+				<reportFailed></reportFailed>
+				<proc_steps_options>0</proc_steps_options>
+			</fixup>
+		</fixups>
+		<fixupsets>
+		</fixupsets>
+		<actions>
+		</actions>
+		<quickfixes>
+			<quickfix>
+				<id1>Q0709cc1e727cd9de40d50037caf28277</id1>
+				<id2>Q3ada68c6afdc110bbecb211284e4c1dc</id2>
+				<id3>95445e5ad82d58815f85a51a878e4c68</id3>
+				<id4>d96a4f25a5debf66bfd155ebc9e536df</id4>
+				<name>QF_Resize</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<metalist>
+					<metadata>
+						<metakey>custom_id</metakey>
+						<metavalue></metavalue>
+					</metadata>
+				</metalist>
+				<creation>D:20261110021601+02&apos;00&apos;</creation>
+				<modification>D:20261110021601+02&apos;00&apos;</modification>
+				<qfcfgs>
+					<qfcfg>
+						<qffeat>javascript</qffeat>
+						<qfinstructions>
+							<qfinstruction>
+								<qfparams>
+									<qfparam key="javascript">JSON.parse(app.vars.resize_config);&#10;</qfparam>
+								</qfparams>
+							</qfinstruction>
+						</qfinstructions>
+					</qfcfg>
+				</qfcfgs>
+			</quickfix>
+			<quickfix>
+				<id1>Q634ef050c7fed18940ff918fb0369277</id1>
+				<id2>Qb17b1ee604c511e9d76e413415ae05ef</id2>
+				<id3>51708fc778c354cb312802d5e27c2ce0</id3>
+				<id4>0f333c921ba2d848b96aef9747fbf6d0</id4>
+				<name>QF_Set_Final_Boxes</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<metalist>
+					<metadata>
+						<metakey>custom_id</metakey>
+						<metavalue></metavalue>
+					</metadata>
+				</metalist>
+				<creation>D:20261110021601+02&apos;00&apos;</creation>
+				<modification>D:20261110021601+02&apos;00&apos;</modification>
+				<qfcfgs>
+					<qfcfg>
+						<qffeat>javascript</qffeat>
+						<qfinstructions>
+							<qfinstruction>
+								<qfparams>
+									<qfparam key="javascript">(function () {&#10;    var config = JSON.parse(app.vars.box_config);&#10;    var fix = config.quickfixes[0];&#10;    var insetPt = 2 * 72 / 25.4;&#10;&#10;    fix.instructions = fix.instructions&#10;        .filter(function (box) { return box.which_box === &quot;BleedBox&quot;; })&#10;        .map(function (box) {&#10;            return Object.assign({}, box, {&#10;                which_box: &quot;TrimBox&quot;,&#10;                left: box.left + insetPt,&#10;                bottom: box.bottom + insetPt,&#10;                right: box.right - insetPt,&#10;                top: box.top - insetPt&#10;            });&#10;        });&#10;    return config;&#10;})();</qfparam>
+								</qfparams>
+							</qfinstruction>
+						</qfinstructions>
+					</qfcfg>
+				</qfcfgs>
+			</quickfix>
+			<quickfix>
+				<id1>Q802015bc7bae410585a936936f5cee3d</id1>
+				<id2>Qdeab36109dfb907b46357c327203ee5c</id2>
+				<id3>f217edf0cfc58cb77921d5477c13b93b</id3>
+				<id4>3646ed62f8bb7f4d1f534f042c4c8164</id4>
+				<name>QF_Set_Working_Boxes</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<metalist>
+					<metadata>
+						<metakey>custom_id</metakey>
+						<metavalue></metavalue>
+					</metadata>
+				</metalist>
+				<creation>D:20261110021601+02&apos;00&apos;</creation>
+				<modification>D:20261110021601+02&apos;00&apos;</modification>
+				<qfcfgs>
+					<qfcfg>
+						<qffeat>javascript</qffeat>
+						<qfinstructions>
+							<qfinstruction>
+								<qfparams>
+									<qfparam key="javascript">JSON.parse(app.vars.box_config);</qfparam>
+								</qfparams>
+							</qfinstruction>
+						</qfinstructions>
+					</qfcfg>
+				</qfcfgs>
+			</quickfix>
+		</quickfixes>
+		<profiles>
+		</profiles>
+		<metaprofs>
+			<metaprof>
+				<id1>M3012632cc0bb793065b2d8809a9ac82a</id1>
+				<id2>Mb8af7751a2f5a5e9cd59813ffa57324b</id2>
+				<id3>a903e5533e96b3f09a6a3e2b4df86e93</id3>
+				<id4>4b6d42d7322bc39e3f949a9a65a15ced</id4>
+				<id5>M6673ec07170faeb85b6b196ce3d305e7</id5>
+				<name>New Process plan</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<metalist>
+					<metadata>
+						<metakey>author</metakey>
+						<metavalue></metavalue>
+					</metadata>
+					<metadata>
+						<metakey>email</metakey>
+						<metavalue></metavalue>
+					</metadata>
+				</metalist>
+				<creation>D:20261110011522+02&apos;00&apos;</creation>
+				<modification>D:20261110155417+02&apos;00&apos;</modification>
+				<layout>{&quot;displayConfiguration&quot;:{&quot;originalViewportPosition&quot;:{&quot;x&quot;:-179,&quot;y&quot;:171},&quot;scale&quot;:1.3999999999999999},&quot;layout&quot;:{&quot;stepsLayout&quot;:{&quot;0&quot;:{&quot;position&quot;:{&quot;x&quot;:80,&quot;y&quot;:39.5},&quot;size&quot;:{&quot;height&quot;:41,&quot;width&quot;:200}},&quot;1&quot;:{&quot;position&quot;:{&quot;x&quot;:80,&quot;y&quot;:159.5},&quot;size&quot;:{&quot;height&quot;:41,&quot;width&quot;:200}},&quot;2&quot;:{&quot;position&quot;:{&quot;x&quot;:80,&quot;y&quot;:279.5},&quot;size&quot;:{&quot;height&quot;:41,&quot;width&quot;:200}},&quot;3&quot;:{&quot;position&quot;:{&quot;x&quot;:80,&quot;y&quot;:399.5},&quot;size&quot;:{&quot;height&quot;:41,&quot;width&quot;:200}},&quot;4&quot;:{&quot;position&quot;:{&quot;x&quot;:200,&quot;y&quot;:579.5},&quot;size&quot;:{&quot;height&quot;:41,&quot;width&quot;:200}},&quot;5&quot;:{&quot;position&quot;:{&quot;x&quot;:260,&quot;y&quot;:999.5},&quot;size&quot;:{&quot;height&quot;:41,&quot;width&quot;:200}},&quot;6&quot;:{&quot;position&quot;:{&quot;x&quot;:620,&quot;y&quot;:759.5},&quot;size&quot;:{&quot;height&quot;:41,&quot;width&quot;:200}},&quot;7&quot;:{&quot;position&quot;:{&quot;x&quot;:440,&quot;y&quot;:879.5},&quot;size&quot;:{&quot;height&quot;:41,&quot;width&quot;:200}},&quot;8&quot;:{&quot;position&quot;:{&quot;x&quot;:380,&quot;y&quot;:639.5},&quot;size&quot;:{&quot;height&quot;:41,&quot;width&quot;:200}},&quot;9&quot;:{&quot;position&quot;:{&quot;x&quot;:500,&quot;y&quot;:519.5},&quot;size&quot;:{&quot;height&quot;:41,&quot;width&quot;:200}},&quot;end&quot;:{&quot;position&quot;:{&quot;x&quot;:720,&quot;y&quot;:1059.5},&quot;size&quot;:{&quot;height&quot;:41,&quot;width&quot;:120}},&quot;start&quot;:{&quot;position&quot;:{&quot;x&quot;:360,&quot;y&quot;:-80.5},&quot;size&quot;:{&quot;height&quot;:41,&quot;width&quot;:120}}},&quot;transitionsLayout&quot;:{&quot;0&quot;:[{&quot;end&quot;:{&quot;position&quot;:&quot;top&quot;},&quot;start&quot;:{&quot;position&quot;:&quot;left&quot;},&quot;types&quot;:[&quot;on_success&quot;,&quot;on_failure&quot;,&quot;if_disabled&quot;]}],&quot;1&quot;:[{&quot;end&quot;:{&quot;position&quot;:&quot;top&quot;},&quot;start&quot;:{&quot;position&quot;:&quot;bottom&quot;},&quot;types&quot;:[&quot;on_success&quot;,&quot;on_failure&quot;,&quot;if_disabled&quot;]}],&quot;2&quot;:[{&quot;end&quot;:{&quot;position&quot;:&quot;top&quot;},&quot;start&quot;:{&quot;position&quot;:&quot;bottom&quot;},&quot;types&quot;:[&quot;on_success&quot;,&quot;on_failure&quot;,&quot;if_disabled&quot;]}],&quot;3&quot;:[{&quot;end&quot;:{&quot;position&quot;:&quot;top&quot;},&quot;start&quot;:{&quot;position&quot;:&quot;bottom&quot;},&quot;types&quot;:[&quot;on_success&quot;]},{&quot;end&quot;:{&quot;coordinates&quot;:{&quot;x&quot;:-125.89999999999999,&quot;y&quot;:761.60000000000002},&quot;position&quot;:&quot;top&quot;},&quot;start&quot;:{&quot;position&quot;:&quot;bottom&quot;},&quot;types&quot;:[&quot;on_failure&quot;,&quot;if_disabled&quot;]}],&quot;4&quot;:[{&quot;end&quot;:{&quot;position&quot;:&quot;top&quot;},&quot;start&quot;:{&quot;position&quot;:&quot;bottom&quot;},&quot;types&quot;:[&quot;on_success&quot;,&quot;on_failure&quot;,&quot;if_disabled&quot;]}],&quot;5&quot;:[{&quot;end&quot;:{&quot;position&quot;:&quot;bottom&quot;},&quot;start&quot;:{&quot;position&quot;:&quot;bottom&quot;},&quot;types&quot;:[&quot;on_success&quot;,&quot;on_failure&quot;,&quot;if_disabled&quot;]}],&quot;6&quot;:[{&quot;end&quot;:{&quot;position&quot;:&quot;top&quot;},&quot;start&quot;:{&quot;position&quot;:&quot;bottom&quot;},&quot;types&quot;:[&quot;on_success&quot;]},{&quot;end&quot;:{&quot;position&quot;:&quot;top&quot;},&quot;start&quot;:{&quot;position&quot;:&quot;bottom&quot;},&quot;types&quot;:[&quot;on_failure&quot;,&quot;if_disabled&quot;]}],&quot;7&quot;:[{&quot;end&quot;:{&quot;position&quot;:&quot;top&quot;},&quot;start&quot;:{&quot;position&quot;:&quot;bottom&quot;},&quot;types&quot;:[&quot;on_success&quot;]},{&quot;end&quot;:{&quot;position&quot;:&quot;left&quot;},&quot;start&quot;:{&quot;position&quot;:&quot;right&quot;},&quot;types&quot;:[&quot;on_failure&quot;,&quot;if_disabled&quot;]}],&quot;8&quot;:[],&quot;9&quot;:[{&quot;end&quot;:{&quot;position&quot;:&quot;top&quot;},&quot;start&quot;:{&quot;position&quot;:&quot;bottom&quot;},&quot;types&quot;:[&quot;on_success&quot;]}],&quot;start&quot;:[{&quot;end&quot;:{&quot;position&quot;:&quot;top&quot;},&quot;start&quot;:{&quot;position&quot;:&quot;bottom&quot;},&quot;types&quot;:[&quot;out&quot;]}]}},&quot;warnings&quot;:[&quot;No incoming transition&quot;,&quot;Outgoing transitions for events &quot;]}&#10;</layout>
+				<sequence>
+					<step type="2">
+						<enabled disablednext="-1">1</enabled>
+						<customid></customid>
+						<pageselector>all</pageselector>
+						<fastvdpmode>0</fastvdpmode>
+						<fixup>F2991d566a9a8cdb5856fe4a71f36426b</fixup>
+						<ppoptions>
+							<ppoption ret="0" next="-1">
+							</ppoption>
+							<ppoption ret="1" next="-1">
+							</ppoption>
+						</ppoptions>
+					</step>
+					<step type="8">
+						<enabled disablednext="-1">1</enabled>
+						<customid></customid>
+						<variable>V399d2ae43a61f61e3d60ac2f0a5d4674</variable>
+						<ppoptions>
+							<ppoption ret="0" next="-1">
+							</ppoption>
+							<ppoption ret="1" next="-1">
+							</ppoption>
+						</ppoptions>
+					</step>
+					<step type="4">
+						<enabled disablednext="-1">1</enabled>
+						<customid></customid>
+						<variable>Vc75559227612852a97e3aa79ffb2e75a</variable>
+						<ppoptions>
+							<ppoption ret="0" next="-1">
+							</ppoption>
+							<ppoption ret="1" next="-1">
+							</ppoption>
+						</ppoptions>
+					</step>
+					<step type="4">
+						<enabled disablednext="-3">1</enabled>
+						<customid></customid>
+						<variable>V5359facecb30be3a52dbcb90908cc32c</variable>
+						<ppoptions>
+							<ppoption ret="0" next="-1">
+							</ppoption>
+							<ppoption ret="1" next="-3">
+							</ppoption>
+						</ppoptions>
+					</step>
+					<step type="11">
+						<enabled disablednext="9">1</enabled>
+						<customid></customid>
+						<quickfix>Q0709cc1e727cd9de40d50037caf28277</quickfix>
+						<ppoptions>
+							<ppoption ret="0" next="9">
+							</ppoption>
+							<ppoption ret="1" next="9">
+							</ppoption>
+						</ppoptions>
+					</step>
+					<step type="11">
+						<enabled disablednext="-2">1</enabled>
+						<customid></customid>
+						<quickfix>Q634ef050c7fed18940ff918fb0369277</quickfix>
+						<ppoptions>
+							<ppoption ret="0" next="-2">
+							</ppoption>
+							<ppoption ret="1" next="-2">
+							</ppoption>
+						</ppoptions>
+					</step>
+					<step type="11">
+						<enabled disablednext="-2">1</enabled>
+						<customid></customid>
+						<quickfix>Q802015bc7bae410585a936936f5cee3d</quickfix>
+						<ppoptions>
+							<ppoption ret="0" next="-1">
+							</ppoption>
+							<ppoption ret="1" next="-2">
+							</ppoption>
+						</ppoptions>
+					</step>
+					<step type="2">
+						<enabled disablednext="-2">1</enabled>
+						<customid></customid>
+						<pageselector var_idx="5" var_pos="0" var_len="1">0</pageselector>
+						<fastvdpmode>0</fastvdpmode>
+						<fixup>Fb6e19f25fa9bd916e7e524af0c9fcfe9</fixup>
+						<ppoptions>
+							<ppoption ret="0" next="5">
+							</ppoption>
+							<ppoption ret="1" next="-2">
+							</ppoption>
+						</ppoptions>
+					</step>
+					<step type="8">
+						<enabled disablednext="-4">1</enabled>
+						<customid></customid>
+						<variable>V6fc1f9bce2bb0c214b9e9fbfcf4ef12c</variable>
+						<ppoptions>
+							<ppoption ret="0" next="-4">
+							</ppoption>
+							<ppoption ret="1" next="-4">
+							</ppoption>
+						</ppoptions>
+					</step>
+					<step type="4">
+						<enabled disablednext="-4">1</enabled>
+						<customid></customid>
+						<variable>Ve49fdd56ea07bb82af4f4f4512e0ded5</variable>
+						<ppoptions>
+							<ppoption ret="0" next="6">
+							</ppoption>
+							<ppoption ret="1" next="-4">
+							</ppoption>
+						</ppoptions>
+					</step>
+					<firststep>0</firststep>
+					<revertchanges>0</revertchanges>
+				</sequence>
+				<variables>
+					<variable var_idx="5">Vca82e33bed27f8210d2ac309ae35d270</variable>
+					<variable var_idx="4">Ve49fdd56ea07bb82af4f4f4512e0ded5</variable>
+					<variable var_idx="0">V399d2ae43a61f61e3d60ac2f0a5d4674</variable>
+					<variable var_idx="2">V5359facecb30be3a52dbcb90908cc32c</variable>
+					<variable var_idx="1">Vc75559227612852a97e3aa79ffb2e75a</variable>
+					<variable var_idx="3">V6fc1f9bce2bb0c214b9e9fbfcf4ef12c</variable>
+				</variables>
+			</metaprof>
+		</metaprofs>
+		<profgroups>
+		</profgroups>
+	</package>
+</pdfpreflight>

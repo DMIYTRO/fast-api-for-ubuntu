@@ -59,6 +59,7 @@ class OrderWorkflowService:
         preview_uploader: Callable[[list[Path]], list[str]] | None = None,
         reviewed_pdf_pitstop_service_factory: Callable[[Path, str], Any] | None = None,
         pdf_merger: Callable[[Any, Path, str], None] | None = None,
+        accepted_pdf_provider: Callable[[Path], Path | None] | None = None,
     ) -> None:
         self.coordinator = coordinator
         self.session_factory = session_factory
@@ -69,6 +70,7 @@ class OrderWorkflowService:
         self.preview_uploader = preview_uploader
         self.reviewed_pdf_pitstop_service_factory = reviewed_pdf_pitstop_service_factory
         self.pdf_merger = pdf_merger
+        self.accepted_pdf_provider = accepted_pdf_provider
         self._action_locks_guard = Lock()
         self._action_locks: dict[int, tuple[Lock, str]] = {}
         self._background_guard = Lock()
@@ -517,6 +519,17 @@ class OrderWorkflowService:
                             reviewed_pdf = build_reviewed_layered_print_pdf(
                                 order, input_root, pdf_merger=self.pdf_merger
                             )
+                            if (
+                                reviewed_pdf is None
+                                and self.accepted_pdf_provider is not None
+                                and order.get("pdf_path")
+                            ):
+                                # Принятое оператором исправление Callas идёт в печать
+                                # тем же путём, что и PDF из просмотренных TIFF:
+                                # проверка PDF, PitStop, новая ревизия.
+                                reviewed_pdf = self.accepted_pdf_provider(
+                                    Path(str(order["pdf_path"]))
+                                )
                             if reviewed_pdf is not None:
                                 inspection = inspect_pdf(reviewed_pdf)
                                 if inspection.errors:
