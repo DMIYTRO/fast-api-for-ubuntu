@@ -192,7 +192,7 @@ class CallasFixService:
         job_id = f"fix-{uuid4().hex[:16]}"
         try:
             result = self._client.process(
-                pdf, plan.profile, "fix", job_id=job_id, report=("xml",)
+                pdf, plan.profile, "fix", job_id=job_id, report=("xml",), keep_name=True
             )
             fixed = directory / FIXED_PDF_NAME
             shutil.copyfile(result.output_pdf, fixed)

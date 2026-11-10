@@ -289,6 +289,7 @@ class CallasClient:
         report: Sequence[str] = ("xml",),
         cancel: threading.Event | None = None,
         job_id: str | None = None,
+        keep_name: bool = False,
     ) -> ProcessResult:
         """Запускает процесс-план pdfToolbox: ``analyze`` (только проверка) или ``fix``.
 
@@ -327,7 +328,7 @@ class CallasClient:
         self._validate_job_id(job_id)
         ctx = self._new_ctx(job_id, cancel)
         with self._slot(ctx):
-            staged = self._stage_inputs(job_id, [source])
+            staged = self._stage_inputs(job_id, [source], keep_names=keep_name)
             server_path, digest = staged[0]
             spec: dict[str, Any] = {
                 "type": "process",
@@ -500,8 +501,15 @@ class CallasClient:
 
     # -- входы
 
-    def _stage_inputs(self, job_id: str, sources: Sequence[Path]) -> list[tuple[str, str]]:
-        """Копирует входы в <share>/.callas/<job_id>/in; возвращает (путь для сервера, sha256)."""
+    def _stage_inputs(
+        self, job_id: str, sources: Sequence[Path], *, keep_names: bool = False
+    ) -> list[tuple[str, str]]:
+        """Копирует входы в <share>/.callas/<job_id>/in; возвращает (путь для сервера, sha256).
+
+        По умолчанию вход получает имя ``0001.pdf``. С ``keep_names`` сохраняется имя
+        исходного файла (в безопасной записи): процесс-планы, которые читают целевой
+        размер из имени заказа вида ``…(99x210)…``, иначе его не увидят.
+        """
         in_dir = self.job_dir(job_id) / "in"
         try:
             in_dir.mkdir(parents=True, exist_ok=True)
@@ -515,7 +523,9 @@ class CallasClient:
             if not source.is_file():
                 raise CallasConfigError(f"Входной файл не найден: {source.name}", job_id=job_id)
             suffix = source.suffix.lower() if re.fullmatch(r"\.[A-Za-z0-9]{1,8}", source.suffix) else ""
-            target = in_dir / f"{index:04d}{suffix}"
+            target = in_dir / (
+                _safe_input_name(source.name) if keep_names and len(sources) == 1 else f"{index:04d}{suffix}"
+            )
             try:
                 digest = self._copy_verified(source, target)
             except OSError as exc:
@@ -941,6 +951,17 @@ class CallasClient:
                 f"Не удалось прочитать результат {local.name}: {exc.strerror or exc}",
                 job_id=job_id,
             ) from exc
+
+
+def _safe_input_name(name: str) -> str:
+    """Имя файла только из ASCII-букв, цифр и ``._()- ``: остальное заменяется на ``_``."""
+    stem, dot, suffix = name.rpartition(".")
+    if not dot or not re.fullmatch(r"[A-Za-z0-9]{1,8}", suffix):
+        stem, suffix = name, "pdf"
+    # Кириллическая «х» и «×» внутри «(99х210)» читаются планами как разделитель размера.
+    stem = re.sub(r"(\d)\s*[хХ×]\s*(\d)", r"\1x\2", stem)
+    cleaned = re.sub(r"[^A-Za-z0-9._()\- ]", "_", stem).strip(" .") or "input"
+    return f"{cleaned[:150]}.{suffix.lower()}"
 
 
 def _sha256_file(path: Path) -> str:

@@ -339,3 +339,36 @@ def test_process_flag_defaults_off_and_reads_env(monkeypatch):
     assert Settings.from_env().callas_process_enabled is False
     monkeypatch.setenv("IMAGE_MAGIC_CALLAS_PROCESS_ENABLED", "true")
     assert Settings.from_env().callas_process_enabled is True
+
+
+# ------------------------------------------------- имя входного файла (keep_name)
+
+
+def test_keep_name_stages_original_name_so_plans_can_read_size(share, fake, tmp_path):
+    named = tmp_path / "09_NP_Bezlam_(99x210)_4-4_T1000_(34250-26146648)_offset-face.pdf"
+    named.write_bytes(b"%PDF-1.4 original")
+    fake.get_script = [lambda job_id: done(fake, job_id)]
+    client = make_client(share, fake)
+    result = client.process(named, PROFILE, "analyze", keep_name=True)
+
+    staged = fake.specs[result.job_id]["input"]["path"]
+    assert staged == f"{share}/.callas/{result.job_id}/in/{named.name}"
+    assert (client.job_dir(result.job_id) / "in" / named.name).read_bytes() == b"%PDF-1.4 original"
+
+
+def test_keep_name_makes_name_safe_and_keeps_size_token(share, fake, tmp_path):
+    odd = tmp_path / "заказ (99х210) №1.pdf"  # кириллические «з…», «х», «№»
+    odd.write_bytes(b"%PDF-1.4 original")
+    fake.get_script = [lambda job_id: done(fake, job_id)]
+    client = make_client(share, fake)
+    result = client.process(odd, PROFILE, "analyze", keep_name=True)
+
+    name = Path(fake.specs[result.job_id]["input"]["path"]).name
+    assert "(99x210)" in name  # кириллическая «х» приведена к латинской «x»
+    assert name.endswith(".pdf") and name.isascii()
+
+
+def test_default_staging_still_uses_index_name(share, fake, pdf):
+    fake.get_script = [lambda job_id: done(fake, job_id)]
+    result = make_client(share, fake).process(pdf, PROFILE, "analyze")
+    assert fake.specs[result.job_id]["input"]["path"].endswith("/in/0001.pdf")
