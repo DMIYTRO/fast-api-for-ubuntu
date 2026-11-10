@@ -37,5 +37,9 @@ export const api = {
   layeredTiffPreview: (url, method = "GET") => request(url, { method }),
   preparePrint: (body) => request("/api/orders/prepare-print", { method: "POST", body: JSON.stringify(body) }),
   prepareReject: (body) => request("/api/orders/prepare-reject", { method: "POST", body: JSON.stringify(body) }),
+  callasPlans: () => request("/api/callas/plans"),
+  startCallasFix: (orderId, planKey) => request(`/api/orders/${encodeURIComponent(orderId)}/callas/fix`, { method: "POST", body: JSON.stringify({ plan: planKey }) }),
+  callasFixStatus: (orderId) => request(`/api/orders/${encodeURIComponent(orderId)}/callas/fix`),
+  decideCallasFix: (orderId, decision) => request(`/api/orders/${encodeURIComponent(orderId)}/callas/fix/decision`, { method: "POST", body: JSON.stringify({ decision }) }),
   history: (params = {}) => request(`/api/order-history?${new URLSearchParams(params)}`),
 };

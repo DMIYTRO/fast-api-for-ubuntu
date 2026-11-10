@@ -6,6 +6,7 @@ import FileParameters from "./FileParameters.vue";
 import CorrectionDecision from "./CorrectionDecision.vue";
 import ReturnReasons from "./ReturnReasons.vue";
 import PitStopReport from "./PitStopReport.vue";
+import CallasFixControl from "./CallasFixControl.vue";
 import { groupIssueMessages, issueObjectLabel } from "./issueGroups.js";
 
 const props = defineProps({ order: Object, runId: String, selected: Boolean, reasons: Array, paidDesign: { type: Boolean, default: true }, designCost: { type: String, default: "0" } });
@@ -267,6 +268,7 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
         <div v-if="successful && !allErrors.length && !fileErrors.length && !allWarnings.length && !fileWarnings.length" class="issue-list success-note"><strong>Заказ соответствует требованиям допечатной подготовки.</strong></div>
         <PitStopReport v-if="order.pitstop" :pitstop="order.pitstop" section-title="Проверка PDF из первоначальной обработки" />
         <PitStopReport v-if="order.action_result?.pitstop" :pitstop="order.action_result.pitstop" section-title="Повторная проверка печатного PDF из просмотренных TIFF" />
+        <CallasFixControl v-if="order.pdf_path || order.pdf_url || order.callas_fix?.comparison" :order-id="actionId" :initial="order.callas_fix" :can-start="Boolean(order.pdf_path || order.pdf_url)" />
         <CorrectionDecision :order="order" :busy="busy" @decide="decide" />
         <p v-if="order.action_result" class="action-result" :class="`status-${order.action_result.status}`">Действие: {{ order.action_result.status === "prepared" ? "подготовлено" : (order.action_result.message || order.action_result.status) }}</p>
       </section>
