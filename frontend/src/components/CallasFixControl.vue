@@ -13,6 +13,9 @@ const props = defineProps({
   initial: { type: Object, default: null },
   // Show the "Исправить" button (an order has a production PDF); the block with a result is shown regardless.
   canStart: { type: Boolean, default: true },
+  // Исходный PDF-файл заказа без собранного PDF: результат только для просмотра и скачивания.
+  fileId: { type: String, default: "" },
+  fileLabel: { type: String, default: "" },
 });
 
 const uid = useId();
@@ -52,7 +55,7 @@ function schedulePoll() {
     timer = undefined;
     if (disposed) return;
     try {
-      const payload = await api.callasFixStatus(props.runId, props.orderId);
+      const payload = await api.callasFixStatus(props.runId, props.orderId, props.fileId);
       if (disposed) return;
       error.value = "";
       apply(payload);
@@ -97,7 +100,7 @@ async function start(key = planKey.value) {
   busy.value = true;
   error.value = "";
   try {
-    const payload = await api.startCallasFix(props.runId, props.orderId, key);
+    const payload = await api.startCallasFix(props.runId, props.orderId, key, props.fileId);
     if (disposed) return;
     panelOpen.value = false;
     stopPolling();
@@ -116,7 +119,7 @@ async function decide(decision) {
   busy.value = true;
   error.value = "";
   try {
-    const payload = await api.decideCallasFix(props.runId, props.orderId, decision);
+    const payload = await api.decideCallasFix(props.runId, props.orderId, decision, props.fileId);
     if (disposed) return;
     const next = extract(payload);
     if (next) apply(payload);
@@ -136,6 +139,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div v-if="showBlock || canStart || unavailable" class="callas-fix">
+    <p v-if="fileLabel" class="callas-fix-file muted">Исходный PDF: <b>{{ fileLabel }}</b></p>
     <FixComparison
       v-if="showBlock"
       :comparison="comparison"

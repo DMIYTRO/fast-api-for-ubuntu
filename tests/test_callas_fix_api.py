@@ -32,8 +32,24 @@ class RealPdfAdapter(OneOrderAdapter):
         return OrderArtifacts(pdf_path=pdf, preview_paths=[preview])
 
 
+class SourcePdfAdapter(OneOrderAdapter):
+    """Заказ с ошибкой: исходник — PDF, итоговый PDF не собран."""
+
+    def __init__(self, options):
+        super().__init__(options)
+        self.source.unlink()
+        self.source = self.input_dir / "sample-face.pdf"
+        make_pdf(self.source, 104, 204)
+        self.order.files[0].path = self.source
+        self.order.files[0].actual_format = "PDF"
+
+    def process_order(self, _order):
+        return OrderArtifacts(pdf_path=None, preview_paths=[], errors=["Размер не совпадает"])
+
+
 class CallasFixApiTests(unittest.TestCase):
     enabled = True
+    adapter_class = RealPdfAdapter
 
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory(dir=control_panel.PROJECT_DIR)
@@ -52,7 +68,7 @@ class CallasFixApiTests(unittest.TestCase):
             settings=settings,
             allowed_roots=(self.root,),
             default_input_dir=self.root,
-            adapter_factory=lambda options: RealPdfAdapter(options),
+            adapter_factory=lambda options: self.adapter_class(options),
             callas_fix_service=service,
             initialize_schema=True,
         )
@@ -208,6 +224,68 @@ class EnabledTests(CallasFixApiTests):
         self.client.post("/api/auth/logout")
         self.assertEqual(self.client.get(self.url(run_id)).status_code, 401)
         self.assertEqual(self.client.get("/api/callas/plans").status_code, 401)
+
+
+class SourcePdfTests(CallasFixApiTests):
+    adapter_class = SourcePdfAdapter
+
+    def source_url(self, run_id: str, suffix: str = "") -> tuple[str, str]:
+        order = self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]
+        entry = order["files"][0]
+        self.assertTrue(entry["callas_fixable"])
+        file_id = entry["callas_fix_file_id"]
+        return order, f"/api/checks/{run_id}/orders/1001/callas/fix/source/{file_id}{suffix}"
+
+    def test_order_without_built_pdf_exposes_fixable_source_pdf(self):
+        run_id = self.make_run()
+        order, url = self.source_url(run_id)
+        self.assertFalse(order.get("pdf_path"))
+        self.assertIsNone(order["files"][0]["callas_fix"]["comparison"])
+        self.assertEqual(self.client.get(url).json(), {"comparison": None})
+        # Без file_id у заказа нет собранного PDF — маршрут сборки отвечает «не готов».
+        self.assertEqual(self.client.get(self.url(run_id)).status_code, 404)
+
+    def test_source_pdf_fix_is_preview_only_and_never_touches_source(self):
+        run_id = self.make_run()
+        _order, url = self.source_url(run_id)
+        source = self.root / "sample-face.pdf"
+        original = source.read_bytes()
+
+        started = self.client.post(url, json={"plan": "size_correction"})
+        self.assertEqual(started.status_code, 202, started.text)
+        comparison = self.client.get(url).json()["comparison"]
+        self.assertEqual(comparison["status"], "ready")
+        self.assertTrue(comparison["source_only"])
+        self.assertEqual(comparison["summary"]["result_size_mm"], [103.0, 214.0])
+        for key in ("original_url", "result_url", "overlay_url", "pdf_url"):
+            self.assertIn("/callas/fix/source/", comparison[key])
+            self.assertEqual(self.client.get(comparison[key]).status_code, 200, key)
+        self.assertEqual(source.read_bytes(), original)
+        # Результат лежит в PDF/CallasFix, а не рядом с исходниками.
+        self.assertTrue((self.root / "PDF" / "CallasFix" / "sample-face.source" / "fixed.pdf").is_file())
+
+        # Состояние видно после перезагрузки страницы.
+        order = self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]
+        self.assertEqual(order["files"][0]["callas_fix"]["comparison"]["status"], "ready")
+
+        refused = self.client.post(url + "/decision", json={"decision": "accept"})
+        self.assertEqual(refused.status_code, 409)
+        self.assertEqual(refused.json()["error"]["code"], "callas_fix_source_only")
+
+    def test_unknown_file_and_raster_file_are_rejected(self):
+        run_id = self.make_run()
+        base = f"/api/checks/{run_id}/orders/1001/callas/fix/source/"
+        self.assertEqual(self.client.get(base + "nope").status_code, 404)
+        self.assertEqual(self.client.post(base + "nope", json={"plan": "size_correction"}).status_code, 404)
+
+
+class RasterOrderTests(CallasFixApiTests):
+    adapter_class = OneOrderAdapter
+
+    def test_raster_source_is_not_offered(self):
+        run_id = self.make_run()
+        order = self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]
+        self.assertNotIn("callas_fixable", order["files"][0])
 
 
 class DisabledTests(CallasFixApiTests):

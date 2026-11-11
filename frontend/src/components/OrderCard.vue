@@ -31,6 +31,8 @@ const files = computed(() => (props.order.files || props.order.file_results || [
     layered_tiff_export_error: result.status === "failed" ? result.error : "",
   };
 }));
+// Заказ без итогового PDF (например, ошибка размера): исправлять можно его исходные PDF.
+const sourceFixFiles = computed(() => (props.order.pdf_path || props.order.pdf_url ? [] : files.value.filter((file) => file.callas_fixable && file.callas_fix_file_id)));
 const face = computed(() => files.value.find((file) => String(file.side || file.parsed?.side).toLowerCase() === "face") || files.value[0]);
 const back = computed(() => files.value.find((file) => String(file.side || file.parsed?.side).toLowerCase() === "back"));
 const parsed = computed(() => face.value?.parsed || {});
@@ -269,6 +271,15 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
         <PitStopReport v-if="order.pitstop" :pitstop="order.pitstop" section-title="Проверка PDF из первоначальной обработки" />
         <PitStopReport v-if="order.action_result?.pitstop" :pitstop="order.action_result.pitstop" section-title="Повторная проверка печатного PDF из просмотренных TIFF" />
         <CallasFixControl v-if="order.pdf_path || order.pdf_url || order.callas_fix?.comparison" :run-id="runId" :order-id="actionId" :initial="order.callas_fix" :can-start="Boolean(order.pdf_path || order.pdf_url)" />
+        <CallasFixControl
+          v-for="file in sourceFixFiles"
+          :key="`fix-${file.callas_fix_file_id}`"
+          :run-id="runId"
+          :order-id="actionId"
+          :initial="file.callas_fix"
+          :file-id="file.callas_fix_file_id"
+          :file-label="sourceFixFiles.length > 1 ? file.filename : ''"
+        />
         <CorrectionDecision :order="order" :busy="busy" @decide="decide" />
         <p v-if="order.action_result" class="action-result" :class="`status-${order.action_result.status}`">Действие: {{ order.action_result.status === "prepared" ? "подготовлено" : (order.action_result.message || order.action_result.status) }}</p>
       </section>

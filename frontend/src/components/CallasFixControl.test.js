@@ -38,13 +38,37 @@ describe("api methods", () => {
     await api.startCallasFix("r 1", "a b", "size");
     await api.callasFixStatus("r 1", "a b");
     await api.decideCallasFix("r 1", "a b", "accept");
+    await api.startCallasFix("r 1", "a b", "size", "run:1/0");
+    await api.callasFixStatus("r 1", "a b", "run:1/0");
     const calls = fetchMock.mock.calls.map(([url, init]) => [url, init.method || "GET", init.body]);
     expect(calls).toEqual([
       ["/api/callas/plans", "GET", undefined],
       ["/api/checks/r%201/orders/a%20b/callas/fix", "POST", JSON.stringify({ plan: "size" })],
       ["/api/checks/r%201/orders/a%20b/callas/fix", "GET", undefined],
       ["/api/checks/r%201/orders/a%20b/callas/fix/decision", "POST", JSON.stringify({ decision: "accept" })],
+      ["/api/checks/r%201/orders/a%20b/callas/fix/source/run%3A1%2F0", "POST", JSON.stringify({ plan: "size" })],
+      ["/api/checks/r%201/orders/a%20b/callas/fix/source/run%3A1%2F0", "GET", undefined],
     ]);
+  });
+});
+
+describe("CallasFixControl for a source PDF of an order without a built PDF", () => {
+  it("starts the fix for that file and offers only the download, not accept/reject", async () => {
+    vi.spyOn(api, "callasPlans").mockResolvedValue({ plans: [plan] });
+    const start = vi.spyOn(api, "startCallasFix").mockResolvedValue({
+      comparison: { status: "ready", source_only: true, plan, original_url: "/o", result_url: "/r", overlay_url: "/v", pdf_url: "/p", summary: {} },
+    });
+    const { host } = mount({ fileId: "f-1", fileLabel: "order.pdf" });
+    await nextTick();
+    expect(host.textContent).toContain("order.pdf");
+    byText(host, "Исправить").click();
+    await flush();
+    byText(host, "Запустить").click();
+    await flush();
+    expect(start).toHaveBeenCalledWith("run-1", "agg-1", "size", "f-1");
+    expect(byText(host, "Принять")).toBeUndefined();
+    expect(host.querySelector("a[href='/p']")).not.toBeNull();
+    expect(host.textContent).toContain("принять исправление в печать отсюда нельзя");
   });
 });
 
@@ -63,7 +87,7 @@ describe("CallasFixControl", () => {
     expect(host.querySelector("select option").textContent).toBe("Коррекция размера");
     byText(host, "Запустить").click();
     await flush();
-    expect(start).toHaveBeenCalledWith("run-1", "agg-1", "size");
+    expect(start).toHaveBeenCalledWith("run-1", "agg-1", "size", "");
     expect(host.querySelector(".fix-processing")).not.toBeNull();
 
     await vi.advanceTimersByTimeAsync(1600);
@@ -96,7 +120,7 @@ describe("CallasFixControl", () => {
     await nextTick();
     byText(host, "Принять").click();
     await flush();
-    expect(decide).toHaveBeenCalledWith("run-1", "agg-1", "accept");
+    expect(decide).toHaveBeenCalledWith("run-1", "agg-1", "accept", "");
     expect(host.querySelector(".fix-accepted")).not.toBeNull();
     expect(host.querySelector(".fix-actions")).toBeNull();
   });
@@ -108,7 +132,7 @@ describe("CallasFixControl", () => {
     await nextTick();
     byText(host, "Повторить").click();
     await flush();
-    expect(start).toHaveBeenCalledWith("run-1", "agg-1", "size");
+    expect(start).toHaveBeenCalledWith("run-1", "agg-1", "size", "");
     expect(host.querySelector(".fix-processing")).not.toBeNull();
   });
 
