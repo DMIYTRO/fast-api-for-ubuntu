@@ -122,7 +122,9 @@ function close() {
 
       <p v-if="summary.distortion" :id="noteId" class="fix-distortion" role="status"><i aria-hidden="true">ℹ</i><span><b>Масштаб по осям.</b> {{ distortionText }}</span></p>
 
-      <div v-if="status === 'ready'" class="fix-actions">
+      <p v-if="status === 'ready' && comparison.source_only" class="fix-note" role="status"><i aria-hidden="true">ℹ</i> Итогового PDF у заказа нет, поэтому принять исправление в печать отсюда нельзя. Скачайте исправленный PDF и проверьте заказ заново.</p>
+      <a v-if="comparison.source_only && comparison.pdf_url && status === 'ready'" class="button secondary" :href="comparison.pdf_url" target="_blank" rel="noopener">Исправленный PDF ↗</a>
+      <div v-else-if="status === 'ready'" class="fix-actions">
         <button type="button" class="button success" :disabled="busy" aria-label="Принять исправление Callas" :aria-describedby="summary.distortion ? noteId : null" @click="emit('accept')">✓ Принять</button>
         <button type="button" class="button secondary" :disabled="busy" aria-label="Отклонить исправление Callas" @click="emit('reject')">✕ Отклонить</button>
       </div>

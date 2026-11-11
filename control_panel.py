@@ -9,6 +9,7 @@ import json
 import logging
 import os
 from pathlib import Path, PureWindowsPath
+from urllib.parse import quote
 import resource
 import shutil
 import time
@@ -167,14 +168,31 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
                 "action": latest.get("action"),
                 **({"pitstop": latest["pitstop"]} if latest.get("pitstop") else {}),
             }
+        fix_base = f"/api/checks/{run_id}/orders/{order_ref}/callas/fix"
         if order.get("pdf_path"):
             order["pdf_url"] = f"/api/orders/{order_ref}/pdf?run_id={run_id}"
             fix_state = read_callas_fix_state(order["pdf_path"])
             if fix_state:
-                order["callas_fix"] = {
+                order["callas_fix"] = {"comparison": callas_fix_payload(fix_state, fix_base)}
+        elif input_path:
+            # Итогового PDF нет (например, ошибка размера): исправлять можно исходные PDF.
+            input_root = input_path.resolve()
+            for index, entry in enumerate(order.get("files") or []):
+                source = _source_pdf_path(input_root, entry)
+                if source is None:
+                    continue
+                file_id = _order_file_id(run_id, order, index, entry)
+                entry["callas_fixable"] = True
+                entry["callas_fix_file_id"] = file_id
+                fix_state = read_callas_fix_state(source)
+                entry["callas_fix"] = {
                     "comparison": callas_fix_payload(
-                        fix_state, f"/api/checks/{run_id}/orders/{order_ref}/callas/fix"
+                        fix_state,
+                        f"{fix_base}/source/{quote(file_id, safe='')}",
+                        source_only=True,
                     )
+                    if fix_state
+                    else None
                 }
         preview_storage_id = order_ref
         if input_path and custom_return_preview_path(preview_storage_id, input_path=input_path):
@@ -492,10 +510,30 @@ def _default_repository(database: Database) -> RunRepository:
     return InMemoryRunRepository()
 
 
+def _order_file_id(run_id: str, order: dict[str, Any], index: int, entry: dict[str, Any]) -> str:
+    order_number = str(order.get("order_id") or order.get("id") or "")
+    return str(entry.get("id") or entry.get("file_result_id") or f"{run_id}:{order_number}:{index}")
+
+
+def _source_pdf_path(input_root: Path, entry: dict[str, Any]) -> Path | None:
+    """Исходный PDF заказа внутри папки проверки или ``None`` (растр, чужой путь, файла нет)."""
+    raw = entry.get("path") or entry.get("source_path")
+    if not raw:
+        return None
+    source = Path(str(raw)).resolve()
+    if source.suffix.lower() != ".pdf" or not _is_inside(source, input_root) or not source.is_file():
+        return None
+    return source
+
+
 def _callas_fix_order(
-    request: Request, run_id: str, order_id: str
+    request: Request, run_id: str, order_id: str, file_id: str | None = None
 ) -> tuple[dict[str, Any], dict[str, Any], Path]:
-    """Запуск, заказ и безопасный путь его PDF для операций исправления Callas."""
+    """Запуск, заказ и безопасный путь PDF для операций исправления Callas.
+
+    Без ``file_id`` — собранный PDF заказа. С ``file_id`` — исходный PDF-файл заказа
+    (нужен заказам с ошибками, у которых итоговый PDF не собран).
+    """
     run, order = _find_order(_get_coordinator(request), order_id, run_id)
     input_root = Path((run.get("options") or {}).get("input_path", "")).resolve()
     if not input_root.is_dir() or not any(
@@ -506,7 +544,26 @@ def _callas_fix_order(
             "folder_not_allowed",
             "Папка заказа находится за пределами разрешённой рабочей области.",
         )
-    return run, order, _safe_result_path(run, order.get("pdf_path"))
+    if not file_id:
+        return run, order, _safe_result_path(run, order.get("pdf_path"))
+    entry = next(
+        (
+            item
+            for index, item in enumerate(order.get("files") or [])
+            if _order_file_id(run_id, order, index, item) == file_id
+        ),
+        None,
+    )
+    if entry is None:
+        raise APIError(404, "file_not_found", "Файл не найден в выбранном заказе.")
+    source = _source_pdf_path(input_root, entry)
+    if source is None:
+        raise APIError(
+            422,
+            "callas_fix_not_pdf",
+            "Исправление Callas доступно только для существующего PDF-файла заказа.",
+        )
+    return run, order, source
 
 
 def _callas_fix_service(settings: Settings):

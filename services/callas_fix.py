@@ -52,8 +52,16 @@ class CallasFixError(Exception):
 
 
 def fix_dir_for(pdf_path: Path | str) -> Path:
+    """Папка результата исправления.
+
+    Для собранного PDF (лежит в ``PDF/``) — ``PDF/CallasFix/<имя>``. Для исходного
+    PDF заказа, который лежит вне ``PDF/``, результат кладётся в ``PDF/CallasFix/<имя>.source``,
+    чтобы не писать в папку с исходниками и не пересекаться с собранным PDF.
+    """
     pdf = Path(pdf_path)
-    return pdf.parent / "CallasFix" / pdf.stem
+    if pdf.parent.name == "PDF":
+        return pdf.parent / "CallasFix" / pdf.stem
+    return pdf.parent / "PDF" / "CallasFix" / f"{pdf.stem}.source"
 
 
 def _now() -> str:
@@ -82,13 +90,16 @@ def _write_state(directory: Path, state: dict[str, Any]) -> None:
     os.replace(temporary, directory / STATE_NAME)
 
 
-def comparison_payload(state: dict[str, Any] | None, base_url: str) -> dict[str, Any] | None:
+def comparison_payload(
+    state: dict[str, Any] | None, base_url: str, *, source_only: bool = False
+) -> dict[str, Any] | None:
     """Состояние → контракт интерфейса ``comparison`` (URL картинок строятся от ``base_url``)."""
     if not state:
         return None
     images = state.get("images") or {}
     return {
         "status": state.get("status") or STATUS_FAILED,
+        "source_only": source_only,
         "plan": state.get("plan") or None,
         "error": state.get("error"),
         "decision": state.get("decision"),
