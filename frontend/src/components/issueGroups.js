@@ -103,19 +103,21 @@ class GroupBuilder {
     const key = `${source}\u0000${severity}\u0000${code}`;
     let group = this.groups.get(key);
     if (!group) {
-      group = { code, severity, source, label, count: 0, objectKeys: new Set(), pages: new Set(), files: [], samples: [], hasLocations: false };
+      group = { code, severity, source, label, count: 0, objectKeys: new Set(), pages: new Set(), files: [], samples: [], hasLocations: false, unknownObjects: false };
       this.groups.set(key, group);
     }
     group.count += 1;
     if (message && group.samples.length < SAMPLE_LIMIT && !group.samples.includes(message)) group.samples.push(message);
     if (file && !group.files.includes(file)) group.files.push(file);
+    if (!locations.length) group.unknownObjects = true;
     for (const location of locations) {
       if (!location || typeof location !== "object") continue;
       const page = Number.isInteger(location.page) ? location.page : null;
-      if (page == null) continue;
+      if (page == null) { group.unknownObjects = true; continue; }
       group.hasLocations = true;
       group.pages.add(page);
       const bbox = location.bbox || {};
+      if (["min_x", "min_y", "max_x", "max_y"].some((key) => bbox[key] == null)) { group.unknownObjects = true; continue; }
       group.objectKeys.add([page, bbox.min_x, bbox.min_y, bbox.max_x, bbox.max_y].join("|"));
     }
   }
@@ -125,7 +127,7 @@ class GroupBuilder {
     return [...this.groups.values()]
       .sort((a, b) => (order[a.severity] ?? 3) - (order[b.severity] ?? 3) || (a.source === "local" ? 0 : 1) - (b.source === "local" ? 0 : 1))
       .map((group) => {
-        const objects = group.hasLocations ? group.objectKeys.size : null;
+        const objects = group.hasLocations && !group.unknownObjects ? group.objectKeys.size : null;
         const pages = [...group.pages].sort((a, b) => a - b);
         const base = group.count === 1 && group.samples.length ? group.samples[0] : group.label;
         return {

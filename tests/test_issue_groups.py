@@ -168,3 +168,20 @@ def test_order_dto_carries_issue_groups_with_pitstop_and_processing_errors(tmp_p
         ("pitstop", "error", "action:2078"),
     }
     assert issue_groups_for_order_dto(dto) == dto["issue_groups"]
+
+
+def test_page_only_locations_do_not_claim_unique_objects():
+    groups = build_issue_groups(pitstop_issues=[{
+        "severity": "error", "action_id": 1, "message": "Low DPI",
+        "locations": [{"page": 2}, {"page": 2}],
+    }])
+    assert groups[0]["objects"] is None
+    assert groups[0]["pages"] == [2]
+    assert groups[0]["count"] == 1
+
+
+def test_partial_locations_do_not_undercount_objects():
+    issues = [_pitstop_issue("Low DPI", page=1), {
+        "severity": "error", "action_id": 2078, "message": "Low DPI", "locations": [],
+    }]
+    assert build_issue_groups(pitstop_issues=issues)[0]["objects"] is None

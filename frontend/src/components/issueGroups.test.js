@@ -113,3 +113,12 @@ describe("buildIssueGroups / orderIssueGroups", () => {
     expect(formatGroupMessage("X", { count: 3, files: ["a.tif"] })).toBe("X — 3 повтора в файле a.tif");
   });
 });
+
+
+it("does not infer objects from page-only or partial locations", () => {
+  const [pageOnly] = groupPitStopIssues([{ severity: "error", message: "DPI", locations: [{ page: 2 }, { page: 2 }] }]);
+  expect(pageOnly.objects).toBeNull();
+  expect(pageOnly.pages).toEqual([2]);
+  const [partial] = groupPitStopIssues([pitstopIssue("DPI", 1), { severity: "error", action_id: 2078, message: "DPI" }]);
+  expect(partial.objects).toBeNull();
+});

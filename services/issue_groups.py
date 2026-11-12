@@ -111,7 +111,7 @@ def pitstop_severity(value: object) -> str:
 class _Group:
     __slots__ = (
         "code", "severity", "source", "label", "count", "objects",
-        "pages", "files", "samples", "has_locations",
+        "pages", "files", "samples", "has_locations", "unknown_objects",
     )
 
     def __init__(self, code: str, severity: str, source: str, label: str) -> None:
@@ -125,6 +125,7 @@ class _Group:
         self.files: list[str] = []
         self.samples: list[str] = []
         self.has_locations = False
+        self.unknown_objects = False
 
     def add(
         self,
@@ -138,13 +139,20 @@ class _Group:
             self.samples.append(message)
         if file and file not in self.files:
             self.files.append(file)
+        locations = list(locations)
+        if not locations:
+            self.unknown_objects = True
         for location in locations:
             page = location.get("page")
             if isinstance(page, bool) or not isinstance(page, int):
+                self.unknown_objects = True
                 continue
             self.has_locations = True
             self.pages.add(page)
             bbox = location.get("bbox") or {}
+            if not isinstance(bbox, Mapping) or any(bbox.get(key) is None for key in ("min_x", "min_y", "max_x", "max_y")):
+                self.unknown_objects = True
+                continue
             self.objects.add((
                 page,
                 bbox.get("min_x"), bbox.get("min_y"),
@@ -152,7 +160,7 @@ class _Group:
             ))
 
     def to_dict(self) -> dict[str, Any]:
-        objects = len(self.objects) if self.has_locations else None
+        objects = len(self.objects) if self.has_locations and not self.unknown_objects else None
         pages = sorted(self.pages)
         base = self.samples[0] if self.count == 1 and self.samples else self.label
         return {
