@@ -67,6 +67,7 @@ class OrderWorkflowService:
         preview_uploader: Callable[[list[Path]], list[str]] | None = None,
         reviewed_pdf_pitstop_service_factory: Callable[[Path, str], Any] | None = None,
         pdf_merger: Callable[[Any, Path, str], None] | None = None,
+        pdf_page_extractor: Callable[[Path, int, Path, str], None] | None = None,
         accepted_pdf_provider: Callable[[Path], Path | None] | None = None,
     ) -> None:
         self.coordinator = coordinator
@@ -78,6 +79,7 @@ class OrderWorkflowService:
         self.preview_uploader = preview_uploader
         self.reviewed_pdf_pitstop_service_factory = reviewed_pdf_pitstop_service_factory
         self.pdf_merger = pdf_merger
+        self.pdf_page_extractor = pdf_page_extractor
         self.accepted_pdf_provider = accepted_pdf_provider
         self._action_locks_guard = Lock()
         self._action_locks: dict[int, tuple[Lock, str]] = {}
@@ -634,7 +636,10 @@ class OrderWorkflowService:
                                 if order["status"] != "passed":
                                     raise FileLifecycleError("PDF изменился и не прошёл повторную проверку.")
                             reviewed_pdf = build_reviewed_layered_print_pdf(
-                                order, input_root, pdf_merger=self.pdf_merger
+                                order,
+                                input_root,
+                                pdf_merger=self.pdf_merger,
+                                pdf_page_extractor=self.pdf_page_extractor,
                             )
                             if (
                                 reviewed_pdf is None

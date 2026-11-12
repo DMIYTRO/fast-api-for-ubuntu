@@ -621,6 +621,19 @@ def _callas_pdf_merger(settings: Settings):
     return make_callas_pdf_merger(CallasClient.from_settings(settings))
 
 
+def _callas_page_extractor(settings: Settings):
+    """Извлечение страниц PDF заданием callas ``split``; None, если callas не настроен.
+
+    Резервного пути через PyMuPDF нет: без callas сборка печатных частей
+    reviewed-PDF завершается понятной ошибкой.
+    """
+    if not (settings.callas_url and settings.callas_token):
+        return None
+    from services.callas import CallasClient, make_callas_page_extractor
+
+    return make_callas_page_extractor(CallasClient.from_settings(settings))
+
+
 def _ink_coverage_checker(settings: Settings):
     """Проверка красочности callas ``inkcoverage`` или None, если выключена/не настроена."""
     if not (settings.callas_inkcoverage_enabled and settings.callas_url):
@@ -834,6 +847,7 @@ def create_app(
             processor_factory, "pitstop_service_for", None
         ),
         pdf_merger=_callas_pdf_merger(settings),
+        pdf_page_extractor=_callas_page_extractor(settings),
         accepted_pdf_provider=(
             callas_fix_service.publish_accepted if callas_fix_service else None
         ),
