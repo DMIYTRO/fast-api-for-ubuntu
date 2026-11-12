@@ -97,3 +97,17 @@ def test_processor_clears_rgb_warnings_on_success_and_warns_on_failure(tmp_path)
     )
     assert bad.color_conversion["status"] == "failed"
     assert any("Не удалось перевести RGB" in text for text in bad.warnings)
+
+
+def test_converter_gets_local_snapshot_not_the_original(tmp_path):
+    pdf = make_pdf(tmp_path / "a.pdf", (1, 0, 0))
+    seen = []
+
+    class Spy(Converter):
+        def __call__(self, source, target, label):
+            seen.append(Path(source))
+            assert Path(source).is_file()
+            return super().__call__(source, target, label)
+
+    assert convert_rgb_to_cmyk(pdf, Spy(), "a")["status"] == "converted"
+    assert seen[0] != pdf and seen[0].name == "a.pdf" and not seen[0].exists()
