@@ -686,6 +686,13 @@ class BatchProcessor:
                 strip_icc=self.strip_icc_cmyk
                 and (item.colorspace or "").upper() == "CMYK",
             )
+            if item.needs_resample and item.resample_target_mm:
+                item.processing_actions.append({
+                    "kind": "size_correction", "target_mm": list(item.resample_target_mm),
+                    "target_dpi": self.profile.target_dpi, "rotation_degrees": item.rotation_degrees,
+                })
+            if self.strip_icc_cmyk and (item.colorspace or "").upper() == "CMYK":
+                item.processing_actions.append({"kind": "strip_icc"})
             if flattened is not None:
                 item.tiff_flattened = True
                 item.tiff_visible_layer_count = flattened.visible_layer_count

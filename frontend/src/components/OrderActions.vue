@@ -27,6 +27,7 @@ async function load(event) {
         <time>{{ item.created_at }}</time> — {{ item.label }}<span v-if="item.status"> · {{ statusLabel(item.status) }}</span>
         <span v-if="item.pdf_revision"> · PDF r{{ item.pdf_revision }}</span>
         <span v-if="item.details?.plan"> · {{ item.details.plan }}</span>
+        <span v-for="(operation, index) in item.details?.operations || []" :key="index"> · {{ operation.kind === 'size_correction' ? 'Размер скорректирован' : 'ICC-профиль удалён' }}: {{ operation.file }}</span>
         <span v-for="file in item.details?.tiff_flattened || []" :key="file.file"> · Сведены слои TIFF: {{ file.file }}</span>
       </li>
     </ol>

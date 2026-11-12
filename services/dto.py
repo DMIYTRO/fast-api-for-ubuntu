@@ -61,6 +61,7 @@ def file_check_to_dto(
         "size_mb": value.size_mb,
         "errors": list(value.errors),
         "warnings": list(value.warnings),
+        "processing_actions": [dict(action) for action in value.processing_actions],
         "needs_resample": value.needs_resample,
         "resample_target_mm": (
             list(value.resample_target_mm) if value.resample_target_mm else None

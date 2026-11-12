@@ -39,6 +39,7 @@ class FileCheck:
     size_mb: float = 0.0
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    processing_actions: list[dict[str, object]] = field(default_factory=list)
     needs_resample: bool = False
     resample_target_mm: Optional[tuple[float, float]] = None
     resample_decision: str = "accept"
