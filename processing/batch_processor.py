@@ -10,14 +10,14 @@ import tempfile
 import uuid
 
 import pymupdf
-from typing import TYPE_CHECKING, Callable, Mapping, Optional
+from typing import TYPE_CHECKING, Callable, Mapping, Optional, Sequence
 
 if TYPE_CHECKING:  # services.__init__ imports this module; avoid a cycle
     from services.callas import CallasClient
 
 from core.inspector import count_frames, inspect_file, inspect_tiff_structure
 from core.pdf_inspector import inspect_pdf
-from core.pdf_exporter import convert_image_to_pdf, merge_pdfs_with_pymupdf
+from core.pdf_exporter import convert_image_to_pdf
 from core.preview_cache import preview_extension
 from core.preview_generator import generate_preview
 from core.preview_cache import full_preview_cache_path, preview_work_dir
@@ -56,6 +56,13 @@ def _logical_side(item: FileCheck) -> str:
     return item.parsed.side or "face"
 
 
+CALLAS_MERGE_UNAVAILABLE_MESSAGE = (
+    "Склейка PDF невозможна: callas pdfToolbox не настроен. "
+    "Задайте IMAGE_MAGIC_CALLAS_URL (и общий ресурс IMAGE_MAGIC_CALLAS_SHARE) "
+    "и перезапустите службу; локальная склейка PyMuPDF отключена."
+)
+
+
 class BatchProcessor:
     def __init__(
         self,
@@ -70,11 +77,19 @@ class BatchProcessor:
         callas_merge: bool = False,
         callas_render: bool = False,
         strip_icc_cmyk: bool = False,
+        pdf_merger: "Callable[[Sequence[Path], Path, str], None] | None" = None,
     ):
         # Только CMYK-растры: убираем тег ICCBased без пересчёта значений.
         self.strip_icc_cmyk = bool(strip_icc_cmyk)
         self.callas_client = callas_client
-        self.callas_merge = bool(callas_merge and callas_client is not None)
+        # Склейка PDF всегда идёт через callas pdfToolbox. Флаг ``callas_merge``
+        # оставлен только для совместимости вызовов и больше ни на что не влияет.
+        del callas_merge
+        if pdf_merger is None and callas_client is not None:
+            from services.callas.merger import make_callas_pdf_merger
+
+            pdf_merger = make_callas_pdf_merger(callas_client)
+        self.pdf_merger = pdf_merger
         self.callas_render = bool(callas_render and callas_client is not None)
         self.input_dir = input_dir
         self.output_dir = output_dir
@@ -585,7 +600,7 @@ class BatchProcessor:
             if not page_pdfs:
                 return None, "ни один файл заказа не удалось прочитать: " + "; ".join(skipped)
             combined = Path(temporary_dir) / "combined.pdf"
-            merge_pdfs_with_pymupdf(page_pdfs, str(combined))
+            self._merge_page_pdfs(page_pdfs, combined, order)
             self._render_pdf_pages(combined, Path(temporary_dir) / "validation")
             combined.replace(output_path)
         note = (
@@ -610,29 +625,15 @@ class BatchProcessor:
         shutil.rmtree(self.callas_client.job_dir(job_id), ignore_errors=True)
 
     def _merge_page_pdfs(self, page_pdfs, temporary_output: Path, order: OrderCheck) -> None:
-        """Merge via remote callas when enabled; otherwise via PyMuPDF."""
-        if not self.callas_merge:
-            merge_pdfs_with_pymupdf(page_pdfs, str(temporary_output))
-            return
-        from services.callas import deterministic_job_id
-
-        # Служба Callas не забывает завершённые задания, поэтому повтор того же
-        # job_id получил бы старый статус "done" без файлов. Идентификатор
-        # уникален на каждую операцию; повторы HTTP внутри клиента его сохраняют.
-        job_id = deterministic_job_id(
-            f"merge-{order.order_id}",
-            *(self._file_sha256(Path(item)) for item in page_pdfs),
-            uuid.uuid4().hex[:12],
-        )
-        logger.info("callas.merge.start order=%s job_id=%s inputs=%d", order.order_id, job_id, len(page_pdfs))
-        try:
-            result = self.callas_client.merge(
-                [Path(item) for item in page_pdfs], temporary_output.name, job_id=job_id
+        """Merge page PDFs via callas pdfToolbox; there is no local fallback."""
+        if self.pdf_merger is None:
+            raise RuntimeError(CALLAS_MERGE_UNAVAILABLE_MESSAGE)
+        self.pdf_merger([Path(item) for item in page_pdfs], temporary_output, order.order_id)
+        if not temporary_output.is_file() or temporary_output.stat().st_size == 0:
+            raise RuntimeError(
+                "callas pdfToolbox не вернул объединённый PDF для заказа "
+                f"{order.order_id}. Проверьте журнал службы callas и повторите проверку."
             )
-            shutil.copyfile(result, temporary_output)
-            logger.info("callas.merge.done order=%s job_id=%s", order.order_id, job_id)
-        finally:
-            self._cleanup_callas_job(job_id)
 
     def _render_pdf_with_callas(self, pdf_path: Path, render_dpi: float, target_dir: Path) -> None:
         from services.callas import deterministic_job_id

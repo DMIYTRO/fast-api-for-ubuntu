@@ -236,19 +236,13 @@ def build_reviewed_layered_print_pdf(
                         f"В просмотренном PDF для страницы {index + 1} нет страницы."
                     )
             ordered_parts.append(source_path)
-        if pdf_merger is not None:
-            pdf_merger(ordered_parts, temporary, str(order.get("order_id") or production_name))
-        else:
-            assembled = pymupdf.open()
-            try:
-                for source_path in ordered_parts:
-                    with pymupdf.open(source_path) as document:
-                        assembled.insert_pdf(document, from_page=0, to_page=0)
-                if assembled.page_count != page_count:
-                    raise ReviewedLayeredPdfError("Не удалось собрать все страницы итогового PDF.")
-                assembled.save(temporary, garbage=3, deflate=True)
-            finally:
-                assembled.close()
+        if pdf_merger is None:
+            raise ReviewedLayeredPdfError(
+                "Сборка печатного PDF невозможна: callas pdfToolbox не настроен. "
+                "Задайте IMAGE_MAGIC_CALLAS_URL и перезапустите службу; "
+                "локальная склейка PyMuPDF отключена."
+            )
+        pdf_merger(ordered_parts, temporary, str(order.get("order_id") or production_name))
         with pymupdf.open(temporary) as result_doc:
             if result_doc.page_count != page_count:
                 raise ReviewedLayeredPdfError("Не удалось собрать все страницы итогового PDF.")

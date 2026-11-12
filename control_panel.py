@@ -577,29 +577,34 @@ def _callas_fix_service(settings: Settings):
 
 
 def _callas_processor_factory(settings: Settings):
-    """BatchProcessor factory with optional remote callas merge/render."""
+    """BatchProcessor factory: PDF merge always goes through callas pdfToolbox.
+
+    Without ``IMAGE_MAGIC_CALLAS_URL`` the processor gets no callas client and
+    every PDF merge fails with an actionable error (no PyMuPDF fallback).
+    """
     from functools import partial
 
     from processing.batch_processor import BatchProcessor
     from services.callas import CallasClient
 
-    if not (settings.callas_merge_enabled or settings.callas_render_enabled):
-        if settings.strip_icc_cmyk:
-            return partial(BatchProcessor, strip_icc_cmyk=True)
-        return BatchProcessor
+    if not settings.callas_url:
+        logger.error(
+            "callas pdfToolbox не настроен (IMAGE_MAGIC_CALLAS_URL пуст): "
+            "создание PDF заказов будет завершаться ошибкой"
+        )
+        return partial(BatchProcessor, strip_icc_cmyk=settings.strip_icc_cmyk)
     client = CallasClient.from_settings(settings)
     return partial(
         BatchProcessor,
         callas_client=client,
-        callas_merge=settings.callas_merge_enabled,
         callas_render=settings.callas_render_enabled,
         strip_icc_cmyk=settings.strip_icc_cmyk,
     )
 
 
 def _callas_pdf_merger(settings: Settings):
-    """Callas-склейка итогового reviewed-PDF, если merge включён; иначе None (PyMuPDF)."""
-    if not settings.callas_merge_enabled:
+    """Callas-склейка итогового reviewed-PDF; None, если callas не настроен (сборка упадёт с ошибкой)."""
+    if not settings.callas_url:
         return None
     from services.callas import CallasClient, make_callas_pdf_merger
 

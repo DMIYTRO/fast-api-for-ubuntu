@@ -45,6 +45,31 @@ def _make_fixtures(input_dir: Path, orders: int, magick: str) -> None:
         )
 
 
+def _offline_processor_factory():
+    """Benchmark-only processor: offline stand-in for the callas merge service.
+
+    Production merges always go through callas pdfToolbox; the benchmark must
+    not contact a real callas server, so it injects a local page-copy merger
+    that only measures the rest of the pipeline.
+    """
+    from functools import partial
+
+    import pymupdf
+    from processing.batch_processor import BatchProcessor
+
+    def offline_merger(parts, output, _label):
+        document = pymupdf.open()
+        try:
+            for part in parts:
+                with pymupdf.open(part) as source:
+                    document.insert_pdf(source)
+            document.save(output)
+        finally:
+            document.close()
+
+    return partial(BatchProcessor, pdf_merger=offline_merger)
+
+
 def _sample(input_dir: Path, *, full: bool, previews: bool, magick: str) -> dict[str, object]:
     from processing.batch_processor import BatchProcessor
     from services.batch_adapter import BatchProcessorAdapter, ProcessingOptions
@@ -109,7 +134,8 @@ def _sample(input_dir: Path, *, full: bool, previews: bool, magick: str) -> dict
         ProcessingOptions(
             input_path=str(input_dir), direction="digital", create_pdfs=True,
             generate_previews=previews, copy_failures=False,
-        )
+        ),
+        processor_factory=_offline_processor_factory(),
     )
     started = time.perf_counter()
     order_durations = []

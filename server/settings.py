@@ -79,6 +79,7 @@ class Settings:
     callas_share: Path = Path("/mnt/shared")
     callas_server_share: str = "/mnt/shared"
     callas_user: str = "image-magic"
+    # Устарело: склейка PDF всегда идёт через callas; значение читается, но игнорируется.
     callas_merge_enabled: bool = False
     callas_render_enabled: bool = False
     callas_process_enabled: bool = False

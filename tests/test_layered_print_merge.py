@@ -33,9 +33,13 @@ def _order(root: Path) -> dict:
     }
 
 
-def test_default_assembly_uses_pymupdf(tmp_path):
-    out = build_reviewed_layered_print_pdf(_order(tmp_path), tmp_path)
-    assert pymupdf.open(out).page_count == 2
+def test_assembly_without_callas_merger_fails_with_clear_error(tmp_path):
+    import pytest
+    from services.layered_tiff_print import ReviewedLayeredPdfError
+
+    with pytest.raises(ReviewedLayeredPdfError, match="callas pdfToolbox не настроен"):
+        build_reviewed_layered_print_pdf(_order(tmp_path), tmp_path)
+    assert not list((tmp_path / "PDF").glob("*_reviewed-layered.pdf"))
 
 
 def test_external_merger_is_used_and_order_kept(tmp_path):

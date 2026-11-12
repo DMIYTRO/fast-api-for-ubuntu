@@ -10,6 +10,7 @@ import pymupdf
 
 from core.inspector import ImageMetadata
 from processing.batch_processor import BatchProcessor
+from tests.fake_callas import FakeCallasMerger
 
 
 def _points(mm: float) -> float:
@@ -46,7 +47,7 @@ def _image_metadata(path: str) -> ImageMetadata:
 
 
 def _processor(root: Path) -> BatchProcessor:
-    return BatchProcessor(root, root / "output")
+    return BatchProcessor(root, root / "output", pdf_merger=FakeCallasMerger())
 
 
 def _create_orders(root: Path, processor: BatchProcessor):
@@ -185,7 +186,7 @@ def test_ghostscript_uses_external_temporary_directory(tmp_path: Path, monkeypat
     ) as run_command, patch(
         "processing.batch_processor.inspect_file", return_value=_image_metadata("page.png")
     ), patch("processing.batch_processor.generate_preview"):
-        processor = BatchProcessor(share, share)
+        processor = BatchProcessor(share, share, pdf_merger=FakeCallasMerger())
         processor.generate_pdf_previews(pdf, preview_dir)
 
     scratch_path = Path(run_command.call_args.kwargs["env"]["TMPDIR"])

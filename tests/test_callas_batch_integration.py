@@ -72,9 +72,62 @@ def test_merge_and_render_go_through_callas_when_enabled(tmp_path):
     assert not any(fake.root.glob("*"))  # папки заданий очищены
 
 
-def test_callas_is_off_by_default():
-    proc = BatchProcessor(Path("."), Path("."), callas_client=object())
-    assert not proc.callas_merge and not proc.callas_render
+def test_callas_client_always_provides_merger_even_without_merge_flag():
+    proc = BatchProcessor(Path("."), Path("."), callas_client=FakeCallas(Path(".")))
+    assert proc.pdf_merger is not None and not proc.callas_render
+
+
+def _one_page_pdf(path: Path) -> Path:
+    doc = pymupdf.open()
+    doc.new_page(width=200, height=100)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def test_merge_without_callas_fails_with_actionable_error_and_no_pymupdf(tmp_path, monkeypatch):
+    import core.pdf_exporter
+    from processing.batch_processor import CALLAS_MERGE_UNAVAILABLE_MESSAGE
+    from processing.models import OrderCheck
+
+    def forbidden(*_a, **_k):
+        raise AssertionError("PyMuPDF merge must not be used")
+
+    monkeypatch.setattr(core.pdf_exporter, "merge_pdfs_with_pymupdf", forbidden)
+    proc = BatchProcessor(tmp_path, tmp_path / "PDF")
+    order = OrderCheck(order_id="1", customer_id="c", files=[])
+    with pytest.raises(RuntimeError) as error:
+        proc._merge_page_pdfs([_one_page_pdf(tmp_path / "a.pdf")], tmp_path / "out.pdf", order)
+    assert str(error.value) == CALLAS_MERGE_UNAVAILABLE_MESSAGE
+    assert "IMAGE_MAGIC_CALLAS_URL" in str(error.value)
+    assert not (tmp_path / "out.pdf").exists()
+
+
+def test_create_pdfs_without_callas_reports_error_per_order(tmp_path, monkeypatch):
+    import core.pdf_exporter
+
+    monkeypatch.setattr(
+        core.pdf_exporter, "merge_pdfs_with_pymupdf",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("PyMuPDF merge used")),
+    )
+    inp = tmp_path / "in"
+    inp.mkdir()
+    _one_page_pdf(inp / "T_(70x30)_4-0_(5-2)_face.pdf")
+    proc = BatchProcessor(inp, inp / "PDF")
+    orders = proc.inspect_orders()
+    results = proc.create_pdfs(orders)
+    for _order, path, error in results:
+        assert error and "callas pdfToolbox не настроен" in error
+        assert not path.exists()
+
+
+def test_merger_returning_nothing_is_rejected(tmp_path):
+    from processing.models import OrderCheck
+
+    proc = BatchProcessor(tmp_path, tmp_path / "PDF", pdf_merger=lambda parts, out, label: None)
+    order = OrderCheck(order_id="1", customer_id="c", files=[])
+    with pytest.raises(RuntimeError, match="не вернул объединённый PDF"):
+        proc._merge_page_pdfs([_one_page_pdf(tmp_path / "a.pdf")], tmp_path / "out.pdf", order)
 
 
 class StickyJobCallas(FakeCallas):
