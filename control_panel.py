@@ -337,14 +337,14 @@ def _generate_layered_tiff_export(
         if not temporary.is_file() or temporary.stat().st_size == 0:
             raise ValueError("ImageMagick не создал PDF или создал пустой файл.")
         import pymupdf
+        from services.callas.renderer import dpi_for_longest_side
         with pymupdf.open(temporary) as document:
             if document.page_count < 1:
                 raise ValueError("Созданный PDF не содержит страниц.")
             page = document.load_page(0)
-            longest_side = max(float(page.rect.width), float(page.rect.height), 1.0)
-            scale = min(1800.0 / longest_side, 4.0)
-            preview.parent.mkdir(parents=True, exist_ok=True)
-            page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False).save(temporary_preview)
+            dpi = dpi_for_longest_side(float(page.rect.width), float(page.rect.height), 1800)
+        from services.callas.renderer import render_pdf_to_pngs
+        render_pdf_to_pngs(temporary, dpi, [temporary_preview])
         os.replace(temporary, output)
         os.replace(temporary_preview, preview)
         jobs[job_key] = {
@@ -576,11 +576,21 @@ def _callas_fix_service(settings: Settings):
     return CallasFixService(CallasClient.from_settings(settings))
 
 
-def _callas_processor_factory(settings: Settings):
-    """BatchProcessor factory: PDF merge always goes through callas pdfToolbox.
+def _configure_callas_pdf_renderer(settings: Settings) -> None:
+    """Все рендеры PDF вне BatchProcessor (ревизии, сравнение, экспорт) — через callas."""
+    if not settings.callas_url:
+        return
+    from services.callas import CallasClient
+    from services.callas.renderer import configure_pdf_renderer, make_callas_pdf_renderer
 
-    Without ``IMAGE_MAGIC_CALLAS_URL`` the processor gets no callas client and
-    every PDF merge fails with an actionable error (no PyMuPDF fallback).
+    configure_pdf_renderer(make_callas_pdf_renderer(CallasClient.from_settings(settings)))
+
+
+def _callas_processor_factory(settings: Settings):
+    """BatchProcessor factory: PDF merge and render always go through callas.
+
+    Без IMAGE_MAGIC_CALLAS_URL процессор создаётся без клиента, и склейка/рендер
+    PDF завершатся понятной технической ошибкой (без PyMuPDF/Ghostscript).
     """
     from functools import partial
 
@@ -809,6 +819,7 @@ def create_app(
     )
     application.state.settings = settings
     application.state.database = database
+    _configure_callas_pdf_renderer(settings)
     application.state.coordinator = coordinator
     callas_fix_service = (
         callas_fix_service

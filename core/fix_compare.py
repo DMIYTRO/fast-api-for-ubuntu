@@ -25,7 +25,7 @@ from core.preview_cache import normalize_preview_format, preview_extension, prev
 
 MM_PER_PT = 25.4 / 72.0
 
-MIN_DPI = 20
+MIN_DPI = 36  # нижняя граница DPI рендера callas
 MAX_DPI = 600
 MAX_CANVAS_PIXELS = 36_000_000
 CANVAS_MARGIN_MM = 4.0
@@ -132,8 +132,8 @@ def build_fix_comparison(
                 f"Холст сравнения слишком большой ({canvas_w}x{canvas_h} px). Уменьшите разрешение."
             )
 
-        layer_o = _render_layer(page_o, geo_o, scale, canvas_w, canvas_h)
-        layer_r = _render_layer(page_r, geo_r, scale, canvas_w, canvas_h)
+        layer_o = _render_layer(original_pdf, page_o, geo_o, scale, canvas_w, canvas_h, out_path)
+        layer_r = _render_layer(fixed_pdf, page_r, geo_r, scale, canvas_w, canvas_h, out_path)
 
         scale_info = _estimate_scale(page_o, page_r, geo_o, geo_r)
 
@@ -236,9 +236,35 @@ class _Layer:
     canvas_h: int
 
 
-def _render_layer(page: fitz.Page, geo: _PageGeometry, scale: float, canvas_w: int, canvas_h: int) -> _Layer:
+def _render_page_with_callas(pdf_path: str | Path, page_number: int, dpi: int, work_root: Path) -> fitz.Pixmap:
+    """Растр страницы только через callas pdfToolbox (без локального рендера PDF)."""
+    import tempfile
+
+    from services.callas.renderer import render_pdf_to_pngs
+
+    work_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".compare-", dir=work_root) as tmp:
+        targets = [Path(tmp) / f"p{index + 1}.png" for index in range(page_number)]
+        render_pdf_to_pngs(Path(pdf_path), dpi, targets)
+        pix = fitz.Pixmap(str(targets[-1]))
+    if pix.alpha:
+        pix = fitz.Pixmap(pix, 0)
+    if pix.colorspace is None or pix.colorspace.n != 3:
+        pix = fitz.Pixmap(fitz.csRGB, pix)
+    return pix
+
+
+def _render_layer(
+    pdf_path: str | Path,
+    page: fitz.Page,
+    geo: _PageGeometry,
+    scale: float,
+    canvas_w: int,
+    canvas_h: int,
+    work_root: Path,
+) -> _Layer:
     try:
-        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), colorspace=fitz.csRGB, alpha=False)
+        pix = _render_page_with_callas(pdf_path, page.number + 1, int(round(scale * 72)), work_root)
     except Exception as exc:
         raise FixCompareFileError(f"Не удалось отрисовать страницу {page.number + 1}: {exc}") from exc
     gray_pix = fitz.Pixmap(fitz.csGRAY, pix)

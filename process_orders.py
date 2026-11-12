@@ -28,7 +28,11 @@ def _callas_client_from_env():
             "pdfToolbox недоступна, PDF заказов не будут созданы."
         )
         return None
-    return CallasClient.from_settings(settings)
+    from services.callas.renderer import configure_pdf_renderer, make_callas_pdf_renderer
+
+    client = CallasClient.from_settings(settings)
+    configure_pdf_renderer(make_callas_pdf_renderer(client))
+    return client
 
 
 def print_report(processor: BatchProcessor, orders) -> None:
@@ -125,6 +129,7 @@ def generate_and_print_previews(
             print(f"  [OK] {pdf_path.name} → {names}")
 
     print(f"\nУспешно сгенерировано превью для {success_count}/{len(pdf_paths)} PDF файлов.")
+
 
 
 def main() -> None:
