@@ -12,6 +12,8 @@ from typing import Any
 
 from processing.models import FileCheck, OrderCheck, ParsedFilename
 
+from .issue_groups import attach_issue_groups
+
 
 def parsed_filename_to_dto(value: ParsedFilename | None) -> dict[str, Any] | None:
     if value is None:
@@ -142,4 +144,4 @@ def order_check_to_dto(
         result["current_pdf_sha256"] = current_pdf_sha256
     if pitstop is not None:
         result["pitstop"] = pitstop
-    return result
+    return attach_issue_groups(result)
