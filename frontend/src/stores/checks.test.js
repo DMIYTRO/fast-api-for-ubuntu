@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import { useChecksStore } from "./checks.js";
+import { useChecksStore, isOrderPrintable } from "./checks.js";
 import { orderIdentity } from "./orderIdentity.js";
 import { api } from "../services/api.js";
 
@@ -32,7 +32,7 @@ describe("checks store", () => {
     ];
 
     store.setFilter("passed");
-    expect(store.filteredOrders.map((order) => order.order_id)).toEqual(["200", "300"]);
+    expect(store.filteredOrders.map((order) => order.order_id)).toEqual(["200"]);
     store.setFilter("error");
     expect(store.filteredOrders.map((order) => order.order_id)).toEqual(["100"]);
   });
@@ -244,18 +244,30 @@ describe("checks store", () => {
     expect(store.canPrint).toBe(false);
   });
 
-  it("permits confirmed print only when every selected order is passed or has an error", () => {
+  it("blocks warning and error selections without an override", () => {
     const store = useChecksStore();
     store.orders = [
       { order_id: "100", status: "passed" },
       { order_id: "200", status: "error" },
-      { order_id: "300", status: "processing" },
+      { order_id: "300", status: "warning" },
     ];
     store.selected = store.orders.slice(0, 2).map(orderIdentity);
-    expect(store.canForcePrint).toBe(true);
+    expect(store.canPrint).toBe(false);
+    store.selected = [orderIdentity(store.orders[2])];
+    expect(store.canPrint).toBe(false);
+  });
 
-    store.selected.push(orderIdentity(store.orders[2]));
-    expect(store.canForcePrint).toBe(false);
+  it("requires a clean completed PitStop result tied to the current revision", () => {
+    const order = { status: "passed", current_pdf_revision: 2, current_pdf_sha256: "new", pitstop: {
+      execution_status: "completed", verdict: "passed", checked_revision: 2, input_sha256: "new",
+    } };
+    expect(isOrderPrintable(order)).toBe(true);
+    for (const patch of [{ verdict: "warning" }, { checked_revision: 1 }, { input_sha256: "old" }]) {
+      expect(isOrderPrintable({ ...order, pitstop: { ...order.pitstop, ...patch } })).toBe(false);
+    }
+    expect(isOrderPrintable({ status: "passed", pitstop_required: true })).toBe(false);
+    expect(isOrderPrintable({ status: "completed", pitstop_status: "technical_error" })).toBe(false);
+    expect(isOrderPrintable({ status: "completed", pitstop_status: "not_checked" })).toBe(true);
   });
 
   it("blocks print while PitStop is running or after a technical failure", () => {
@@ -446,21 +458,19 @@ describe("checks store", () => {
     });
   });
 
-  it("sends explicit confirmation when printing an order with an error", async () => {
+  it.each(["warning", "error"])("rejects direct print and legacy override for a %s order", async (status) => {
     const store = useChecksStore();
     store.activeRun = { id: "run-1" };
-    store.orders = [{ order_id: "100", status: "error" }];
-    store.selected = [orderIdentity(store.orders.find((order) => order.order_id === "100"))];
-    const print = vi.spyOn(api, "preparePrint").mockResolvedValue({
-      items: [{ order_id: "100", status: "prepared" }],
-    });
-    vi.spyOn(api, "orders").mockResolvedValue({ items: store.orders });
+    store.orders = [{ order_id: "100", status }];
+    store.selected = store.orders.map(orderIdentity);
+    const print = vi.spyOn(api, "preparePrint");
+    const reject = vi.spyOn(api, "prepareReject");
 
-    await store.act("force-print", "");
+    await expect(store.act("print", "")).rejects.toThrow("все обязательные проверки");
+    await expect(store.act("force-print", "")).rejects.toThrow("все обязательные проверки");
 
-    expect(print).toHaveBeenCalledWith({
-      order_ids: ["100"], run_id: "run-1", conflict_strategy: "fail", confirm_failed_processing: true,
-    });
-    expect(store.orders[0].status).toBe("accepted_for_print");
+    expect(print).not.toHaveBeenCalled();
+    expect(reject).not.toHaveBeenCalled();
+    expect(store.orders[0].status).toBe(status);
   });
 });
