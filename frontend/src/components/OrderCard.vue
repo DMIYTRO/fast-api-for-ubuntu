@@ -6,8 +6,11 @@ import FileParameters from "./FileParameters.vue";
 import CorrectionDecision from "./CorrectionDecision.vue";
 import ReturnReasons from "./ReturnReasons.vue";
 import PitStopReport from "./PitStopReport.vue";
+import OrderActions from "./OrderActions.vue";
 import CallasFixControl from "./CallasFixControl.vue";
-import { groupIssueMessages, issueObjectLabel } from "./issueGroups.js";
+import { orderIssueGroups } from "./issueGroups.js";
+import InkCoverage from "./InkCoverage.vue";
+import { inkCoverageFlagLabel, inkCoverageMainFlag, inkCoverageTitle } from "./inkCoverage.js";
 
 const props = defineProps({ order: Object, runId: String, selected: Boolean, reasons: Array, paidDesign: { type: Boolean, default: true }, designCost: { type: String, default: "0" } });
 const emit = defineEmits(["toggle", "decide", "return-comment", "return-design", "return-cost"]);
@@ -36,6 +39,8 @@ const sourceFixFiles = computed(() => (props.order.pdf_path || props.order.pdf_u
 const face = computed(() => files.value.find((file) => String(file.side || file.parsed?.side).toLowerCase() === "face") || files.value[0]);
 const back = computed(() => files.value.find((file) => String(file.side || file.parsed?.side).toLowerCase() === "back"));
 const parsed = computed(() => face.value?.parsed || {});
+const flattenedTiffs = computed(() => files.value.filter((file) => file.tiff_flattened));
+const tiffFlattenTitle = computed(() => flattenedTiffs.value.map((file) => `${file.name || file.filename || "TIFF"}: сведён сохранённый видимый композит; видимых слоёв ${file.tiff_visible_layer_count ?? "—"}, скрытых ${file.tiff_hidden_layer_count ?? "—"}`).join("; "));
 const colorMode = computed(() => parsed.value.front_colors != null ? `${parsed.value.front_colors}-${parsed.value.back_colors ?? 0}` : "—");
 const declaredSize = computed(() => parsed.value.width_mm && parsed.value.height_mm ? `${parsed.value.width_mm} × ${parsed.value.height_mm} мм` : "Размер не указан");
 const formatNumber = (input, decimals = 1) => {
@@ -45,18 +50,13 @@ const formatNumber = (input, decimals = 1) => {
 const formatMm = (input) => formatNumber(input, 1);
 const expectedSize = computed(() => parsed.value.width_mm && parsed.value.height_mm ? `${formatMm(parsed.value.width_mm + 4)} × ${formatMm(parsed.value.height_mm + 4)} мм` : "—");
 const issueText = (value) => typeof value === "string" ? value : value?.message || value?.code;
-const allErrors = computed(() => [
-  ...(props.order.errors || []),
-  ...(props.order.processing_errors || []),
-].map(issueText).filter(Boolean));
-const groupedErrors = computed(() => groupIssueMessages(allErrors.value));
-const fileErrors = computed(() => files.value.flatMap((file) => (file.errors || []).map(issueText).filter(Boolean).map((message) => ({ filename: file.filename || file.path || "Файл", message }))));
-const allWarnings = computed(() => [
-  ...(props.order.warnings || []),
-].map(issueText).filter(Boolean));
-const groupedWarnings = computed(() => groupIssueMessages(allWarnings.value));
-const fileWarnings = computed(() => files.value.flatMap((file) => (file.warnings || []).map(issueText).filter(Boolean).map((message) => ({ filename: file.filename || file.path || "Файл", message }))));
-const statusLabel = { detected: "Обнаружен", passed: "Прошёл", completed: "Прошёл", warning: "Предупреждение", error: "Ошибка PDF", failed: "Ошибка", technical_error: "Сбой проверки", pitstop_checking: "PitStop проверяет", waiting_confirmation: "Нужно решение", processing: "Проверяется" };
+// Локальные проблемы группируются по типу (order.issue_groups с бэкенда, иначе на месте);
+// проблемы PitStop показывает PitStopReport.
+const localIssueGroups = computed(() => orderIssueGroups({ ...props.order, files: files.value }).filter((group) => group.source !== "pitstop"));
+const groupedErrors = computed(() => localIssueGroups.value.filter((group) => group.severity === "error"));
+const groupedWarnings = computed(() => localIssueGroups.value.filter((group) => group.severity === "warning"));
+const issueGroupHasDetails = (group) => group.count > 1 || (group.files || []).length > 0 || (group.pages || []).length > 0;
+const statusLabel = { detected: "Обнаружен", passed: "Прошёл", completed: "Прошёл", warning: "Требует доработки", error: "Ошибка PDF", failed: "Ошибка", technical_error: "Сбой проверки", pitstop_checking: "PitStop проверяет", waiting_confirmation: "Нужно решение", processing: "Проверяется" };
 const successful = computed(() => {
   if (!["passed", "completed"].includes(props.order.status)) return false;
   if (!props.order.pitstop) return true;
@@ -200,7 +200,11 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
         </small>
       </div>
       <div class="order-meta">
-        <span>Красочность <b>{{ colorMode }}</b></span>
+        <span v-if="flattenedTiffs.length" class="tiff-flatten-indicator" :title="tiffFlattenTitle" :aria-label="tiffFlattenTitle">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" aria-hidden="true"><path d="m3 7 9-4 9 4-9 4-9-4Zm0 5 9 4 9-4M3 17l9 4 9-4" /></svg>
+          TIFF сведён
+        </span>
+        <span>Красочность <b>{{ colorMode }}</b><span v-if="inkCoverageMainFlag(order.ink_coverage)" class="ink-indicator" :class="inkCoverageMainFlag(order.ink_coverage).kind" :title="inkCoverageTitle(order.ink_coverage)" :aria-label="inkCoverageTitle(order.ink_coverage)"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5c-3 4-5.5 7-5.5 10a5.5 5.5 0 0 0 11 0c0-3-2.5-6-5.5-10Z" /><path v-if="inkCoverageMainFlag(order.ink_coverage).kind === 'overflow'" d="M6 13.5c1.5 1 2.5 1.5 4 1.5s2.5-.5 4-1.5" /><path v-else d="M7 12.5h6" /></svg><b>{{ inkCoverageFlagLabel(inkCoverageMainFlag(order.ink_coverage)) }}</b></span></span>
         <span>Макет <b>{{ declaredSize }}</b></span>
         <span>Файлов <b>{{ files.length }}</b></span>
       </div>
@@ -249,25 +253,44 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
           </table>
         </div>
 
-        <div v-if="allErrors.length || fileErrors.length" class="issue-list errors">
+        <div v-if="groupedErrors.length" class="issue-list errors">
           <strong>Ошибки проверки</strong>
           <ul>
-            <li v-for="(item, index) in groupedErrors" :key="`order-${index}`">{{ item.message }}<span v-if="item.count > 1"> — {{ item.count }} {{ issueObjectLabel(item.count) }}</span></li>
-            <li v-for="(item, index) in fileErrors" :key="`file-${index}`"><b>{{ item.filename }}:</b> {{ item.message }}</li>
+            <li v-for="(item, index) in groupedErrors" :key="`group-${index}`" class="issue-group">
+              <details v-if="issueGroupHasDetails(item)">
+                <summary>{{ item.message }}<span v-if="item.count > 1" class="issue-group-count">×{{ item.count }}</span></summary>
+                <div class="issue-group-details">
+                  <p v-if="item.pages?.length">Страницы: {{ item.pages.join(", ") }}</p>
+                  <p v-if="item.files?.length">Файлы: {{ item.files.join(", ") }}</p>
+                  <ul v-if="item.samples?.length"><li v-for="(sample, sampleIndex) in item.samples" :key="`sample-${sampleIndex}`">{{ sample }}</li></ul>
+                </div>
+              </details>
+              <template v-else>{{ item.message }}</template>
+            </li>
           </ul>
         </div>
         <div v-if="order.status === 'error' && !order.pitstop && order.pitstop_status === 'not_checked'" class="pitstop-skipped">
           <strong>PitStop не проверял этот заказ</strong>
-          <span>Причины обработки указаны выше. Отчёт PitStop появится после успешного создания итогового PDF.</span>
+          <span v-if="order.pitstop_skipped_reason">{{ order.pitstop_skipped_reason }}</span>
+          <span v-else>Причины обработки указаны выше. Отчёт PitStop появится после успешного создания итогового PDF.</span>
         </div>
-        <div v-if="allWarnings.length || fileWarnings.length" class="issue-list warnings">
+        <div v-if="groupedWarnings.length" class="issue-list warnings">
           <strong>Предупреждения</strong>
           <ul>
-            <li v-for="(item, index) in groupedWarnings" :key="`order-${index}`">{{ item.message }}<span v-if="item.count > 1"> — {{ item.count }} {{ issueObjectLabel(item.count) }}</span></li>
-            <li v-for="(item, index) in fileWarnings" :key="`file-${index}`"><b>{{ item.filename }}:</b> {{ item.message }}</li>
+            <li v-for="(item, index) in groupedWarnings" :key="`group-${index}`" class="issue-group">
+              <details v-if="issueGroupHasDetails(item)">
+                <summary>{{ item.message }}<span v-if="item.count > 1" class="issue-group-count">×{{ item.count }}</span></summary>
+                <div class="issue-group-details">
+                  <p v-if="item.pages?.length">Страницы: {{ item.pages.join(", ") }}</p>
+                  <p v-if="item.files?.length">Файлы: {{ item.files.join(", ") }}</p>
+                  <ul v-if="item.samples?.length"><li v-for="(sample, sampleIndex) in item.samples" :key="`sample-${sampleIndex}`">{{ sample }}</li></ul>
+                </div>
+              </details>
+              <template v-else>{{ item.message }}</template>
+            </li>
           </ul>
         </div>
-        <div v-if="successful && !allErrors.length && !fileErrors.length && !allWarnings.length && !fileWarnings.length" class="issue-list success-note"><strong>Заказ соответствует требованиям допечатной подготовки.</strong></div>
+        <div v-if="successful && !groupedErrors.length && !groupedWarnings.length" class="issue-list success-note"><strong>Заказ соответствует требованиям допечатной подготовки.</strong></div>
         <PitStopReport v-if="order.pitstop" :pitstop="order.pitstop" section-title="Проверка PDF из первоначальной обработки" />
         <PitStopReport v-if="order.action_result?.pitstop" :pitstop="order.action_result.pitstop" section-title="Повторная проверка печатного PDF из просмотренных TIFF" />
         <CallasFixControl v-if="order.pdf_path || order.pdf_url || order.callas_fix?.comparison" :run-id="runId" :order-id="actionId" :initial="order.callas_fix" :can-start="Boolean(order.pdf_path || order.pdf_url)" />
@@ -286,7 +309,8 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
     </div>
 
     <button v-if="files.length" class="details-toggle" @click="expanded = !expanded">{{ expanded ? "Скрыть исходные файлы" : "Исходные файлы и подробности" }} <span>{{ expanded ? "⌃" : "⌄" }}</span></button>
-    <div v-if="expanded" class="parameters-list"><FileParameters v-for="file in files" :key="file.id || file.filename" :file="file" /></div>
+    <div v-if="expanded" class="parameters-list"><FileParameters v-for="file in files" :key="file.id || file.filename" :file="file" /><InkCoverage v-if="order.ink_coverage" :data="order.ink_coverage" /></div>
+    <OrderActions v-if="runId" :run-id="runId" :order-id="String(actionId)" />
     <footer class="order-footer">
       <span class="muted">Причины возврата настраиваются кнопкой 💬 в заголовке</span>
       <nav class="export-links">

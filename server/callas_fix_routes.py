@@ -61,6 +61,21 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
             state, base_url(run_id, order_id, file_id), source_only=bool(file_id)
         )
 
+    def record(request: Request, run_id: str, order: dict[str, Any], kind: str, **details: Any) -> None:
+        request.app.state.coordinator.repository.append_event(run_id, kind, {
+            "aggregate_id": order.get("aggregate_id"), "order_id": order.get("order_id"),
+            **details,
+        })
+
+    def execute_recorded(request: Request, run_id: str, order: dict[str, Any], pdf: Path, plan: str, file_id: str | None) -> None:
+        service = _service(request)
+        try:
+            service.execute(pdf, plan)
+        finally:
+            state = service.read_state(pdf) or {}
+            record(request, run_id, order, "order.callas_fix.finished",
+                   plan=plan, file_id=file_id, status=state.get("status", "failed"))
+
     @router.get("/api/callas/plans", dependencies=[Depends(protected)])
     def callas_plans(request: Request, direction: str | None = None) -> dict[str, Any]:
         service = _service(request)
@@ -111,7 +126,8 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
             state = service.start(pdf, body.plan, direction=direction)
         except CallasFixError as exc:
             _raise(exc)
-        background_tasks.add_task(service.execute, pdf, body.plan)
+        record(request, run_id, _order, "order.callas_fix.started", plan=body.plan, file_id=file_id, status="processing")
+        background_tasks.add_task(execute_recorded, request, run_id, _order, pdf, body.plan, file_id)
         return {"comparison": payload(state, run_id, order_id, file_id)}
 
     @router.post(
@@ -130,7 +146,7 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
         file_id: str | None = None,
     ) -> dict[str, Any]:
         service = _service(request)
-        _run, _order, pdf = resolve_order(request, run_id, order_id, file_id)
+        run, order, pdf = resolve_order(request, run_id, order_id, file_id)
         if file_id:
             raise APIError(
                 409,
@@ -139,9 +155,29 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
                 "принять его в печать из этого блока нельзя.",
             )
         try:
-            state = service.decide(pdf, body.decision)
+            with request.app.state.order_workflow.correction_guard(run_id, order):
+                previous_state = service.read_state(pdf)
+                state = service.decide(pdf, body.decision)
+                if body.decision == "accept":
+                    candidate = None
+                    try:
+                        candidate = service.publish_accepted(pdf)
+                        if candidate is not None:
+                            request.app.state.order_workflow.recheck_pdf_revision(run, order, candidate)
+                    except Exception as exc:
+                        if candidate is not None:
+                            candidate.unlink(missing_ok=True)
+                        if previous_state is not None:
+                            service.restore_decision(pdf, previous_state)
+                        record(request, run_id, order, "order.callas_fix.save_failed", decision=body.decision, status="failed")
+                        raise APIError(409, "callas_fix_save_failed", str(exc)) from exc
         except CallasFixError as exc:
             _raise(exc)
+        except APIError:
+            raise
+        except Exception as exc:
+            raise APIError(409, "callas_fix_save_failed", str(exc)) from exc
+        record(request, run_id, order, f"order.callas_fix.{state.get('status')}", decision=body.decision, status=state.get("status"))
         return {"comparison": payload(state, run_id, order_id, None)}
 
     @router.get(

@@ -22,7 +22,6 @@ const uid = useId();
 const comparison = ref(null);
 const plans = ref([]);
 const planKey = ref("");
-const panelOpen = ref(false);
 const loadingPlans = ref(false);
 const unavailable = ref(false);
 const busy = ref(false);
@@ -73,26 +72,42 @@ watch(() => props.initial?.comparison, (value) => {
   if (value) apply({ comparison: value });
 }, { immediate: true, deep: true });
 
-async function togglePanel() {
-  panelOpen.value = !panelOpen.value;
-  if (!panelOpen.value || plans.value.length || loadingPlans.value) return;
+// Ключ плана коррекции размера — единственное действие, доступное одной кнопкой.
+const SIZE_PLAN_KEY = "size_correction";
+const SIZE_BUTTON_TITLE = "Скорректировать размер макета через Callas. Будет создана исправленная копия PDF и сравнение «до / после»; исходный PDF не меняется, результат нужно принять или отклонить.";
+
+async function loadPlans() {
+  if (plans.value.length || loadingPlans.value) return plans.value;
   loadingPlans.value = true;
   error.value = "";
   try {
     const payload = await api.callasPlans();
     const list = Array.isArray(payload) ? payload : payload?.plans || [];
     plans.value = list.filter((plan) => plan?.key);
-    planKey.value = plans.value[0]?.key || "";
+    planKey.value = plans.value.find((plan) => plan.key === SIZE_PLAN_KEY)?.key || "";
   } catch (e) {
     if (UNAVAILABLE.includes(e?.status)) {
       unavailable.value = true;
-      panelOpen.value = false;
     } else {
       error.value = errorMessage(e, "Не удалось загрузить планы Callas.");
     }
   } finally {
     loadingPlans.value = false;
   }
+  return plans.value;
+}
+
+// Одно нажатие: загрузить планы (один раз) и запустить коррекцию размера.
+async function startSizeCorrection() {
+  if (busy.value || loadingPlans.value) return;
+  const list = await loadPlans();
+  if (unavailable.value) return;
+  const key = list.find((plan) => plan.key === SIZE_PLAN_KEY)?.key;
+  if (!key) {
+    if (!error.value) error.value = "План корректировки размера недоступен";
+    return;
+  }
+  await start(key);
 }
 
 async function start(key = planKey.value) {
@@ -102,7 +117,6 @@ async function start(key = planKey.value) {
   try {
     const payload = await api.startCallasFix(props.runId, props.orderId, key, props.fileId);
     if (disposed) return;
-    panelOpen.value = false;
     stopPolling();
     const next = extract(payload);
     apply(next ? payload : { comparison: { status: "processing", plan: plans.value.find((p) => p.key === key) || { key, title: key } } });
@@ -150,18 +164,21 @@ onBeforeUnmount(() => {
     />
     <p v-if="unavailable && !showBlock" class="callas-fix-unavailable muted" role="status">Исправление Callas недоступно</p>
     <div v-else-if="canPickPlan" class="callas-fix-controls">
-      <button type="button" class="button secondary small" :aria-expanded="panelOpen" :aria-controls="`callas-fix-${uid}`" aria-label="Исправить макет через Callas: выбрать план" @click="togglePanel">Исправить {{ panelOpen ? "▴" : "▾" }}</button>
-      <div v-if="panelOpen" :id="`callas-fix-${uid}`" class="callas-fix-panel">
-        <p v-if="loadingPlans" class="muted" role="status"><span class="spinner" aria-hidden="true"></span> Загружаем планы…</p>
-        <p v-else-if="!plans.length && !error" class="muted" role="status">Нет доступных планов Callas</p>
-        <template v-else-if="plans.length">
-          <label :for="`callas-plan-${uid}`">План Callas</label>
-          <select :id="`callas-plan-${uid}`" v-model="planKey" aria-label="План Callas" :disabled="busy">
-            <option v-for="plan in plans" :key="plan.key" :value="plan.key">{{ plan.title || plan.key }}</option>
-          </select>
-          <button type="button" class="button primary small" :disabled="busy || !planKey" @click="start()">{{ busy ? "Запуск…" : "Запустить" }}</button>
-        </template>
-      </div>
+      <button
+        type="button"
+        class="icon-button callas-size-fix"
+        :title="SIZE_BUTTON_TITLE"
+        aria-label="Скорректировать размер макета через Callas"
+        :aria-busy="busy || loadingPlans"
+        :disabled="busy || loadingPlans"
+        @click="startSizeCorrection"
+      >
+        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+          <rect x="3" y="3" width="14" height="14" rx="1.5" />
+          <path d="M6 10h8M10 6v8M6 7.5 6 6h1.5M14 12.5V14h-1.5" />
+        </svg>
+        <span class="icon-button-label">{{ busy || loadingPlans ? "Запуск…" : "Размер" }}</span>
+      </button>
     </div>
     <p v-if="error" class="form-error" role="alert">{{ error }}</p>
   </div>

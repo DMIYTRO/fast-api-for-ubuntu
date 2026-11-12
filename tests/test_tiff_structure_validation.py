@@ -144,13 +144,14 @@ def test_flattened_single_page_tiff_has_no_structural_errors(tmp_path: Path) -> 
     assert dto["page_count"] is None
 
 
-def test_single_layer_tiff_is_a_warning_not_an_error(tmp_path: Path) -> None:
+def test_single_layer_tiff_can_be_flattened_during_pdf_creation(tmp_path: Path) -> None:
     item = _inspect_batch(
         tmp_path, TiffStructure(1, True, False, "cmyk  4.0", layer_count=1)
     )
 
     assert not any("несведённые слои" in error for error in item.errors)
-    assert any("один несведённый слой" in warning for warning in item.warnings)
+    assert not item.warnings
+    assert not item.tiff_flattened  # inspection never claims a conversion occurred
     assert item.tiff_layer_count == 1
     assert file_check_to_dto(item)["tiff_layer_count"] == 1
 
@@ -159,11 +160,11 @@ def test_single_layer_tiff_is_a_warning_not_an_error(tmp_path: Path) -> None:
     ("structure", "expected_fragments", "unexpected_fragment"),
     [
         (TiffStructure(1, False, True, "cmyka  5.0"), ("альфа-канал",), "страниц"),
-        (TiffStructure(1, True, False, "cmyk  4.0", layer_count=2), ("несведённых слоёв: 2",), "страниц"),
+        (TiffStructure(1, True, False, "cmyk  4.0", layer_count=2), (), "страниц"),
         (TiffStructure(2, False, False, "cmyk  4.0"), ("2 страниц",), "несведённые слои"),
         (
             TiffStructure(1, True, True, "cmyka  5.0", layer_count=2),
-            ("альфа-канал", "несведённых слоёв: 2"),
+            ("альфа-канал",),
             "страниц",
         ),
     ],

@@ -192,6 +192,9 @@ class ControlPanelTests(unittest.TestCase):
     def tearDown(self):
         self.client_context.__exit__(None, None, None)
         self.temporary_directory.cleanup()
+        # ``OutsideTiffAdapter`` writes next to the temporary input folder,
+        # i.e. into the project directory; do not leave it behind.
+        (Path(control_panel.PROJECT_DIR) / "outside.tif").unlink(missing_ok=True)
 
     def login(self):
         response = self.client.post(
@@ -199,6 +202,21 @@ class ControlPanelTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["authenticated"])
+
+    def test_order_action_feed_is_authenticated_and_persistent(self):
+        url = "/api/checks/run-actions/orders/42:1001/actions"
+        self.assertEqual(self.client.get(url).status_code, 401)
+        self.login()
+        repository = self.client.app.state.coordinator.repository
+        order = {"aggregate_id": "42:1001", "order_id": "1001", "customer_id": "42", "status": "passed", "files": []}
+        repository.create_run({"id": "run-actions", "status": "completed", "options": {}, "orders": {"42:1001": order}})
+        repository.append_event("run-actions", "order.completed", {"aggregate_id": "42:1001", "order_id": "1001", "order": order})
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["schema_version"], 1)
+        self.assertEqual(response.json()["items"][0]["kind"], "order.completed")
+        self.assertEqual(self.client.get(url).json(), response.json())
+        self.assertEqual(self.client.get(url.replace("42:1001", "99:1001")).status_code, 404)
 
     def test_spa_is_public_but_api_and_files_require_authentication(self):
         home = self.client.get("/")
@@ -477,12 +495,12 @@ class ControlPanelTests(unittest.TestCase):
             json={"run_id": run_id, "order_ids": ["1001"]},
         )
         self.assertEqual(return_without_comment.status_code, 200)
+        # The reject endpoint deliberately runs the transition synchronously
+        # (see ``prepare_reject`` in control_panel.py): the dashboard needs
+        # the final result, not a queued ``pending`` placeholder.
         self.assertEqual(
             return_without_comment.json()["items"],
-            [{
-                "order_id": "1001", "status": "pending",
-                "message": "Задача поставлена в очередь. Загрузка продолжается в фоне.",
-            }],
+            [{"order_id": "1001", "status": "prepared"}],
         )
         deadline = time.monotonic() + 2
         history = self.client.get("/api/order-history", params={"action": "reject"})
@@ -525,21 +543,25 @@ class ControlPanelTests(unittest.TestCase):
         ) as run_command:
             result = self.client.post(file["layered_tiff_export_url"])
         self.assertEqual(result.status_code, 200)
-        self.assertEqual(result.json()["status"], "completed")
+        # The export runs as a background task: the POST answers ``processing``
+        # and the status endpoint reports ``completed`` once the files exist.
+        self.assertEqual(result.json()["status"], "processing")
+        started = self.client.get(file["layered_tiff_export_url"]).json()
+        self.assertEqual(started["status"], "completed")
         self.assertIn("-define", run_command.call_args.args[0])
         command = run_command.call_args.args[0]
         self.assertLess(command.index("-define"), command.index(str(self.root / "sample-face.tif")))
         self.assertEqual((self.root / "PDF" / "sample-face_layered-composite.pdf").read_bytes()[:5], b"%PDF-")
         self.assertEqual((self.root / "sample-face.tif").read_bytes(), original_tiff)
         self.assertEqual(production_pdf.read_bytes(), original_pdf)
-        self.assertEqual(self.client.get(result.json()["pdf_url"]).status_code, 200)
-        preview = self.client.get(result.json()["preview_url"])
+        self.assertEqual(self.client.get(started["pdf_url"]).status_code, 200)
+        preview = self.client.get(started["preview_url"])
         self.assertEqual(preview.status_code, 200)
         self.assertEqual(preview.headers["content-type"], "image/png")
         self.assertTrue(preview.content.startswith(b"\x89PNG\r\n\x1a\n"))
         refreshed = self.client.get(file["layered_tiff_export_url"]).json()
         self.assertEqual(refreshed["status"], "completed")
-        self.assertEqual(refreshed["preview_url"], result.json()["preview_url"])
+        self.assertEqual(refreshed["preview_url"], started["preview_url"])
 
     @staticmethod
     def _write_test_pdf(path):

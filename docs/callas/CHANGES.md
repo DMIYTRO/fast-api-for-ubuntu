@@ -84,6 +84,12 @@ DELETE /jobs/{id}; заголовки Authorization: Bearer <token>, X-Callas-Us
 - `OrderWorkflowService(pdf_merger=...)`, `control_panel._callas_pdf_merger(settings)` — включается тем же флагом `IMAGE_MAGIC_CALLAS_MERGE_ENABLED`.
 - Тесты `tests/test_layered_print_merge.py`; живая проверка адаптера против callas — OK. Нужна перезагрузка fastapi-app.
 
+## [docs] 2026-11-10 — справочник по новым типам заданий службы (visualizer, separations, inkcoverage)
+- Добавлен `docs/callas/visualizer-separations-inkcoverage.md`: запросы/ответы, допустимые значения полей и `parts`, права клиента (`allowed_types`), ошибки, лимиты, результаты экспериментов на CLI 17.0.682. Источник — отчёт службы от 10 ноября 2026.
+- Новые поля `render` (`simulate_overprint`, `simulate_paper`, `blackpoint_compensation`, `pagebox`) необязательны; при значениях по умолчанию запрос и ответ прежние.
+- Новые типы на стороне службы выключены по умолчанию (`CALLAS_ENABLED_TYPES`). Клиент `services/callas` и приложение их не вызывают: код не менялся, поддерживаются только `merge` и `render`.
+- `docs/callas/openapi.json` не обновлялся (снимок содержит `merge`, `render`, `process`); актуальную схему брать из `/openapi.json` службы.
+
 ## [claude] 2026-11-10 — сверка сервера, новый контракт, план проверки и исправления
 - `docs/callas/openapi.json` заменён снимком с сервера: добавлены `InfoSpec`, `SplitSpec`, `VisualizerSpec`, `SeparationsSpec`, `InkCoverageSpec`. Абзац «Контракт API» в начале этого файла описывает только `merge`/`render` и устарел.
 - На сервере включены `process`, `visualizer`, `separations`, `inkcoverage`; клиенту `image-magic` разрешены все профили и типы. Живая проверка трёх типов на копии реального заказа — OK (1,0–1,5 с на задание).

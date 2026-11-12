@@ -130,3 +130,15 @@ class FileLifecycleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_operator_cannot_move_non_green_pdf_to_print(tmp_path):
+    import pytest
+    pdf = tmp_path / "PDF" / "Rework" / "job.pdf"
+    pdf.parent.mkdir(parents=True)
+    pdf.write_bytes(b"rework")
+    for status in ("warning", "error"):
+        with pytest.raises(FileLifecycleError, match="зелёный"):
+            FileLifecycle(tmp_path).accept_for_print({"status": status, "pdf_path": str(pdf)})
+        assert pdf.is_file()
+        assert not (tmp_path / "PDF" / "Print" / "job.pdf").exists()

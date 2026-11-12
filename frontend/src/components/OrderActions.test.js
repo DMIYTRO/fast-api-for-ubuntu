@@ -1,0 +1,24 @@
+import { afterEach, expect, it, vi } from "vitest";
+import { createApp } from "vue";
+const flushPromises = () => new Promise((resolve) => setTimeout(resolve, 0));
+import OrderActions from "./OrderActions.vue";
+import { api } from "../services/api.js";
+let app;
+let host;
+afterEach(() => { app?.unmount(); host?.remove(); vi.restoreAllMocks(); });
+it("loads recorded actions on demand and refreshes when reopened", async () => {
+  const load = vi.spyOn(api, "orderActions").mockResolvedValue({ items: [{ id: "r:1", label: "Исправление Callas принято", created_at: "2026-11-12", details: { plan: "size_correction" }, pdf_revision: 2 }] });
+  host = document.createElement("div"); document.body.append(host);
+  app = createApp(OrderActions, { runId: "r", orderId: "42:1" }); app.mount(host);
+  expect(load).not.toHaveBeenCalled();
+  const details = host.querySelector("details");
+  details.open = true; details.dispatchEvent(new Event("toggle"));
+  await flushPromises();
+  expect(load).toHaveBeenCalledWith("r", "42:1");
+  expect(host.textContent).toContain("Исправление Callas принято");
+  expect(host.textContent).toContain("PDF r2");
+  details.open = false; details.dispatchEvent(new Event("toggle"));
+  details.open = true; details.dispatchEvent(new Event("toggle"));
+  await flushPromises();
+  expect(load.mock.calls.length).toBeGreaterThanOrEqual(2);
+});

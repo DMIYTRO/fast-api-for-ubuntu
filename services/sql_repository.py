@@ -236,14 +236,14 @@ class SqlRunRepository:
             status_counts = {str(key or "detected"): int(count) for key, count in grouped}
             counts = {
                 "all": sum(status_counts.values()),
-                "passed": sum(status_counts.get(value, 0) for value in ("passed", "warning", "completed")),
+                "passed": sum(status_counts.get(value, 0) for value in ("passed", "completed")),
                 "warning": status_counts.get("warning", 0),
                 "error": sum(status_counts.get(value, 0) for value in ("error", "failed", "technical_error")),
                 "waiting_confirmation": status_counts.get("waiting_confirmation", 0),
             }
             filtered = list(base)
             if status == "passed":
-                filtered.append(OrderResult.status.in_(("passed", "warning", "completed")))
+                filtered.append(OrderResult.status.in_(("passed", "completed")))
             elif status == "error":
                 filtered.append(OrderResult.status.in_(("error", "failed", "technical_error")))
             elif status != "all":

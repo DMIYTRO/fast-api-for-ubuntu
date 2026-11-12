@@ -7,8 +7,7 @@ import { orderIdentity, sameOrderIdentity } from "./orderIdentity.js";
 const list = (data) => Array.isArray(data) ? data : (data?.items || data?.orders || []);
 const running = (status) => ["queued", "running", "waiting_confirmation", "cancelling"].includes(status);
 const terminalStatuses = ["accepted_for_print", "returned_for_rework"];
-const printableStatuses = ["passed", "warning", "completed"];
-const pitstopPendingStatuses = ["queued", "pending", "running", "checking", "processing"];
+const printableStatuses = ["passed", "completed"];
 let searchDebounceTimer;
 let ordersRequestSequence = 0;
 let orderEventRevision = 0;
@@ -26,14 +25,14 @@ export const matchesStatusFilter = (order, filter) => {
 export const isOrderPrintable = (order) => {
   if (!printableStatuses.includes(order?.status)) return false;
   const pitstop = order?.pitstop;
-  if (!pitstop) return true;
+  if (!pitstop) return !order?.pitstop_required && (!order?.pitstop_status || order.pitstop_status === "not_checked");
   const executionStatus = String(pitstop.execution_status || "").toLowerCase();
   const verdict = String(pitstop.verdict || "").toLowerCase();
-  if (pitstopPendingStatuses.includes(executionStatus) || ["failed", "error", "technical_error"].includes(executionStatus)) return false;
-  if (["error", "failed", "rejected", "technical_error"].includes(verdict)) return false;
-  return executionStatus === "completed" && ["passed", "warning", "ok", "success"].includes(verdict);
+  if (executionStatus !== "completed" || !["passed", "ok", "success"].includes(verdict)) return false;
+  if (order.current_pdf_revision != null && pitstop.checked_revision !== order.current_pdf_revision) return false;
+  if (order.current_pdf_sha256 && pitstop.input_sha256 !== order.current_pdf_sha256) return false;
+  return true;
 };
-export const isOrderForcePrintable = (order) => order?.status === "error";
 const decorateOrder = (order, runId) => {
   if (!order) return order;
   const orderId = String(order.order_id ?? order.id ?? "");
@@ -80,10 +79,6 @@ export const useChecksStore = defineStore("checks", {
     },
     selectedOrders: (state) => state.selected.map((id) => state.selectedOrderSnapshots[id] || state.orders.find((order) => orderIdentity(order) === String(id) || String(order.order_id ?? order.id) === String(id))).filter(Boolean),
     canPrint() { return this.selectedOrders.length > 0 && this.selectedOrders.every(isOrderPrintable); },
-    canForcePrint() {
-      return this.selectedOrders.some(isOrderForcePrintable)
-        && this.selectedOrders.every((order) => isOrderPrintable(order) || isOrderForcePrintable(order));
-    },
   },
   actions: {
     setFilter(value) {
@@ -315,15 +310,18 @@ export const useChecksStore = defineStore("checks", {
     },
     async act(action, comment, conflictStrategy = "fail") {
       const selectedOrders = this.selectedOrders;
+      if (action === "force-print" || (action === "print" && !this.canPrint)) {
+        throw new Error("В печать можно отправить только заказы, прошедшие все обязательные проверки.");
+      }
       const order_ids = selectedOrders.map((order) => order.aggregate_id ?? order.order_id ?? order.id);
       const run_id = this.activeRun?.id;
-      const isPrint = ["print", "force-print"].includes(action);
+      const isPrint = action === "print";
       const responses = isPrint
         ? [await api.preparePrint({
           order_ids,
           run_id,
           conflict_strategy: conflictStrategy,
-          confirm_failed_processing: action === "force-print",
+          confirm_failed_processing: false,
         })]
         : await Promise.all(selectedOrders.map((order) => {
           const identity = orderIdentity(order);
@@ -400,7 +398,7 @@ export const useChecksStore = defineStore("checks", {
       });
     },
     _terminalStatusForAction(action) {
-      return ["print", "force-print"].includes(action) ? "accepted_for_print" : "returned_for_rework";
+      return action === "print" ? "accepted_for_print" : "returned_for_rework";
     },
     _dropSelectionWhenPrintBecomesBlocked(id, previous, updated) {
       if (isOrderPrintable(previous) && !isOrderPrintable(updated)) {

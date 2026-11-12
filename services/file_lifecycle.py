@@ -64,6 +64,11 @@ class FileLifecycle:
         self, order: dict[str, Any], *, conflict_strategy: str = "fail"
     ) -> FileTransition:
         """Move a complete successful order into the internal print staging."""
+        if order.get("status") not in {None, "passed", "accepted_for_print"}:
+            raise FileLifecycleError(
+                "В печать допускается только зелёный PDF после всех обязательных проверок. "
+                "Исправьте замечания и повторите проверку."
+            )
         self.initialize()
         sources = self._source_paths(order)
         pdf = self._required_path(order.get("pdf_path"), "PDF")

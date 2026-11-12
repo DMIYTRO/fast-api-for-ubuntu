@@ -12,6 +12,8 @@ from typing import Any
 
 from processing.models import FileCheck, OrderCheck, ParsedFilename
 
+from .issue_groups import attach_issue_groups
+
 
 def parsed_filename_to_dto(value: ParsedFilename | None) -> dict[str, Any] | None:
     if value is None:
@@ -48,6 +50,10 @@ def file_check_to_dto(
         "channels": value.channels,
         "tiff_page_count": value.tiff_page_count,
         "tiff_layer_count": value.tiff_layer_count,
+        "tiff_flattened": value.tiff_flattened,
+        "tiff_visible_layer_count": value.tiff_visible_layer_count,
+        "tiff_hidden_layer_count": value.tiff_hidden_layer_count,
+        "tiff_flatten_strategy": value.tiff_flatten_strategy,
         "page_count": value.page_count,
         "pdf_colorspaces": list(value.pdf_colorspaces),
         "pdf_min_dpi": value.pdf_min_dpi,
@@ -55,6 +61,7 @@ def file_check_to_dto(
         "size_mb": value.size_mb,
         "errors": list(value.errors),
         "warnings": list(value.warnings),
+        "processing_actions": [dict(action) for action in value.processing_actions],
         "needs_resample": value.needs_resample,
         "resample_target_mm": (
             list(value.resample_target_mm) if value.resample_target_mm else None
@@ -99,6 +106,7 @@ def order_check_to_dto(
     pitstop: dict[str, object] | None = None,
     current_pdf_revision: int | None = None,
     current_pdf_sha256: str | None = None,
+    ink_coverage: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     pending = sum(
         item.resample_decision == "ask_confirmation" for item in value.files
@@ -142,4 +150,6 @@ def order_check_to_dto(
         result["current_pdf_sha256"] = current_pdf_sha256
     if pitstop is not None:
         result["pitstop"] = pitstop
-    return result
+    if ink_coverage is not None:
+        result["ink_coverage"] = ink_coverage
+    return attach_issue_groups(result)

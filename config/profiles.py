@@ -23,6 +23,13 @@ class PrePressProfile:
     metadata_tolerance_mm: float = 0.1
     auto_crop_mm: float = 0.5
     confirm_crop_mm: float = 2.0
+    # Пороги красочности (callas inkcoverage): минимум и максимум
+    # ``total_sum_percent`` страницы — суммы СРЕДНИХ покрытий красок по рамке,
+    # не TAC. Ниже минимума — «Недолив», выше максимума — «Перелив».
+    # Пороги задаются производственным профилем или настройками;
+    # демонстрационные 20/250 не являются производственными нормативами.
+    ink_min_percent: float | None = None
+    ink_max_percent: float | None = None
     allowed_color_modes: tuple[tuple[int, int], ...] = (
         (1, 0),
         (1, 1),

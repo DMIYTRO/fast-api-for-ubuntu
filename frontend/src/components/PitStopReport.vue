@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref } from "vue";
+import { groupPitStopIssues, issueObjectLabel } from "./issueGroups.js";
 
 const props = defineProps({
   pitstop: { type: Object, required: true },
@@ -8,20 +9,15 @@ const props = defineProps({
 const expanded = ref(false);
 const counts = computed(() => props.pitstop.counts || {});
 const issues = computed(() => props.pitstop.issues || []);
-const groupedIssues = computed(() => {
-  const groups = new Map();
-  issues.value.forEach((issue) => {
-    const message = issueText(issue);
-    const severity = typeof issue === "object" && issue ? issue.severity || "info" : "info";
-    const key = `${severity}\u0000${message}`;
-    const page = issuePage(issue);
-    if (!groups.has(key)) groups.set(key, { key, message, severity, count: 0, pages: [] });
-    const group = groups.get(key);
-    group.count += 1;
-    if (page != null && !group.pages.includes(page)) group.pages.push(page);
-  });
-  return [...groups.values()];
-});
+// Одна строка на тип проблемы (severity + actionID/сообщение): "N объектов, страницы: …".
+const groupedIssues = computed(() => groupPitStopIssues(issues.value).map((group, index) => ({ ...group, key: `${group.source}-${group.severity}-${group.code}-${index}` })));
+const groupDetails = (group) => {
+  const parts = [];
+  if (group.objects != null) parts.push(`${group.objects} ${issueObjectLabel(group.objects)}`);
+  else if (group.count > 1) parts.push(`Повторений: ${group.count}`);
+  if (group.pages?.length) parts.push(`страницы: ${group.pages.join(", ")}`);
+  return parts.join(", ");
+};
 const executionStatus = computed(() => String(props.pitstop.execution_status || "").toLowerCase());
 const verdict = computed(() => String(props.pitstop.verdict || "").toLowerCase());
 const pending = computed(() => ["", "not_started", "queued", "pending", "running", "checking", "processing"].includes(executionStatus.value));
@@ -54,8 +50,6 @@ const profileLabel = computed(() => {
   const name = profile.name || profile.key || "—";
   return profile.version ? `${name} · ${profile.version}` : name;
 });
-const issueText = (issue) => typeof issue === "string" ? issue : (issue.message || issue.code || "Проблема без описания");
-const issuePage = (issue) => typeof issue === "object" && issue ? (issue.page ?? issue.locations?.[0]?.page) : null;
 </script>
 
 <template>
@@ -81,12 +75,12 @@ const issuePage = (issue) => typeof issue === "object" && issue ? (issue.page ??
     </dl>
 
     <button v-if="issues.length" type="button" class="pitstop-toggle" @click="expanded = !expanded">
-      {{ expanded ? "Скрыть проблемы" : `Показать проблемы (${issues.length})` }}
+      {{ expanded ? "Скрыть проблемы" : `Показать проблемы (${groupedIssues.length})` }}
     </button>
     <ul v-if="expanded" class="pitstop-issues">
       <li v-for="issue in groupedIssues" :key="issue.key" :class="`issue-${issue.severity}`">
-        <span>{{ issue.message }}<small v-if="issue.count > 1" class="pitstop-issue-count">Повторений: {{ issue.count }}</small></span>
-        <small v-if="issue.pages.length">Страницы {{ issue.pages.join(", ") }}</small>
+        <span>{{ issue.samples?.[0] || issue.message }}</span>
+        <small v-if="groupDetails(issue)" class="pitstop-issue-count">{{ groupDetails(issue) }}</small>
       </li>
     </ul>
 

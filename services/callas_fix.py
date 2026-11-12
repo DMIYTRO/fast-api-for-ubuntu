@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import filecmp
 import json
 import logging
 import os
@@ -27,6 +28,7 @@ from uuid import uuid4
 from config.callas_plans import CALLAS_PLANS, CallasPlan
 from core.fix_compare import FixCompareError, build_fix_comparison
 from services.callas.errors import CallasError
+from services.pdf_routing import STATUS_FOLDERS
 
 logger = logging.getLogger(__name__)
 
@@ -54,13 +56,17 @@ class CallasFixError(Exception):
 def fix_dir_for(pdf_path: Path | str) -> Path:
     """Папка результата исправления.
 
-    Для собранного PDF (лежит в ``PDF/``) — ``PDF/CallasFix/<имя>``. Для исходного
+    Для собранного PDF (лежит в ``PDF/`` или в папке статуса ``PDF/Print|Rework|Failed/``) —
+    ``PDF/CallasFix/<имя>``. Для исходного
     PDF заказа, который лежит вне ``PDF/``, результат кладётся в ``PDF/CallasFix/<имя>.source``,
     чтобы не писать в папку с исходниками и не пересекаться с собранным PDF.
     """
     pdf = Path(pdf_path)
     if pdf.parent.name == "PDF":
         return pdf.parent / "CallasFix" / pdf.stem
+    if pdf.parent.name in STATUS_FOLDERS and pdf.parent.parent.name == "PDF":
+        # Собранный PDF, разложенный по папке статуса (Print/Rework/Failed).
+        return pdf.parent.parent / "CallasFix" / pdf.stem
     return pdf.parent / "PDF" / "CallasFix" / f"{pdf.stem}.source"
 
 
@@ -258,6 +264,8 @@ class CallasFixService:
             raise CallasFixError("Решение должно быть «accept» или «reject».", code="invalid_decision")
         pdf = Path(pdf_path)
         state = self.read_state(pdf)
+        if state and state.get("status") == STATUS_ACCEPTED and decision == "accept":
+            return state
         if not state or state.get("status") != STATUS_READY:
             raise CallasFixError(
                 "Принять или отклонить можно только готовый результат исправления.",
@@ -283,6 +291,14 @@ class CallasFixService:
         _write_state(fix_dir_for(pdf), state)
         return state
 
+    def restore_decision(self, pdf_path: Path | str, previous: dict[str, Any]) -> None:
+        """Undo a decision whose PDF publication/recheck did not commit.
+
+        Called under the workflow correction guard. Keep the completed fix
+        and its comparison available so the operator can retry or reject it.
+        """
+        _write_state(fix_dir_for(pdf_path), previous)
+
     def accepted_pdf(self, pdf_path: Path | str) -> Path | None:
         """Принятый результат исправления или ``None``."""
         state = read_state_file(pdf_path)
@@ -302,6 +318,10 @@ class CallasFixService:
         if accepted is None:
             return None
         pdf = Path(pdf_path)
+        if pdf.is_file() and filecmp.cmp(accepted, pdf, shallow=False):
+            # Принятое исправление уже стало производственным PDF (после
+            # повторной проверки и раскладки по папке статуса): публиковать нечего.
+            return None
         state = read_state_file(pdf) or {}
         source = state.get("source") or {}
         current = _signature(pdf) if pdf.is_file() else None
@@ -314,10 +334,13 @@ class CallasFixService:
                 status_code=409,
                 code="callas_fix_stale",
             )
-        target = pdf.with_name(f"{pdf.stem}_callas-fixed.pdf")
+        target = fix_dir_for(pdf) / f"{pdf.stem}_callas-fixed.pdf"
         temporary = target.with_name(f".{target.stem}.{uuid4().hex[:8]}.tmp.pdf")
-        shutil.copyfile(accepted, temporary)
-        os.replace(temporary, target)
+        try:
+            shutil.copyfile(accepted, temporary)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
         return target
 
     def file_path(self, pdf_path: Path | str, kind: str) -> Path | None:

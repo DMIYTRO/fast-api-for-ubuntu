@@ -111,6 +111,74 @@ def test_valid_order_runs_pdf_then_pitstop_then_production_preview(tmp_path: Pat
     assert "Final" in str(artifacts.preview_paths[0])
 
 
+def test_ink_coverage_runs_after_pitstop_and_is_attached_to_artifacts(tmp_path: Path):
+    item = FileCheck(path=tmp_path / "order-face.jpg")
+    order = OrderCheck("100", "42", files=[item])
+    processor = PitStopPipelineProcessor()
+    seen = []
+
+    def checker(pdf_path, direction):
+        processor.calls.append("ink_coverage")
+        seen.append((pdf_path, direction))
+        return {
+            "status": "completed",
+            "flags": [{"kind": "overflow", "page": 2, "percent": 262.0, "threshold": 250.0}],
+        }
+
+    adapter = BatchProcessorAdapter(
+        ProcessingOptions(input_path=str(tmp_path), direction="offset"),
+        processor_factory=lambda *_args, **_kwargs: processor,
+        pitstop_service=FakePitStopService(processor),
+        ink_coverage_checker=checker,
+    )
+
+    artifacts = adapter.process_order(order)
+
+    assert processor.calls == ["pdf", "pitstop", "production_preview", "ink_coverage"]
+    assert seen == [(tmp_path / "PDF" / "order.pdf", "offset")]
+    assert artifacts.ink_coverage["flags"][0]["kind"] == "overflow"
+    assert artifacts.errors == []
+    assert artifacts.pitstop["verdict"] == "warning"
+
+
+def test_ink_coverage_failure_never_fails_the_order(tmp_path: Path):
+    item = FileCheck(path=tmp_path / "order-face.jpg")
+    order = OrderCheck("100", "42", files=[item])
+    processor = PitStopPipelineProcessor()
+
+    def checker(_pdf_path, _direction):
+        raise RuntimeError("callas недоступен")
+
+    adapter = BatchProcessorAdapter(
+        ProcessingOptions(input_path=str(tmp_path), direction="digital"),
+        processor_factory=lambda *_args, **_kwargs: processor,
+        ink_coverage_checker=checker,
+    )
+
+    artifacts = adapter.process_order(order)
+
+    assert artifacts.pdf_path is not None
+    assert artifacts.errors == []
+    assert artifacts.ink_coverage["status"] == "failed"
+    assert "callas недоступен" in artifacts.ink_coverage["error"]
+    assert artifacts.ink_coverage["flags"] == []
+
+
+def test_without_checker_ink_coverage_is_absent(tmp_path: Path):
+    item = FileCheck(path=tmp_path / "order-face.jpg")
+    order = OrderCheck("100", "42", files=[item])
+    processor = PitStopPipelineProcessor()
+    adapter = BatchProcessorAdapter(
+        ProcessingOptions(input_path=str(tmp_path), direction="digital"),
+        processor_factory=lambda *_args, **_kwargs: processor,
+    )
+
+    artifacts = adapter.process_order(order)
+
+    assert artifacts.ink_coverage is None
+    assert "ink_coverage" not in processor.calls
+
+
 class IncrementalProcessor:
     """Разбирает имена заранее, затем отдаёт заказы по одному."""
 
@@ -248,3 +316,67 @@ def test_without_fetcher_orders_pass_through_without_background_work(tmp_path: P
     assert [order.order_id for order in orders] == ["100", "101"]
     assert adapter._order_info_future is None
     assert processor.seen_postpress == {"100": None, "101": None}
+
+
+def test_first_stage_findings_still_reach_pitstop_and_rework(tmp_path):
+    import pymupdf
+    source = tmp_path / "job_(90x50)_4-0_(1-987)_input.pdf"
+    with pymupdf.open() as document:
+        page = document.new_page(width=100, height=100)  # Wrong physical size.
+        page.insert_text((10, 30), "diagnostic")
+        document.save(source)
+    class Checker:
+        calls = []
+        def check_pdf(self, path, *, profile_id):
+            self.calls.append(path)
+            return PitStopCheckResult(
+                status=PitStopExecutionStatus.COMPLETED, profile_id=profile_id,
+                input_pdf=path, input_sha256="a" * 64, checked_at=datetime.now(UTC),
+                report=PitStopReport(counts=PitStopCounts(errors=1), pages=1),
+            )
+    checker = Checker()
+    adapter = BatchProcessorAdapter(
+        ProcessingOptions(str(tmp_path), "digital", generate_previews=False, copy_failures=False),
+        pitstop_service=checker,
+    )
+    order = adapter.scan_and_inspect()[0]
+    assert not order.passed
+    findings = list(order.files[0].errors)
+    result = adapter.process_order(order)
+    assert checker.calls
+    assert result.pitstop["counts"]["errors"] == 1
+    assert order.files[0].errors == findings
+    assert result.pdf_path.parent.name == "Rework"
+    assert not list((tmp_path / "PDF" / "Print").glob("*.pdf"))
+    from services.coordinator import _completed_order_status
+    assert _completed_order_status(order, result) == "warning"
+
+
+def test_corrupt_first_stage_pdf_explains_why_pitstop_skipped(tmp_path):
+    source = tmp_path / "job_(90x50)_4-0_(1-988)_input.pdf"
+    source.write_bytes(b"not a PDF")
+    adapter = BatchProcessorAdapter(
+        ProcessingOptions(str(tmp_path), "digital", generate_previews=False, copy_failures=False),
+    )
+    order = adapter.scan_and_inspect()[0]
+    result = adapter.process_order(order)
+    assert result.pdf_path is None
+    assert "не удалось прочитать" in result.pitstop_skipped_reason
+    assert result.pitstop is None
+
+
+def test_readable_raster_with_local_findings_builds_diagnostic_with_real_tools(tmp_path):
+    import subprocess
+    source = tmp_path / "job_(90x50)_4-0_(1-989)_face.tif"
+    subprocess.run(["magick", "-size", "100x100", "xc:cyan", "-colorspace", "CMYK", "-units", "PixelsPerInch", "-density", "72", str(source)], check=True)
+    before = source.read_bytes()
+    adapter = BatchProcessorAdapter(
+        ProcessingOptions(str(tmp_path), "digital", generate_previews=False, copy_failures=False),
+    )
+    order = adapter.scan_and_inspect()[0]
+    assert not order.passed
+    result = adapter.process_order(order)
+    assert result.pdf_path is not None, result.pitstop_skipped_reason
+    assert result.pdf_path.parent.name == "Rework"
+    assert source.read_bytes() == before
+    assert "не настроена" in result.pitstop_skipped_reason

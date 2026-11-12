@@ -125,7 +125,7 @@ def _sample(input_dir: Path, *, full: bool, previews: bool, magick: str) -> dict
         "processing_per_order": summarize(order_durations) if order_durations else None,
         "processing_errors": errors,
         "orders_with_processing_errors": errors,
-        "pdf_count": len(list(pdf_dir.glob("*.pdf"))) if pdf_dir.exists() else 0,
+        "pdf_count": sum(len(list((pdf_dir / folder).glob("*.pdf"))) for folder in ("Print", "Rework", "Failed")) if pdf_dir.exists() else 0,
         "preview_count": len(list((input_dir / "Previews").rglob("*_preview.png"))),
         "processed_orders_per_second": len(orders) / processing_seconds if processing_seconds else 0,
         "preview_generation": previews,

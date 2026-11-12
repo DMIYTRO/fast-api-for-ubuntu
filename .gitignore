@@ -37,3 +37,6 @@ frontend/.vite/
 /tools/callas_pdfToolboxCLI_x64_Linux_*/
 /.callas-cache/
 /output/callas_roundtrip_test/
+
+# Claude agent worktrees (local checkouts, not submodules)
+.claude/worktrees/

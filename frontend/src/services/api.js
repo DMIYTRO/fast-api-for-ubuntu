@@ -34,6 +34,7 @@ export const api = {
   run: (id, params = {}) => request(`/api/checks/${encodeURIComponent(id)}?${new URLSearchParams(params)}`),
   orders: (id, params = {}) => request(`/api/checks/${encodeURIComponent(id)}/orders?${new URLSearchParams(params)}`),
   order: (runId, orderId) => request(`/api/checks/${encodeURIComponent(runId)}/orders/${encodeURIComponent(orderId)}`),
+  orderActions: (runId, orderId) => request(`/api/checks/${encodeURIComponent(runId)}/orders/${encodeURIComponent(orderId)}/actions`),
   start: (body) => request("/api/checks", { method: "POST", body: JSON.stringify(body) }),
   cancel: (id) => request(`/api/checks/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
   correction: (runId, orderId, body) => request(`/api/checks/${encodeURIComponent(runId)}/orders/${encodeURIComponent(orderId)}/correction`, { method: "POST", body: JSON.stringify(body) }),

@@ -16,6 +16,7 @@ os.environ.setdefault(
 import control_panel
 from server.settings import Settings
 from services.batch_adapter import OrderArtifacts
+from dataclasses import replace
 from services.callas_fix import CallasFixService
 from tests.test_callas_fix_service import FakeClient, make_pdf
 from tests.test_control_panel import OneOrderAdapter
@@ -23,6 +24,7 @@ from tests.test_control_panel import OneOrderAdapter
 
 class RealPdfAdapter(OneOrderAdapter):
     def process_order(self, _order):
+        self.order.files[0].parsed = replace(self.order.files[0].parsed, width_mm=99, height_mm=210)
         pdf = self.input_dir / "PDF" / "sample.pdf"
         preview = self.input_dir / "Previews" / "sample-face.png"
         pdf.parent.mkdir()
@@ -140,8 +142,16 @@ class EnabledTests(CallasFixApiTests):
         decision = self.client.post(self.url(run_id, "/decision"), json={"decision": "accept"})
         self.assertEqual(decision.status_code, 200)
         self.assertEqual(decision.json()["comparison"]["status"], "accepted")
-        self.assertEqual(source.read_bytes(), original_bytes)
+        updated = self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]
+        self.assertEqual(updated["status"], "passed")
+        self.assertFalse(source.exists())
+        self.assertNotEqual(Path(updated["pdf_path"]).read_bytes(), original_bytes)
+        self.assertTrue(updated["preview_paths"])
         self.assertEqual(self.client_double.calls[0][1:3], ("Image Magic/size_correction", "fix"))
+        actions = self.client.get(f"/api/checks/{run_id}/orders/1001/actions").json()["items"]
+        self.assertEqual([item["kind"] for item in actions if "callas_fix" in item["kind"]], [
+            "order.callas_fix.started", "order.callas_fix.finished", "order.callas_fix.accepted",
+        ])
 
     def test_unknown_plan_and_bad_decision(self):
         run_id = self.make_run()
@@ -186,13 +196,108 @@ class EnabledTests(CallasFixApiTests):
         order = self.wait_for_print(run_id)
         self.assertEqual(order["status"], "accepted_for_print", order)
 
-        printed = self.root / "PDF" / "Print" / "sample_callas-fixed.pdf"
+        # Исправленный PDF занимает имя производственного и лежит только в Print.
+        printed = self.root / "PDF" / "Print" / "sample.pdf"
         self.assertTrue(printed.is_file())
         with fitz.open(printed) as document:
             self.assertAlmostEqual(document[0].rect.width / (72 / 25.4), 103, places=0)
             self.assertAlmostEqual(document[0].rect.height / (72 / 25.4), 214, places=0)
-        self.assertFalse((self.root / "PDF" / "Print" / "sample.pdf").exists())
+        self.assertFalse((self.root / "PDF" / "sample.pdf").exists())
+        self.assertEqual(list(self.root.glob("PDF/**/*_callas-fixed.pdf")), [])
+        self.assertEqual(order["pdf_path"], str(printed))
         self.assertEqual(order["current_pdf_revision"], 1)
+
+    def test_accept_rechecks_dimensions_and_repeated_correction_changes_folder(self):
+        run_id = self.make_run()
+        make_pdf(self.client_double.fixed_source, 80, 80)
+        self.client.post(self.url(run_id), json={"plan": "size_correction"})
+        accepted = self.client.post(self.url(run_id, "/decision"), json={"decision": "accept"})
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        order = self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]
+        self.assertEqual(order["status"], "warning")
+        self.assertEqual(Path(order["pdf_path"]).parent.name, "Rework")
+        self.assertTrue(order["revision_check"]["errors"])
+        self.assertEqual(order["ink_coverage"]["flags"], [])
+        self.assertFalse((self.root / "PDF" / "Print" / "sample.pdf").exists())
+        make_pdf(self.client_double.fixed_source, 103, 214)
+        self.client.post(self.url(run_id), json={"plan": "size_correction"})
+        accepted = self.client.post(self.url(run_id, "/decision"), json={"decision": "accept"})
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        order = self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]
+        self.assertEqual(order["status"], "passed")
+        self.assertEqual(order["current_pdf_revision"], 2)
+        self.assertEqual(order["revision_check"]["errors"], [])
+        self.assertEqual(Path(order["pdf_path"]).parent.name, "Print")
+        self.assertFalse((self.root / "PDF" / "Rework" / "sample.pdf").exists())
+        self.assertTrue(all("r0002" in value for value in order["preview_paths"]))
+
+    def test_failed_correction_save_keeps_previous_checked_revision(self):
+        from unittest.mock import patch
+        from services import pdf_routing
+        run_id = self.make_run()
+        original = (self.root / "PDF" / "sample.pdf").read_bytes()
+        self.client.post(self.url(run_id), json={"plan": "size_correction"})
+        real_replace = pdf_routing.os.replace
+        def fail_publish(source, destination):
+            if Path(destination).name == "sample.pdf":
+                raise OSError("disk full")
+            return real_replace(source, destination)
+        with patch("services.pdf_routing.os.replace", side_effect=fail_publish):
+            accepted = self.client.post(self.url(run_id, "/decision"), json={"decision": "accept"})
+        self.assertEqual(accepted.status_code, 409, accepted.text)
+        comparison = self.client.get(self.url(run_id)).json()["comparison"]
+        self.assertEqual(comparison["status"], "ready")
+        self.assertIsNone(comparison["decision"])
+        order = self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]
+        self.assertEqual(order["status"], "passed")
+        self.assertEqual(Path(order["pdf_path"]).read_bytes(), original)
+        self.assertFalse((self.root / "PDF" / "Print" / "sample.pdf").exists())
+        self.assertFalse(list(self.root.glob("PDF/**/.*.tmp.pdf")))
+        retry = self.client.post(self.url(run_id, "/decision"), json={"decision": "accept"})
+        self.assertEqual(retry.status_code, 200, retry.text)
+
+    def test_failed_revision_metadata_save_restores_previous_pdf(self):
+        from unittest.mock import patch
+        run_id = self.make_run()
+        original = (self.root / "PDF" / "sample.pdf").read_bytes()
+        self.client.post(self.url(run_id), json={"plan": "size_correction"})
+        repository = self.client.app.state.coordinator.repository
+        save = repository.save_run_with_event
+        def fail_revision(run, event_type, data):
+            if event_type == "order.pdf_revision":
+                raise OSError("database unavailable")
+            return save(run, event_type, data)
+        with patch.object(repository, "save_run_with_event", side_effect=fail_revision):
+            accepted = self.client.post(self.url(run_id, "/decision"), json={"decision": "accept"})
+        self.assertEqual(accepted.status_code, 409, accepted.text)
+        comparison = self.client.get(self.url(run_id)).json()["comparison"]
+        self.assertEqual(comparison["status"], "ready")
+        self.assertIsNone(comparison["decision"])
+        order = self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]
+        self.assertEqual(order["status"], "passed")
+        self.assertEqual(Path(order["pdf_path"]).read_bytes(), original)
+        self.assertFalse((self.root / "PDF" / "Print" / "sample.pdf").exists())
+
+    def test_candidate_publication_failure_restores_ready_comparison(self):
+        from unittest.mock import patch
+        run_id = self.make_run()
+        self.client.post(self.url(run_id), json={"plan": "size_correction"})
+        from services import callas_fix
+        real_replace = callas_fix.os.replace
+        def fail_candidate(source, destination):
+            if Path(destination).name == "sample_callas-fixed.pdf":
+                raise OSError("disk full")
+            return real_replace(source, destination)
+        with patch("services.callas_fix.os.replace", side_effect=fail_candidate):
+            accepted = self.client.post(self.url(run_id, "/decision"), json={"decision": "accept"})
+        self.assertEqual(accepted.status_code, 409, accepted.text)
+        comparison = self.client.get(self.url(run_id)).json()["comparison"]
+        self.assertEqual(comparison["status"], "ready")
+        self.assertIsNone(comparison["decision"])
+        self.assertFalse(list(self.root.glob("PDF/**/.*.tmp.pdf")))
+        retry = self.client.post(self.url(run_id, "/decision"), json={"decision": "accept"})
+        self.assertEqual(retry.status_code, 200, retry.text)
+        self.assertEqual(retry.json()["comparison"]["status"], "accepted")
 
     def test_rejected_fix_keeps_the_original_pdf_for_print(self):
         run_id = self.make_run()
@@ -208,7 +313,7 @@ class EnabledTests(CallasFixApiTests):
         run_id = self.make_run()
         self.client.post(self.url(run_id), json={"plan": "size_correction"})
         self.client.post(self.url(run_id, "/decision"), json={"decision": "accept"})
-        make_pdf(self.root / "PDF" / "sample.pdf", 99, 210)  # исходный PDF пересобран
+        make_pdf(self.root / "PDF" / "Print" / "sample.pdf", 99, 210)  # текущий PDF изменён
         self.client.post("/api/orders/prepare-print", json={"run_id": run_id, "order_ids": ["1001"]})
         import time
 

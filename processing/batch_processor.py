@@ -8,6 +8,8 @@ from pathlib import Path
 import shutil
 import tempfile
 import uuid
+
+import pymupdf
 from typing import TYPE_CHECKING, Callable, Mapping, Optional
 
 if TYPE_CHECKING:  # services.__init__ imports this module; avoid a cycle
@@ -165,22 +167,11 @@ class BatchProcessor:
                             check.errors.append(
                                 "TIFF содержит альфа-канал; перед отправкой удалите прозрачность"
                             )
-                        if structure.has_unflattened_layers:
-                            if structure.layer_count == 1:
-                                check.warnings.append(
-                                    "TIFF содержит один несведённый слой; в PDF будет включён "
-                                    "сохранённый композит ImageMagick (tiff:ignore-layers=true)"
-                                )
-                            elif structure.layer_count is not None and structure.layer_count > 1:
-                                check.errors.append(
-                                    f"В TIFF найдено несведённых слоёв: {structure.layer_count}; "
-                                    "требуется ручное решение"
-                                )
-                            else:
-                                check.errors.append(
-                                    "TIFF содержит несведённые слои, но ImageMagick не смог "
-                                    "определить их число; требуется ручное решение"
-                                )
+                        if structure.has_unflattened_layers and not structure.layer_count:
+                            check.errors.append(
+                                "TIFF содержит несведённые слои, но ImageMagick не смог "
+                                "определить их число; требуется ручное решение"
+                            )
                         if structure.page_count > 1:
                             check.errors.append(
                                 f"TIFF содержит {structure.page_count} страниц; "
@@ -538,6 +529,70 @@ class BatchProcessor:
                 results.append((order, output_path, str(exc)))
         return results
 
+    def create_diagnostic_pdf(
+        self, order: OrderCheck, output_dir: Path
+    ) -> tuple[Path | None, str | None]:
+        """Build an "as is" PDF for an order that failed local inspection.
+
+        No resampling, no correction, no size validation: every readable
+        page is included so PitStop/Callas can still report on the artwork.
+        Returns ``(path, note)``; ``path`` is ``None`` when nothing could be
+        read, ``note`` lists skipped files (or the reason nothing was built).
+        """
+        ordered_files = self._ordered_files_for_creation(order)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"{self._output_stem(order, ordered_files)}.pdf"
+        skipped: list[str] = []
+        with tempfile.TemporaryDirectory(
+            prefix=f".{order.order_id}_diag_", dir=output_dir
+        ) as temporary_dir:
+            page_pdfs: list[str] = []
+            for page_number, item in enumerate(ordered_files, start=1):
+                try:
+                    if item.path.suffix.lower() == ".pdf":
+                        with pymupdf.open(item.path) as document:
+                            if document.page_count == 0:
+                                raise ValueError("в PDF нет страниц")
+                        if str(item.path) not in page_pdfs:
+                            page_pdfs.append(str(item.path))
+                        continue
+                    if item.dpi_x and item.dpi_y:
+                        dpi_arg: str | float = f"{item.dpi_x}x{item.dpi_y}"
+                    else:
+                        dpi_arg = item.dpi or 300.0
+                    page_path = Path(temporary_dir) / f"{page_number}.pdf"
+                    source_path = item.path
+                    flattened = None
+                    if item.has_unflattened_layers and item.tiff_layer_count:
+                        from core.tiff_flatten import flatten_visible_tiff
+                        source_path = Path(temporary_dir) / f"flat-{page_number}.tif"
+                        flattened = flatten_visible_tiff(item.path, source_path)
+                    convert_image_to_pdf(
+                        str(source_path),
+                        str(page_path),
+                        dpi=dpi_arg,
+                        compression="none",
+                        ignore_tiff_layers=item.tiff_layer_count == 1,
+                    )
+                    if flattened is not None:
+                        item.tiff_flattened = True
+                        item.tiff_visible_layer_count = flattened.visible_layer_count
+                        item.tiff_hidden_layer_count = flattened.hidden_layer_count
+                        item.tiff_flatten_strategy = flattened.strategy
+                    page_pdfs.append(str(page_path))
+                except Exception as exc:
+                    skipped.append(f"{item.path.name}: {exc}")
+            if not page_pdfs:
+                return None, "ни один файл заказа не удалось прочитать: " + "; ".join(skipped)
+            combined = Path(temporary_dir) / "combined.pdf"
+            merge_pdfs_with_pymupdf(page_pdfs, str(combined))
+            self._render_pdf_pages(combined, Path(temporary_dir) / "validation")
+            combined.replace(output_path)
+        note = (
+            "в диагностический PDF не вошли: " + "; ".join(skipped) if skipped else None
+        )
+        return output_path, note
+
     @staticmethod
     def _file_sha256(path: Path) -> str:
         digest = hashlib.sha256()
@@ -663,13 +718,20 @@ class BatchProcessor:
                 continue
 
             source_image_path = str(item.path)
+            flattened = None
+            if item.has_unflattened_layers and item.tiff_layer_count:
+                from core.tiff_flatten import flatten_visible_tiff
+
+                flat_path = temporary_dir / f"flattened_{page_number}.tif"
+                flattened = flatten_visible_tiff(item.path, flat_path)
+                source_image_path = str(flat_path)
             dpi_arg = f"{item.dpi_x}x{item.dpi_y}"
             if item.needs_resample and item.resample_target_mm:
                 resampled_path = temporary_dir / (
                     f"resampled_{page_number}_{ref.expected_side}{item.path.suffix}"
                 )
                 resample_image(
-                    str(item.path),
+                    source_image_path,
                     str(resampled_path),
                     target_width_mm=item.resample_target_mm[0],
                     target_height_mm=item.resample_target_mm[1],
@@ -690,17 +752,25 @@ class BatchProcessor:
                 strip_icc=self.strip_icc_cmyk
                 and (item.colorspace or "").upper() == "CMYK",
             )
+            if item.needs_resample and item.resample_target_mm:
+                item.processing_actions.append({
+                    "kind": "size_correction", "target_mm": list(item.resample_target_mm),
+                    "target_dpi": self.profile.target_dpi, "rotation_degrees": item.rotation_degrees,
+                })
+            if self.strip_icc_cmyk and (item.colorspace or "").upper() == "CMYK":
+                item.processing_actions.append({"kind": "strip_icc"})
+            if flattened is not None:
+                item.tiff_flattened = True
+                item.tiff_visible_layer_count = flattened.visible_layer_count
+                item.tiff_hidden_layer_count = flattened.hidden_layer_count
+                item.tiff_flatten_strategy = flattened.strategy
             converted[item.path] = str(page_path)
             page_pdfs.append(str(page_path))
         return page_pdfs
 
-    def _validate_created_pdf(
-        self,
-        pdf_path: Path,
-        page_refs: list[_LogicalPageRef],
-        validation_dir: Path,
-    ) -> None:
-        """Render the final PDF and verify readability, page count, order and page sizes."""
+    @staticmethod
+    def _render_pdf_pages(pdf_path: Path, validation_dir: Path) -> list[Path]:
+        """Ghostscript control render: proves the PDF opens; returns page PNGs."""
         gs_cmd = shutil.which("gs")
         if not gs_cmd:
             raise FileNotFoundError("Ghostscript (`gs`) не найден для проверки PDF.")
@@ -724,8 +794,16 @@ class BatchProcessor:
         if result.returncode != 0:
             details = (result.stderr or result.stdout).strip()
             raise ValueError(f"итоговый PDF повреждён или не открывается: {details}")
+        return sorted(validation_dir.glob("page-*.png"))
 
-        rendered_pages = sorted(validation_dir.glob("page-*.png"))
+    def _validate_created_pdf(
+        self,
+        pdf_path: Path,
+        page_refs: list[_LogicalPageRef],
+        validation_dir: Path,
+    ) -> None:
+        """Render the final PDF and verify readability, page count, order and page sizes."""
+        rendered_pages = self._render_pdf_pages(pdf_path, validation_dir)
         if len(rendered_pages) != len(page_refs):
             raise ValueError(
                 f"в итоговом PDF {len(rendered_pages)} страниц; ожидалось {len(page_refs)}"
