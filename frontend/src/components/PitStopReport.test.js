@@ -30,6 +30,7 @@ describe("PitStopReport issue grouping", () => {
     expect(items[0].textContent).toContain("RGB color is used");
     expect(items[0].textContent).toContain("12 объектов, страницы: 1, 2, 3");
     expect(items[1].textContent).toContain("Font not embedded");
-    expect(items[1].textContent).toContain("1 объект, страницы: 2");
+    expect(items[1].textContent).toContain("страницы: 2");
+    expect(items[1].textContent).not.toContain("1 объект");
   });
 });
