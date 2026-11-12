@@ -5,6 +5,7 @@ const props = defineProps({ runId: String, orderId: String });
 const items = ref([]);
 const error = ref("");
 const loading = ref(false);
+const statusLabel = (status) => ({ passed: "Готов", warning: "Требует доработки", error: "Ошибка", processing: "Выполняется", ready: "Готов к просмотру", failed: "Ошибка", accepted: "Принято", rejected: "Отклонено", accepted_for_print: "Передан в печать", returned_for_rework: "Возвращён на доработку" })[status] || status;
 async function load(event) {
   if (!event.target.open || loading.value) return;
   loading.value = true;
@@ -23,7 +24,7 @@ async function load(event) {
     <p v-else-if="loading">Загрузка…</p>
     <ol v-else-if="items.length">
       <li v-for="item in items" :key="item.id">
-        <time>{{ item.created_at }}</time> — {{ item.label }}<span v-if="item.status"> · {{ item.status }}</span>
+        <time>{{ item.created_at }}</time> — {{ item.label }}<span v-if="item.status"> · {{ statusLabel(item.status) }}</span>
         <span v-if="item.pdf_revision"> · PDF r{{ item.pdf_revision }}</span>
         <span v-if="item.details?.plan"> · {{ item.details.plan }}</span>
         <span v-for="file in item.details?.tiff_flattened || []" :key="file.file"> · Сведены слои TIFF: {{ file.file }}</span>

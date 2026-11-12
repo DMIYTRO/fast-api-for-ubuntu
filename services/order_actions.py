@@ -40,6 +40,10 @@ def order_actions(events: Iterable[RunEvent], order: dict[str, Any], *, legacy_u
         snapshot = data.get("order") or {}
         details = {key: data[key] for key in ("plan", "decision", "file_id", "error") if data.get(key) is not None}
         if event.type == "order.completed":
+            details["corrections"] = [
+                {"file": item.get("name"), "size_corrected": item.get("resample_confirmed", False), "rotation_degrees": item.get("rotation_degrees", 0)}
+                for item in snapshot.get("files", []) if item.get("resample_confirmed") or item.get("rotation_degrees")
+            ]
             details["tiff_flattened"] = [
                 {"file": item.get("name"), "visible_layers": item.get("tiff_visible_layer_count"), "hidden_layers": item.get("tiff_hidden_layer_count")}
                 for item in snapshot.get("files", []) if item.get("tiff_flattened")
