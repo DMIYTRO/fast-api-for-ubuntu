@@ -105,3 +105,17 @@ def test_flatten_preserves_cmyk_depth_and_icc(tmp_path):
     source_icc = subprocess.run([MAGICK, f'{source}[0]', 'icc:-'], check=True, capture_output=True).stdout
     target_icc = subprocess.run([MAGICK, str(target), 'icc:-'], check=True, capture_output=True).stdout
     assert source_icc and source_icc == target_icc
+
+
+def test_diagnostic_pdf_uses_visible_tiff_composite_despite_local_findings(tmp_path):
+    from processing.models import OrderCheck
+    source = tmp_path / "face.tif"
+    layered_tiff(source)
+    original = source.read_bytes()
+    item = FileCheck(path=source, parsed=ParsedFilename("1", "5", 4, 3, 4, 0, "face"), has_unflattened_layers=True, tiff_layer_count=2, dpi_x=300, dpi_y=300, errors=["Низкое разрешение"])
+    processor = BatchProcessor(tmp_path, tmp_path / "PDF")
+    pdf, note = processor.create_diagnostic_pdf(OrderCheck("5", "1", [item]), tmp_path / "PDF" / "Failed")
+    assert pdf.is_file() and note is None
+    assert item.tiff_flattened
+    assert item.tiff_hidden_layer_count == 1
+    assert source.read_bytes() == original

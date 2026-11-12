@@ -274,13 +274,13 @@ class RunCoordinator:
             grouped[value] = grouped.get(value, 0) + 1
         counts = {
             "all": sum(grouped.values()),
-            "passed": sum(grouped.get(value, 0) for value in ("passed", "warning", "completed")),
+            "passed": sum(grouped.get(value, 0) for value in ("passed", "completed")),
             "warning": grouped.get("warning", 0),
             "error": sum(grouped.get(value, 0) for value in ("error", "failed", "technical_error")),
             "waiting_confirmation": grouped.get("waiting_confirmation", 0),
         }
         if status == "passed":
-            orders = [order for order in orders if order.get("status") in {"passed", "warning", "completed"}]
+            orders = [order for order in orders if order.get("status") in {"passed", "completed"}]
         elif status == "error":
             orders = [order for order in orders if order.get("status") in {"error", "failed", "technical_error"}]
         elif status != "all":
@@ -401,6 +401,9 @@ class RunCoordinator:
                 order["preview_paths"] = preview_paths
             if pitstop is not None:
                 order["pitstop"] = pitstop
+            if ((current_pdf_revision is not None and current_pdf_revision != order.get("current_pdf_revision"))
+                    or (current_pdf_sha256 is not None and current_pdf_sha256 != order.get("current_pdf_sha256"))):
+                order["ink_coverage"] = {"status": "not_checked", "flags": [], "pages": [], "error": "PDF изменён: требуется повторная проверка красочности."}
             if current_pdf_revision is not None:
                 order["current_pdf_revision"] = current_pdf_revision
             if current_pdf_sha256 is not None:
@@ -473,6 +476,7 @@ class RunCoordinator:
             order["processing_errors"] = list(errors or [])
             order["status"] = status
             order["passed"] = status in {"passed", "warning"}
+            attach_issue_groups(order)
             self._update_counts(run)
             try:
                 self._save_and_emit_locked(

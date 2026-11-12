@@ -561,13 +561,24 @@ class BatchProcessor:
                     else:
                         dpi_arg = item.dpi or 300.0
                     page_path = Path(temporary_dir) / f"{page_number}.pdf"
+                    source_path = item.path
+                    flattened = None
+                    if item.has_unflattened_layers and item.tiff_layer_count:
+                        from core.tiff_flatten import flatten_visible_tiff
+                        source_path = Path(temporary_dir) / f"flat-{page_number}.tif"
+                        flattened = flatten_visible_tiff(item.path, source_path)
                     convert_image_to_pdf(
-                        str(item.path),
+                        str(source_path),
                         str(page_path),
                         dpi=dpi_arg,
                         compression="none",
                         ignore_tiff_layers=item.tiff_layer_count == 1,
                     )
+                    if flattened is not None:
+                        item.tiff_flattened = True
+                        item.tiff_visible_layer_count = flattened.visible_layer_count
+                        item.tiff_hidden_layer_count = flattened.hidden_layer_count
+                        item.tiff_flatten_strategy = flattened.strategy
                     page_pdfs.append(str(page_path))
                 except Exception as exc:
                     skipped.append(f"{item.path.name}: {exc}")

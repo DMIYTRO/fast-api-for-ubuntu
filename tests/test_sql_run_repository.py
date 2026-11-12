@@ -952,7 +952,12 @@ class SqlRunRepositoryTests(unittest.TestCase):
         self.assertEqual(len(page["items"]), 10)
         self.assertEqual(page["page"], 2)
         self.assertEqual(page["counts"]["warning"], 11)
-        self.assertEqual(page["counts"]["passed"], 23)
+        self.assertEqual(page["counts"]["passed"], 12)
+        ready = self.repository.list_orders_page(
+            "paged-run", page=1, page_size=20, status="passed", search="", active_only=True
+        )
+        self.assertEqual(ready["total"], 12)
+        self.assertTrue(all(order["status"] == "passed" for order in ready["items"]))
 
         searched = self.repository.list_orders_page(
             "paged-run", page=1, page_size=10, status="all", search="layout-17", active_only=True

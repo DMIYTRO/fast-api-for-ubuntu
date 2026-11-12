@@ -56,7 +56,7 @@ const localIssueGroups = computed(() => orderIssueGroups({ ...props.order, files
 const groupedErrors = computed(() => localIssueGroups.value.filter((group) => group.severity === "error"));
 const groupedWarnings = computed(() => localIssueGroups.value.filter((group) => group.severity === "warning"));
 const issueGroupHasDetails = (group) => group.count > 1 || (group.files || []).length > 0 || (group.pages || []).length > 0;
-const statusLabel = { detected: "Обнаружен", passed: "Прошёл", completed: "Прошёл", warning: "Предупреждение", error: "Ошибка PDF", failed: "Ошибка", technical_error: "Сбой проверки", pitstop_checking: "PitStop проверяет", waiting_confirmation: "Нужно решение", processing: "Проверяется" };
+const statusLabel = { detected: "Обнаружен", passed: "Прошёл", completed: "Прошёл", warning: "Требует доработки", error: "Ошибка PDF", failed: "Ошибка", technical_error: "Сбой проверки", pitstop_checking: "PitStop проверяет", waiting_confirmation: "Нужно решение", processing: "Проверяется" };
 const successful = computed(() => {
   if (!["passed", "completed"].includes(props.order.status)) return false;
   if (!props.order.pitstop) return true;

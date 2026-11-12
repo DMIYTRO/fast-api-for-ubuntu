@@ -310,6 +310,8 @@ class BatchProcessorAdapter:
         result.pdf_kind = "diagnostic"
         result.current_pdf_revision = 1
         result.current_pdf_sha256 = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+        if self.ink_coverage_checker is not None:
+            result.ink_coverage = self._check_ink_coverage(order, pdf_path)
         if self.pitstop_service is None:
             result.pitstop_skipped_reason = "PitStop не запускался: проверка PitStop не настроена."
             return
