@@ -44,6 +44,11 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+DEFAULT_RGB_TO_CMYK_PROFILE = (
+    "Convert colors/Convert to CMYK, keep spot colors (ISO Coated v2 (ECI))"
+)
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     database_url: str
@@ -88,6 +93,9 @@ class Settings:
     ink_min_percent: float | None = None
     ink_max_percent: float | None = None
     strip_icc_cmyk: bool = False
+    # Автоматический перевод RGB → CMYK итогового PDF процесс-планом callas.
+    callas_rgb_to_cmyk_enabled: bool = False
+    callas_rgb_to_cmyk_profile: str = DEFAULT_RGB_TO_CMYK_PROFILE
     callas_request_timeout_seconds: float = 30.0
     callas_job_timeout_seconds: float = 600.0
     callas_poll_interval_seconds: float = 1.0
@@ -250,6 +258,13 @@ class Settings:
             ink_min_percent=_env_optional_float("IMAGE_MAGIC_INK_MIN_PERCENT"),
             ink_max_percent=_env_optional_float("IMAGE_MAGIC_INK_MAX_PERCENT"),
             strip_icc_cmyk=_env_bool("IMAGE_MAGIC_STRIP_ICC_CMYK", False),
+            callas_rgb_to_cmyk_enabled=_env_bool(
+                "IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_ENABLED", False
+            ),
+            callas_rgb_to_cmyk_profile=os.environ.get(
+                "IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_PROFILE", ""
+            ).strip()
+            or DEFAULT_RGB_TO_CMYK_PROFILE,
             callas_request_timeout_seconds=max(
                 1.0,
                 float(os.environ.get("IMAGE_MAGIC_CALLAS_REQUEST_TIMEOUT_SECONDS", "30")),

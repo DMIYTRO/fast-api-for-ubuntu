@@ -35,6 +35,17 @@ def _callas_client_from_env():
     return client
 
 
+def _rgb_to_cmyk_converter(client):
+    from server.settings import Settings
+
+    settings = Settings.from_env()
+    if client is None or not settings.callas_rgb_to_cmyk_enabled:
+        return None
+    from services.callas.color_conversion import CallasRgbToCmykConverter
+
+    return CallasRgbToCmykConverter(client, settings.callas_rgb_to_cmyk_profile)
+
+
 def print_report(processor: BatchProcessor, orders) -> None:
     print("\n" + "=" * 78)
     print("ПРОВЕРКА ЗАКАЗОВ")
@@ -166,7 +177,8 @@ def main() -> None:
         args.input,
         output_dir,
         profile=get_profile(args.direction),
-        callas_client=_callas_client_from_env(),
+        callas_client=(client := _callas_client_from_env()),
+        pdf_color_converter=_rgb_to_cmyk_converter(client),
     )
     print(f"Профиль направления: {processor.profile.name} ({processor.profile.direction})")
 
