@@ -1,4 +1,4 @@
-"""Клиент удалённой службы callas (merge PDF и render страниц в PNG)."""
+"""Клиент удалённой службы callas (merge, render, process, info, split, inkcoverage)."""
 
 from services.callas.client import (
     CallasClient,
@@ -17,6 +17,7 @@ from services.callas.ink_coverage import (
     parse_ink_coverage,
 )
 from services.callas.merger import PdfMerger, make_callas_pdf_merger
+from services.callas.splitter import PdfPageExtractor, make_callas_page_extractor
 from services.callas.report import CallasFinding, parse_report_bytes, parse_report_xml
 from services.callas.errors import (
     CallasAuthError,
@@ -37,6 +38,8 @@ from services.callas.errors import (
 __all__ = [
     "PdfMerger",
     "make_callas_pdf_merger",
+    "PdfPageExtractor",
+    "make_callas_page_extractor",
     "CallasAuthError",
     "CallasCancelledError",
     "CallasClient",
