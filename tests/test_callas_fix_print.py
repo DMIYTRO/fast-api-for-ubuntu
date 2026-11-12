@@ -59,3 +59,83 @@ class PrintAfterFixTests(CallasFixApiTests):
         self.assertEqual(order["color_conversion"]["status"], "converted")
         self.assertFalse((self.root / "PDF" / "sample.pdf").exists())
         self.assertFalse((self.root / "PDF" / "Rework" / "sample.pdf").exists())
+
+    def test_yellow_order_refixed_prints_latest_revision_and_drops_stale_copy(self):
+        run_id = self.make_run()
+        make_pdf(self.client_double.fixed_source, 80, 80)
+        self.fix_and_accept(run_id)
+        order = self.order(run_id)
+        self.assertEqual(order["status"], "warning")
+        self.assertEqual(Path(order["pdf_path"]).parent.name, "Rework")
+        self.assertTrue(order["print_blockers"] == [])  # жёлтый заказ можно провести в печать
+
+        make_pdf(self.client_double.fixed_source, 103, 214)
+        self.fix_and_accept(run_id)
+        order = self.order(run_id)
+        self.assertEqual((order["status"], order["current_pdf_revision"]), ("passed", 2))
+        self.assertFalse((self.root / "PDF" / "Rework" / "sample.pdf").exists())
+
+        prepared = self.client.post("/api/orders/prepare-print", json={"run_id": run_id, "order_ids": ["1001"]})
+        self.assertEqual(prepared.json()["items"][0]["status"], "prepared", prepared.text)
+        order = self.wait_print(run_id)
+        self.assertEqual(order["status"], "accepted_for_print", order)
+        printed = self.root / "PDF" / "Print" / "sample.pdf"
+        self.assertEqual(order["pdf_path"], str(printed))
+        self.assertEqual(order["current_pdf_revision"], 2)
+        with fitz.open(printed) as document:
+            self.assertAlmostEqual(document[0].rect.height / MM, 214, places=0)
+        self.assertEqual([p.name for p in self.root.glob("PDF/*/sample.pdf")], ["sample.pdf"])
+
+    def test_missing_pdf_reports_file_blocker_and_rejects_print(self):
+        run_id = self.make_run()
+        pdf = Path(self.order(run_id)["pdf_path"])
+        pdf.unlink()
+        order = self.order(run_id)
+        self.assertEqual([b["code"] for b in order["print_blockers"]], ["pdf_missing"])
+        self.assertEqual(order["print_blockers"][0]["kind"], "file")
+        self.assertIn(pdf.name, order["print_blockers"][0]["message"])
+        prepared = self.client.post("/api/orders/prepare-print", json={"run_id": run_id, "order_ids": ["1001"]})
+        item = prepared.json()["items"][0]
+        self.assertEqual((item["status"], item["code"]), ("error", "pdf_missing"))
+        self.assertIn(pdf.name, item["message"])
+        self.assertNotEqual(self.order(run_id)["status"], "accepted_for_print")
+
+    def test_failed_fix_keeps_original_pdf_and_print_works(self):
+        from services.callas.errors import CallasValidationError
+
+        run_id = self.make_run()
+        before = Path(self.order(run_id)["pdf_path"]).read_bytes()
+        self.client_double.error = CallasValidationError("Профиль не найден.")
+        self.client.post(self.url(run_id), json={"plan": "size_correction"})
+        comparison = self.client.get(self.url(run_id)).json()["comparison"]
+        self.assertEqual(comparison["status"], "failed")
+        order = self.order(run_id)
+        self.assertEqual(order["print_blockers"], [])
+        self.assertEqual(Path(order["pdf_path"]).read_bytes(), before)
+        decision = self.client.post(self.url(run_id, "/decision"), json={"decision": "accept"})
+        self.assertEqual(decision.status_code, 409)
+        self.client.post("/api/orders/prepare-print", json={"run_id": run_id, "order_ids": ["1001"]})
+        order = self.wait_print(run_id)
+        self.assertEqual(order["status"], "accepted_for_print", order)
+        self.assertEqual((self.root / "PDF" / "Print" / "sample.pdf").read_bytes(), before)
+
+    def test_fix_waiting_for_approval_is_reported_as_blocker(self):
+        run_id = self.make_run()
+        self.client.post(self.url(run_id), json={"plan": "size_correction"})
+        order = self.order(run_id)
+        self.assertEqual([(b["kind"], b["code"]) for b in order["print_blockers"]], [("approval", "callas_fix_pending")])
+        prepared = self.client.post("/api/orders/prepare-print", json={"run_id": run_id, "order_ids": ["1001"]})
+        item = prepared.json()["items"][0]
+        self.assertEqual((item["status"], item["code"]), ("rejected", "callas_fix_pending"))
+        self.assertIn("решения оператора", item["message"])
+
+    def test_pending_size_correction_confirmation_is_reported_as_blocker(self):
+        from services.print_readiness import print_blockers
+
+        blockers = print_blockers({"status": "passed", "pending_confirmations": 1})
+        self.assertEqual([(b["kind"], b["code"]) for b in blockers], [("approval", "correction_confirmation_pending")])
+        stale = print_blockers({
+            "status": "passed", "current_pdf_revision": 2,
+            "pitstop": {"execution_status": "completed", "verdict": "passed", "checked_revision": 1},
+        })
+        self.assertEqual([(b["kind"], b["code"]) for b in stale], [("check", "pitstop_stale")])

@@ -28,6 +28,8 @@ from server.models import OrderAction, OrderResult
 from .coordinator import RunCoordinator
 from .domain import validate_operator_transition
 from .file_lifecycle import FileConflictError, FileLifecycle, FileLifecycleError
+from .callas_fix import read_state_file as read_callas_fix_state
+from .print_readiness import print_blockers
 from .pdf_routing import completed_status, pdf_root_for, route_pdf
 from .pdf_revision_validation import readable_pdf, validate_pdf_revision
 from .return_preview import custom_return_preview_path, prepare_return_preview_name
@@ -489,14 +491,37 @@ class OrderWorkflowService:
                         )
                     )
                 ):
+                    blockers = print_blockers(
+                        order,
+                        read_callas_fix_state(order["pdf_path"]) if order.get("pdf_path") else None,
+                    )
                     add_result(
                         {
                             "order_id": order_id,
                             "status": "rejected",
-                            "message": "Заказ не прошёл проверку.",
+                            "message": " ".join(item["message"] for item in blockers)
+                            or "Заказ не прошёл проверку.",
+                            "blockers": blockers,
                         }
                     )
                     continue
+                if action == "print" and order.get("pdf_path"):
+                    approval = [
+                        item
+                        for item in print_blockers(order, read_callas_fix_state(order["pdf_path"]))
+                        if item["kind"] == "approval"
+                    ]
+                    if approval:
+                        add_result(
+                            {
+                                "order_id": order_id,
+                                "status": "rejected",
+                                "code": approval[0]["code"],
+                                "message": " ".join(item["message"] for item in approval),
+                                "blockers": approval,
+                            }
+                        )
+                        continue
                 stored_query = select(OrderResult).where(
                     OrderResult.run_id == run["id"],
                     OrderResult.order_id == order_id,
@@ -725,13 +750,19 @@ class OrderWorkflowService:
                                     exc.destination
                                 ),
                             }
+                        missing = (
+                            [item for item in print_blockers(order) if item["code"] == "pdf_missing"]
+                            if action == "print" and conflict is None
+                            else []
+                        )
                         add_result(
                             {
                                 "order_id": order_id,
                                 "status": "conflict"
                                 if conflict is not None
                                 else "error",
-                                "message": str(exc),
+                                "message": missing[0]["message"] if missing else str(exc),
+                                **({"code": "pdf_missing", "blockers": missing} if missing else {}),
                                 **({"conflict": conflict} if conflict else {}),
                                 **(
                                     {"pitstop": reviewed_pitstop}
