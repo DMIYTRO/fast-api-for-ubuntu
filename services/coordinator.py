@@ -19,6 +19,7 @@ from processing.models import OrderCheck
 from .batch_adapter import BatchProcessorAdapter, OrderArtifacts, ProcessingOptions
 from .domain import OrderStatus, RunStatus, validate_operator_transition
 from .dto import order_check_to_dto
+from .issue_groups import attach_issue_groups
 from .repository import RunEvent, RunRepository
 
 
@@ -408,6 +409,7 @@ class RunCoordinator:
                     *order.get("processing_errors", []), *errors
                 ]
                 order["passed"] = False
+            attach_issue_groups(order)
             order["status"] = status
             self._save_and_emit_locked(
                 run,
@@ -792,6 +794,7 @@ class RunCoordinator:
             dto["processing_errors"] = [
                 f"Превышено время обработки заказа ({self.order_timeout_seconds:g} с); результат не принят."
             ]
+            attach_issue_groups(dto)
             run["orders"][key] = dto
             run["stage_label"] = "Завершение обработки после превышения времени"
             self._update_counts(run)
