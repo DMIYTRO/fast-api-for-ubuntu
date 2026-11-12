@@ -14,6 +14,7 @@ function mount(props = {}) {
 }
 const flush = async () => { for (let i = 0; i < 6; i += 1) { await Promise.resolve(); await nextTick(); } };
 const byText = (host, text) => [...host.querySelectorAll("button")].find((b) => b.textContent.includes(text));
+const sizeButton = (host) => host.querySelector("button.callas-size-fix");
 const plan = { key: "size", title: "Коррекция размера" };
 const proc = { comparison: { status: "processing", plan } };
 const ready = { comparison: { status: "ready", plan, original_url: "/o", result_url: "/r", overlay_url: "/v", summary: {} } };
@@ -61,9 +62,7 @@ describe("CallasFixControl for a source PDF of an order without a built PDF", ()
     const { host } = mount({ fileId: "f-1", fileLabel: "order.pdf" });
     await nextTick();
     expect(host.textContent).toContain("order.pdf");
-    byText(host, "Исправить").click();
-    await flush();
-    byText(host, "Запустить").click();
+    sizeButton(host).click();
     await flush();
     expect(start).toHaveBeenCalledWith("run-1", "agg-1", "size", "f-1");
     expect(byText(host, "Принять")).toBeUndefined();
@@ -73,8 +72,8 @@ describe("CallasFixControl for a source PDF of an order without a built PDF", ()
 });
 
 describe("CallasFixControl", () => {
-  it("loads plans on demand, starts the fix and polls until ready, then stops", async () => {
-    vi.spyOn(api, "callasPlans").mockResolvedValue({ plans: [plan] });
+  it("starts the size correction with one click on the icon button and polls until ready, then stops", async () => {
+    vi.spyOn(api, "callasPlans").mockResolvedValue({ plans: [{ key: "other", title: "Другой план" }, { key: "size_correction", title: "Коррекция размера макета" }] });
     const start = vi.spyOn(api, "startCallasFix").mockResolvedValue(proc);
     const status = vi.spyOn(api, "callasFixStatus")
       .mockResolvedValueOnce(proc)
@@ -82,12 +81,13 @@ describe("CallasFixControl", () => {
     const { host } = mount();
     await nextTick();
     expect(api.callasPlans).not.toHaveBeenCalled();
-    byText(host, "Исправить").click();
+    expect(host.querySelector("select")).toBeNull();
+    const button = sizeButton(host);
+    expect(button.getAttribute("title")).toContain("Скорректировать размер макета");
+    button.click();
     await flush();
-    expect(host.querySelector("select option").textContent).toBe("Коррекция размера");
-    byText(host, "Запустить").click();
-    await flush();
-    expect(start).toHaveBeenCalledWith("run-1", "agg-1", "size", "");
+    expect(api.callasPlans).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledWith("run-1", "agg-1", "size_correction", "");
     expect(host.querySelector(".fix-processing")).not.toBeNull();
 
     await vi.advanceTimersByTimeAsync(1600);
@@ -140,10 +140,10 @@ describe("CallasFixControl", () => {
     vi.spyOn(api, "callasPlans").mockRejectedValue(new ApiError("Not Found", 404, {}));
     const { host } = mount();
     await nextTick();
-    byText(host, "Исправить").click();
+    sizeButton(host).click();
     await flush();
     expect(host.textContent).toContain("Исправление Callas недоступно");
-    expect(byText(host, "Исправить")).toBeUndefined();
+    expect(sizeButton(host)).toBeNull();
   });
 
   it("renders nothing for an order that cannot start and has no result", async () => {
