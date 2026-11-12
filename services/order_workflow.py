@@ -31,6 +31,7 @@ from .file_lifecycle import FileConflictError, FileLifecycle, FileLifecycleError
 from .pdf_routing import completed_status, pdf_root_for, route_pdf
 from .pdf_revision_validation import readable_pdf, validate_pdf_revision
 from .return_preview import custom_return_preview_path, prepare_return_preview_name
+from .callas.renderer import dpi_for_longest_side, render_pdf_to_pngs
 from .layered_tiff_print import (
     ReviewedLayeredPdfError,
     build_reviewed_layered_print_pdf,
@@ -66,6 +67,7 @@ class OrderWorkflowService:
         preview_uploader: Callable[[list[Path]], list[str]] | None = None,
         reviewed_pdf_pitstop_service_factory: Callable[[Path, str], Any] | None = None,
         pdf_merger: Callable[[Any, Path, str], None] | None = None,
+        pdf_page_extractor: Callable[[Path, int, Path, str], None] | None = None,
         accepted_pdf_provider: Callable[[Path], Path | None] | None = None,
     ) -> None:
         self.coordinator = coordinator
@@ -77,6 +79,7 @@ class OrderWorkflowService:
         self.preview_uploader = preview_uploader
         self.reviewed_pdf_pitstop_service_factory = reviewed_pdf_pitstop_service_factory
         self.pdf_merger = pdf_merger
+        self.pdf_page_extractor = pdf_page_extractor
         self.accepted_pdf_provider = accepted_pdf_provider
         self._action_locks_guard = Lock()
         self._action_locks: dict[int, tuple[Lock, str]] = {}
@@ -143,11 +146,15 @@ class OrderWorkflowService:
             preview_dir.mkdir(parents=True, exist_ok=True)
             try:
                 with pymupdf.open(candidate) as document:
-                    for index, page in enumerate(document):
-                        preview = preview_dir / f"page-{index + 1}_preview.png"
-                        scale = min(480 / max(page.rect.width, page.rect.height, 1), 4)
-                        page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False).save(preview)
-                        previews.append(str(preview))
+                    page_count = document.page_count
+                    longest = max(
+                        (max(page.rect.width, page.rect.height) for page in document), default=1.0
+                    )
+                dpi = dpi_for_longest_side(longest, longest, 480)
+                targets = [preview_dir / f"page-{index + 1}_preview.png" for index in range(page_count)]
+                if targets:
+                    render_pdf_to_pngs(candidate, dpi, targets)
+                previews = [str(target) for target in targets]
             except Exception as exc:
                 status = "error"
                 inspection = replace(inspection, errors=(*inspection.errors, f"Превью исправленного PDF: {exc}"))
@@ -629,7 +636,10 @@ class OrderWorkflowService:
                                 if order["status"] != "passed":
                                     raise FileLifecycleError("PDF изменился и не прошёл повторную проверку.")
                             reviewed_pdf = build_reviewed_layered_print_pdf(
-                                order, input_root, pdf_merger=self.pdf_merger
+                                order,
+                                input_root,
+                                pdf_merger=self.pdf_merger,
+                                pdf_page_extractor=self.pdf_page_extractor,
                             )
                             if (
                                 reviewed_pdf is None

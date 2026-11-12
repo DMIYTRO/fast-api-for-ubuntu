@@ -1,4 +1,4 @@
-"""HTTP-клиент службы callas: merge PDF, render страниц PDF в PNG, process, inkcoverage.
+"""HTTP-клиент службы callas: merge, render, process, inkcoverage, info, split.
 
 Контракт (docs/callas/openapi.json):
   PUT /jobs/{job_id} -> 202, тело MergeSpec / RenderSpec (output, input.path и
@@ -460,6 +460,113 @@ class CallasClient:
                 )
             return parse_ink_coverage(block, job_id=job_id)
 
+    def info(
+        self,
+        pdf: Path | str,
+        *,
+        job_id: str | None = None,
+        cancel: threading.Event | None = None,
+    ) -> int:
+        """Число страниц PDF заданием ``info`` (pdfToolbox ``--quickpdfinfo``).
+
+        Вход только читается, файлов задание не создаёт. Служба возвращает число
+        страниц в поле ``pages`` (допускаются также ``page_count``/``document_pages``).
+        """
+        source = self._existing_source(pdf)
+        if job_id is None:
+            job_id = deterministic_job_id("callas-info", self._source_digest(source))
+        self._validate_job_id(job_id)
+        ctx = self._new_ctx(job_id, cancel)
+        with self._slot(ctx):
+            staged = self._stage_inputs(job_id, [source])
+            server_path, digest = staged[0]
+            spec = {"type": "info", "input": {"path": server_path, "sha256": digest}}
+            job = self._execute(ctx, spec, [source])
+            return self._page_count(ctx, job)
+
+    def split(
+        self,
+        pdf: Path | str,
+        parts: Sequence[tuple[str, Sequence[int]]],
+        *,
+        expect_pages: int | None = None,
+        job_id: str | None = None,
+        cancel: threading.Event | None = None,
+    ) -> dict[str, Path]:
+        """Делит PDF на части заданием ``split``: каждая часть — имя ``.pdf`` и список страниц (с 1).
+
+        Возвращает {имя части: проверенный по SHA-256 путь в папке задания}. Служба
+        публикует все части только после успеха; ``expect_pages`` — ожидаемое число
+        страниц исходного документа (иначе задание отклоняется службой).
+        Папку ``job_dir(job_id)`` после использования удаляет вызывающий код.
+        """
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        if not parts or len(parts) > 200:
+            raise CallasConfigError("Для деления PDF нужно от 1 до 200 частей.")
+        for name, pages in parts:
+            if (
+                not isinstance(name, str)
+                or not name
+                or name != Path(name).name
+                or "\\" in name
+                or name in {".", ".."}
+                or not name.lower().endswith(".pdf")
+            ):
+                raise CallasConfigError("Имя части PDF должно быть именем файла .pdf без пути.")
+            if name in seen:
+                raise CallasConfigError(f"Имя части {name} повторяется.")
+            seen.add(name)
+            page_list = list(pages)
+            if (
+                not page_list
+                or len(page_list) > 2000
+                or any(not isinstance(n, int) or isinstance(n, bool) or n < 1 for n in page_list)
+            ):
+                raise CallasConfigError(
+                    f"Страницы части {name} задаются непустым списком номеров от 1."
+                )
+            if expect_pages is not None and max(page_list) > expect_pages:
+                raise CallasConfigError(
+                    f"Часть {name} ссылается на страницу вне документа ({expect_pages} стр.)."
+                )
+            normalized.append({"name": name, "pages": page_list})
+        if expect_pages is not None and (
+            not isinstance(expect_pages, int) or isinstance(expect_pages, bool) or expect_pages < 1
+        ):
+            raise CallasConfigError("Ожидаемое число страниц должно быть целым числом от 1.")
+        source = self._existing_source(pdf)
+        if job_id is None:
+            job_id = deterministic_job_id(
+                "callas-split",
+                self._source_digest(source),
+                json.dumps(normalized, sort_keys=True),
+                str(expect_pages or ""),
+            )
+        self._validate_job_id(job_id)
+        ctx = self._new_ctx(job_id, cancel)
+        with self._slot(ctx):
+            staged = self._stage_inputs(job_id, [source])
+            server_path, digest = staged[0]
+            spec: dict[str, Any] = {
+                "type": "split",
+                "input": {"path": server_path, "sha256": digest},
+                "parts": normalized,
+                "out_dir": str(self._server_job_dir(job_id) / "out"),
+            }
+            if expect_pages is not None:
+                spec["expect_pages"] = expect_pages
+            job = self._execute(ctx, spec, [source])
+            files = self._verify_files(ctx, job)
+            if set(files) != seen:
+                raise CallasResultError(
+                    "Callas вернул неожиданный набор частей PDF ("
+                    + ", ".join(sorted(files))
+                    + ").",
+                    job_id=job_id,
+                )
+            return {item["name"]: files[item["name"]] for item in normalized}
+
     def delete(self, job_id: str, *, cancel: threading.Event | None = None) -> None:
         """Удаляет/отменяет задание на стороне службы; 404 не считается ошибкой."""
         self._validate_job_id(job_id)
@@ -475,6 +582,34 @@ class CallasClient:
         return self._share / ".callas" / job_id
 
     # ------------------------------------------------------------ internals
+
+    @staticmethod
+    def _existing_source(pdf: Path | str) -> Path:
+        source = Path(pdf)
+        if not source.is_file():
+            raise CallasConfigError(f"Входной файл не найден: {source.name}")
+        return source
+
+    @staticmethod
+    def _source_digest(source: Path) -> str:
+        try:
+            return _sha256_file(source)
+        except OSError as exc:
+            raise CallasConfigError(
+                f"Не удалось прочитать {source.name}: {exc.strerror or exc}"
+            ) from exc
+
+    @staticmethod
+    def _page_count(ctx: _Ctx, job: Mapping[str, Any]) -> int:
+        for key in ("pages", "page_count", "document_pages"):
+            value = job.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                if value < 1:
+                    break
+                return value
+        raise CallasProtocolError(
+            "Callas не вернул число страниц PDF в ответе задания info.", job_id=ctx.job_id
+        )
 
     def _server_job_dir(self, job_id: str) -> PurePosixPath:
         return self._server_share / ".callas" / job_id

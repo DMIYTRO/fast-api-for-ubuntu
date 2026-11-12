@@ -10,14 +10,14 @@ import tempfile
 import uuid
 
 import pymupdf
-from typing import TYPE_CHECKING, Callable, Mapping, Optional
+from typing import TYPE_CHECKING, Callable, Mapping, Optional, Sequence
 
 if TYPE_CHECKING:  # services.__init__ imports this module; avoid a cycle
     from services.callas import CallasClient
 
 from core.inspector import count_frames, inspect_file, inspect_tiff_structure
 from core.pdf_inspector import inspect_pdf
-from core.pdf_exporter import convert_image_to_pdf, merge_pdfs_with_pymupdf
+from core.pdf_exporter import convert_image_to_pdf
 from core.preview_cache import preview_extension
 from core.preview_generator import generate_preview
 from core.preview_cache import full_preview_cache_path, preview_work_dir
@@ -40,6 +40,20 @@ REJECTED_EXTENSIONS = {".psd", ".bmp", ".heic", ".heif"}
 DPI_EPSILON = 0.01
 
 
+CALLAS_RENDER_UNAVAILABLE_MESSAGE = (
+    "Рендер PDF выполняется только через callas pdfToolbox, но callas не настроен: "
+    "задайте IMAGE_MAGIC_CALLAS_URL и IMAGE_MAGIC_CALLAS_TOKEN и перезапустите сервис. "
+    "Ghostscript для PDF больше не используется."
+)
+
+
+class CallasRenderUnavailableError(RuntimeError):
+    """callas pdfToolbox не настроен, а рендер PDF без него запрещён."""
+
+    def __init__(self, message: str = CALLAS_RENDER_UNAVAILABLE_MESSAGE) -> None:
+        super().__init__(message)
+
+
 @dataclass(frozen=True)
 class _LogicalPageRef:
     """A page in the final PDF and the source page it must represent."""
@@ -56,7 +70,17 @@ def _logical_side(item: FileCheck) -> str:
     return item.parsed.side or "face"
 
 
+CALLAS_MERGE_UNAVAILABLE_MESSAGE = (
+    "Склейка PDF невозможна: callas pdfToolbox не настроен. "
+    "Задайте IMAGE_MAGIC_CALLAS_URL (и общий ресурс IMAGE_MAGIC_CALLAS_SHARE) "
+    "и перезапустите службу; локальная склейка PyMuPDF отключена."
+)
+
+
 class BatchProcessor:
+    # Тестовый шов: клиент рендера, если callas_client не передан. В production None.
+    default_render_client: "CallasClient | None" = None
+
     def __init__(
         self,
         input_dir: Path,
@@ -70,12 +94,24 @@ class BatchProcessor:
         callas_merge: bool = False,
         callas_render: bool = False,
         strip_icc_cmyk: bool = False,
+        pdf_merger: "Callable[[Sequence[Path], Path, str], None] | None" = None,
     ):
         # Только CMYK-растры: убираем тег ICCBased без пересчёта значений.
         self.strip_icc_cmyk = bool(strip_icc_cmyk)
         self.callas_client = callas_client
-        self.callas_merge = bool(callas_merge and callas_client is not None)
-        self.callas_render = bool(callas_render and callas_client is not None)
+        # Склейка PDF всегда идёт через callas pdfToolbox. Флаг ``callas_merge``
+        # оставлен только для совместимости вызовов и больше ни на что не влияет.
+        del callas_merge
+        if pdf_merger is None and callas_client is not None:
+            from services.callas.merger import make_callas_pdf_merger
+
+            pdf_merger = make_callas_pdf_merger(callas_client)
+        self.pdf_merger = pdf_merger
+        # Все рендеры PDF (контрольный и превью) идут только через callas;
+        # флаг callas_render оставлен для совместимости и ничего не выбирает.
+        del callas_render
+        self.render_client = callas_client if callas_client is not None else self.default_render_client
+        self.callas_render = self.render_client is not None
         self.input_dir = input_dir
         self.output_dir = output_dir
         self.profile = profile
@@ -585,7 +621,7 @@ class BatchProcessor:
             if not page_pdfs:
                 return None, "ни один файл заказа не удалось прочитать: " + "; ".join(skipped)
             combined = Path(temporary_dir) / "combined.pdf"
-            merge_pdfs_with_pymupdf(page_pdfs, str(combined))
+            self._merge_page_pdfs(page_pdfs, combined, order)
             self._render_pdf_pages(combined, Path(temporary_dir) / "validation")
             combined.replace(output_path)
         note = (
@@ -601,41 +637,39 @@ class BatchProcessor:
                 digest.update(chunk)
         return digest.hexdigest()
 
-    def _cleanup_callas_job(self, job_id: str) -> None:
-        assert self.callas_client is not None
+    def _cleanup_callas_job(self, job_id: str, client=None) -> None:
+        client = client if client is not None else self.callas_client
+        assert client is not None
         try:
-            self.callas_client.delete(job_id)
+            client.delete(job_id)
         except Exception:
             pass
-        shutil.rmtree(self.callas_client.job_dir(job_id), ignore_errors=True)
+        shutil.rmtree(client.job_dir(job_id), ignore_errors=True)
 
     def _merge_page_pdfs(self, page_pdfs, temporary_output: Path, order: OrderCheck) -> None:
-        """Merge via remote callas when enabled; otherwise via PyMuPDF."""
-        if not self.callas_merge:
-            merge_pdfs_with_pymupdf(page_pdfs, str(temporary_output))
-            return
-        from services.callas import deterministic_job_id
-
-        # Служба Callas не забывает завершённые задания, поэтому повтор того же
-        # job_id получил бы старый статус "done" без файлов. Идентификатор
-        # уникален на каждую операцию; повторы HTTP внутри клиента его сохраняют.
-        job_id = deterministic_job_id(
-            f"merge-{order.order_id}",
-            *(self._file_sha256(Path(item)) for item in page_pdfs),
-            uuid.uuid4().hex[:12],
-        )
-        logger.info("callas.merge.start order=%s job_id=%s inputs=%d", order.order_id, job_id, len(page_pdfs))
-        try:
-            result = self.callas_client.merge(
-                [Path(item) for item in page_pdfs], temporary_output.name, job_id=job_id
+        """Merge page PDFs via callas pdfToolbox; there is no local fallback."""
+        if self.pdf_merger is None:
+            raise RuntimeError(CALLAS_MERGE_UNAVAILABLE_MESSAGE)
+        self.pdf_merger([Path(item) for item in page_pdfs], temporary_output, order.order_id)
+        if not temporary_output.is_file() or temporary_output.stat().st_size == 0:
+            raise RuntimeError(
+                "callas pdfToolbox не вернул объединённый PDF для заказа "
+                f"{order.order_id}. Проверьте журнал службы callas и повторите проверку."
             )
-            shutil.copyfile(result, temporary_output)
-            logger.info("callas.merge.done order=%s job_id=%s", order.order_id, job_id)
-        finally:
-            self._cleanup_callas_job(job_id)
 
-    def _render_pdf_with_callas(self, pdf_path: Path, render_dpi: float, target_dir: Path) -> None:
+    def _render_pdf_with_callas(
+        self,
+        pdf_path: Path,
+        render_dpi: float,
+        target_dir: Path,
+        *,
+        expected_pages: int | None = None,
+    ) -> list[Path]:
         from services.callas import deterministic_job_id
+
+        client = self.render_client
+        if client is None:
+            raise CallasRenderUnavailableError()
 
         # Уникальный job_id на операцию: см. комментарий в _merge_page_pdfs.
         job_id = deterministic_job_id(
@@ -646,12 +680,18 @@ class BatchProcessor:
         )
         logger.info("callas.render.start pdf=%s job_id=%s dpi=%d", pdf_path.name, job_id, int(render_dpi))
         try:
-            pages = self.callas_client.render(pdf_path, int(render_dpi), job_id=job_id)
+            kwargs = {"expected_pages": expected_pages} if expected_pages is not None else {}
+            pages = client.render(pdf_path, int(render_dpi), job_id=job_id, **kwargs)
             logger.info("callas.render.done pdf=%s job_id=%s pages=%d", pdf_path.name, job_id, len(pages))
+            target_dir.mkdir(parents=True, exist_ok=True)
+            copied = []
             for number, page in enumerate(pages, start=1):
-                shutil.copyfile(page, target_dir / f"page-{number:03d}.png")
+                target = target_dir / f"page-{number:03d}.png"
+                shutil.copyfile(page, target)
+                copied.append(target)
+            return copied
         finally:
-            self._cleanup_callas_job(job_id)
+            self._cleanup_callas_job(job_id, client)
 
     @staticmethod
     def _ordered_files_for_creation(order: OrderCheck) -> list[FileCheck]:
@@ -768,33 +808,16 @@ class BatchProcessor:
             page_pdfs.append(str(page_path))
         return page_pdfs
 
-    @staticmethod
-    def _render_pdf_pages(pdf_path: Path, validation_dir: Path) -> list[Path]:
-        """Ghostscript control render: proves the PDF opens; returns page PNGs."""
-        gs_cmd = shutil.which("gs")
-        if not gs_cmd:
-            raise FileNotFoundError("Ghostscript (`gs`) не найден для проверки PDF.")
+    def _render_pdf_pages(self, pdf_path: Path, validation_dir: Path) -> list[Path]:
+        """Контрольный рендер callas: доказывает, что PDF открывается; возвращает PNG страниц."""
         if not pdf_path.is_file() or pdf_path.stat().st_size == 0:
-            raise ValueError("Ghostscript не создал итоговый PDF или файл пуст.")
-
-        validation_dir.mkdir(parents=True, exist_ok=True)
-        page_pattern = validation_dir / "page-%03d.png"
-        command = [
-            gs_cmd,
-            "-q",
-            "-dSAFER",
-            "-dBATCH",
-            "-dNOPAUSE",
-            "-sDEVICE=png16m",
-            "-r72",
-            f"-sOutputFile={page_pattern}",
-            str(pdf_path),
-        ]
-        result = run_command(command, capture_output=True, text=True)
-        if result.returncode != 0:
-            details = (result.stderr or result.stdout).strip()
-            raise ValueError(f"итоговый PDF повреждён или не открывается: {details}")
-        return sorted(validation_dir.glob("page-*.png"))
+            raise ValueError("итоговый PDF не создан или файл пуст.")
+        try:
+            return self._render_pdf_with_callas(pdf_path, 72, validation_dir)
+        except CallasRenderUnavailableError:
+            raise
+        except Exception as exc:
+            raise ValueError(f"итоговый PDF повреждён или не открывается в callas: {exc}") from exc
 
     def _validate_created_pdf(
         self,
@@ -811,11 +834,17 @@ class BatchProcessor:
 
         for page_number, (rendered_page, ref) in enumerate(zip(rendered_pages, page_refs), start=1):
             page_meta = inspect_file(str(rendered_page))
+            # Контрольный рендер callas выполняется при 72 DPI: 1 px = 1 pt.
+            width_px = getattr(page_meta, "width_px", None)
+            height_px = getattr(page_meta, "height_px", None)
             source = ref.source
             expected = (ref.expected_width_mm, ref.expected_height_mm)
             if source.needs_resample and source.resample_target_mm and source.path.suffix.lower() != ".pdf":
                 expected = source.resample_target_mm
-            actual = (page_meta.width_mm, page_meta.height_mm)
+            if width_px and height_px:
+                actual = (width_px * 25.4 / 72.0, height_px * 25.4 / 72.0)
+            else:
+                actual = (page_meta.width_mm, page_meta.height_mm)
             # A 72-DPI control render has a rounding step of about 0.35 mm.
             validation_tolerance = max(self.tolerance_mm, 0.6)
             if any(abs(a - e) > validation_tolerance for a, e in zip(actual, expected)):
@@ -907,9 +936,6 @@ class BatchProcessor:
         safe_zone_mm = self.profile.safe_zone_mm if safe_zone_mm is None else safe_zone_mm
         # Линия реза на превью исторически имеет толщину 1 мм; это не вылет.
         bleed_mm = 1.0 if bleed_mm is None else bleed_mm
-        gs_cmd = shutil.which("gs")
-        if not gs_cmd and not self.callas_render:
-            raise FileNotFoundError("Ghostscript (`gs`) не найден для рендеринга превью.")
 
         preview_dir.mkdir(parents=True, exist_ok=True)
         created_previews: list[Path] = []
@@ -918,31 +944,7 @@ class BatchProcessor:
             prefix=f".preview_{pdf_path.stem}_", dir=preview_work_dir(preview_dir / ".preview")
         ) as temp_dir:
             temp_path = Path(temp_dir)
-            if self.callas_render:
-                self._render_pdf_with_callas(pdf_path, render_dpi, temp_path)
-            else:
-                page_pattern = temp_path / "page-%03d.png"
-                command = [
-                    gs_cmd,
-                    "-q",
-                    "-dSAFER",
-                    "-dBATCH",
-                    "-dNOPAUSE",
-                    "-sDEVICE=png16m",
-                    f"-r{int(render_dpi)}",
-                    f"-sOutputFile={page_pattern}",
-                    str(pdf_path),
-                ]
-                tool_env = os.environ.copy()
-                tool_env["TMPDIR"] = str(temp_path)
-                tool_env["TEMP"] = str(temp_path)
-                tool_env["TMP"] = str(temp_path)
-                result = run_command(
-                    command, capture_output=True, text=True, env=tool_env
-                )
-                if result.returncode != 0:
-                    details = (result.stderr or result.stdout).strip()
-                    raise ValueError(f"ошибка рендеринга PDF для превью: {details}")
+            self._render_pdf_with_callas(pdf_path, render_dpi, temp_path)
 
             rendered_pages = sorted(temp_path.glob("page-*.png"))
             if not rendered_pages:

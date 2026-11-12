@@ -13,6 +13,28 @@ TROUBLES_DIR_NAME = "Troubles"
 PREVIEWS_DIR_NAME = "Previews"
 
 
+def _callas_client_from_env():
+    """Callas pdfToolbox client for PDF merging; None when IMAGE_MAGIC_CALLAS_URL is unset.
+
+    Without it PDF creation fails per order with an actionable error.
+    """
+    from server.settings import Settings
+    from services.callas import CallasClient
+
+    settings = Settings.from_env()
+    if not settings.callas_url:
+        print(
+            "Внимание: IMAGE_MAGIC_CALLAS_URL не задан — склейка PDF через callas "
+            "pdfToolbox недоступна, PDF заказов не будут созданы."
+        )
+        return None
+    from services.callas.renderer import configure_pdf_renderer, make_callas_pdf_renderer
+
+    client = CallasClient.from_settings(settings)
+    configure_pdf_renderer(make_callas_pdf_renderer(client))
+    return client
+
+
 def print_report(processor: BatchProcessor, orders) -> None:
     print("\n" + "=" * 78)
     print("ПРОВЕРКА ЗАКАЗОВ")
@@ -109,6 +131,7 @@ def generate_and_print_previews(
     print(f"\nУспешно сгенерировано превью для {success_count}/{len(pdf_paths)} PDF файлов.")
 
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Проверка заказов, создание PDF и генерация превью с рамками")
     parser.add_argument("--input", type=Path, default=INPUT_DIR, help="Папка с исходными файлами")
@@ -139,7 +162,12 @@ def main() -> None:
 
     output_dir = args.output if args.output is not None else args.input / PDF_DIR_NAME
     preview_dir = args.previews_dir if args.previews_dir is not None else args.input / PREVIEWS_DIR_NAME
-    processor = BatchProcessor(args.input, output_dir, profile=get_profile(args.direction))
+    processor = BatchProcessor(
+        args.input,
+        output_dir,
+        profile=get_profile(args.direction),
+        callas_client=_callas_client_from_env(),
+    )
     print(f"Профиль направления: {processor.profile.name} ({processor.profile.direction})")
 
     if args.previews_only:

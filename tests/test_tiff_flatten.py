@@ -10,6 +10,7 @@ import pytest
 from core.inspector import inspect_tiff_structure
 from core.tiff_flatten import flatten_visible_tiff
 from processing.batch_processor import BatchProcessor
+from tests.fake_callas import FakeCallasMerger
 from processing.models import FileCheck, ParsedFilename
 from services.dto import file_check_to_dto
 
@@ -68,7 +69,7 @@ def test_preparation_uses_flattened_copy_and_exposes_success(tmp_path):
     layered_tiff(source)
     item = FileCheck(path=source, parsed=ParsedFilename("1", "5", 4, 3, 4, 0, "face"), has_unflattened_layers=True, tiff_layer_count=2,
                      actual_width_mm=8.4667, actual_height_mm=6.7733, dpi_x=300, dpi_y=300)
-    processor = BatchProcessor(tmp_path, tmp_path / "PDF")
+    processor = BatchProcessor(tmp_path, tmp_path / "PDF", pdf_merger=FakeCallasMerger())
     refs = processor._build_page_refs([item])
     work = tmp_path / "PDF" / "temp"
     work.mkdir(parents=True)
@@ -85,7 +86,7 @@ def test_failed_flatten_does_not_report_success(tmp_path):
     source.write_bytes(b"bad")
     item = FileCheck(path=source, parsed=ParsedFilename("1", "5", 4, 3, 4, 0, "face"), has_unflattened_layers=True, tiff_layer_count=2,
                      actual_width_mm=10, actual_height_mm=10)
-    processor = BatchProcessor(tmp_path, tmp_path / "PDF")
+    processor = BatchProcessor(tmp_path, tmp_path / "PDF", pdf_merger=FakeCallasMerger())
     with pytest.raises(Exception):
         processor._prepare_page_pdfs(processor._build_page_refs([item]), tmp_path)
     assert not item.tiff_flattened
@@ -113,7 +114,7 @@ def test_diagnostic_pdf_uses_visible_tiff_composite_despite_local_findings(tmp_p
     layered_tiff(source)
     original = source.read_bytes()
     item = FileCheck(path=source, parsed=ParsedFilename("1", "5", 4, 3, 4, 0, "face"), has_unflattened_layers=True, tiff_layer_count=2, dpi_x=300, dpi_y=300, errors=["Низкое разрешение"])
-    processor = BatchProcessor(tmp_path, tmp_path / "PDF")
+    processor = BatchProcessor(tmp_path, tmp_path / "PDF", pdf_merger=FakeCallasMerger())
     pdf, note = processor.create_diagnostic_pdf(OrderCheck("5", "1", [item]), tmp_path / "PDF" / "Failed")
     assert pdf.is_file() and note is None
     assert item.tiff_flattened

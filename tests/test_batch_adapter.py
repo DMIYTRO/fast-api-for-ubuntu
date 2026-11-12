@@ -5,6 +5,12 @@ import time
 
 from processing.models import FileCheck, OrderCheck
 from services.batch_adapter import BatchProcessorAdapter, ProcessingOptions
+from processing.batch_processor import BatchProcessor
+from tests.fake_callas import FakeCallasMerger
+
+
+def _fake_callas_processor(*args, **kwargs):
+    return BatchProcessor(*args, pdf_merger=FakeCallasMerger(), **kwargs)
 from services.pitstop import (
     PitStopCheckResult,
     PitStopCounts,
@@ -338,6 +344,7 @@ def test_first_stage_findings_still_reach_pitstop_and_rework(tmp_path):
     adapter = BatchProcessorAdapter(
         ProcessingOptions(str(tmp_path), "digital", generate_previews=False, copy_failures=False),
         pitstop_service=checker,
+        processor_factory=_fake_callas_processor,
     )
     order = adapter.scan_and_inspect()[0]
     assert not order.passed
@@ -372,6 +379,7 @@ def test_readable_raster_with_local_findings_builds_diagnostic_with_real_tools(t
     before = source.read_bytes()
     adapter = BatchProcessorAdapter(
         ProcessingOptions(str(tmp_path), "digital", generate_previews=False, copy_failures=False),
+        processor_factory=_fake_callas_processor,
     )
     order = adapter.scan_and_inspect()[0]
     assert not order.passed

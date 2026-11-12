@@ -11,6 +11,7 @@ from typing import Any, Callable, Sequence
 import pymupdf
 
 from core.tool_runner import run_command
+from services.callas.renderer import dpi_for_longest_side, render_pdf_to_pngs
 
 
 class ReviewedLayeredPdfError(ValueError):
@@ -47,8 +48,8 @@ def _create_layered_export(source: Path, artifact: Path, preview: Path) -> None:
                     f"Экспорт {source.name} должен содержать одну страницу."
                 )
             page = document.load_page(0)
-            scale = min(1800 / max(page.rect.width, page.rect.height, 1), 4)
-            page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False).save(temporary_png)
+            dpi = dpi_for_longest_side(page.rect.width, page.rect.height, 1800)
+        render_pdf_to_pngs(temporary_pdf, dpi, [temporary_png])
         temporary_pdf.replace(artifact)
         temporary_png.replace(preview)
     except Exception:
@@ -76,6 +77,7 @@ def build_reviewed_layered_print_pdf(
     input_root: Path,
     *,
     pdf_merger: Callable[[Sequence[Path], Path, str], None] | None = None,
+    pdf_page_extractor: Callable[[Path, int, Path, str], None] | None = None,
 ) -> Path | None:
     """Prepare one print part per order file and assemble the checked pages.
 
@@ -182,9 +184,9 @@ def build_reviewed_layered_print_pdf(
             raise ReviewedLayeredPdfError(
                 "Для остальных файлов заказа нужен производственный PDF."
             )
-        document = pymupdf.open(source_path)
-        piece = pymupdf.open()
-        try:
+        # Чтение размеров страниц — локальная независимая проверка; сам PDF
+        # части создаёт только callas (split), без записи через PyMuPDF.
+        with pymupdf.open(source_path) as document:
             if source_page_index >= document.page_count:
                 raise ReviewedLayeredPdfError(
                     f"В исходном PDF для страницы {page_index + 1} нет страницы."
@@ -199,16 +201,33 @@ def build_reviewed_layered_print_pdf(
                     raise ReviewedLayeredPdfError(
                         f"Размер страницы {page_index + 1} просмотренного PDF отличается от производственного."
                     )
-            piece.insert_pdf(document, from_page=source_page_index, to_page=source_page_index)
-            temporary_part = part.with_name(f".{part.stem}.{uuid4().hex}.tmp.pdf")
-            try:
-                piece.save(temporary_part, garbage=3, deflate=True)
-                temporary_part.replace(part)
-            finally:
-                temporary_part.unlink(missing_ok=True)
+        if pdf_page_extractor is None:
+            if base is not None:
+                base.close()
+            raise ReviewedLayeredPdfError(
+                "Извлечение страниц PDF выполняется только через callas, а callas не настроен "
+                "(IMAGE_MAGIC_CALLAS_URL / IMAGE_MAGIC_CALLAS_TOKEN)."
+            )
+        temporary_part = part.with_name(f".{part.stem}.{uuid4().hex}.tmp.pdf")
+        try:
+            pdf_page_extractor(
+                source_path,
+                source_page_index + 1,
+                temporary_part,
+                str(order.get("order_id") or "order"),
+            )
+            with pymupdf.open(temporary_part) as extracted:
+                if extracted.page_count != 1:
+                    raise ReviewedLayeredPdfError(
+                        f"Callas вернул для страницы {page_index + 1} PDF из {extracted.page_count} стр."
+                    )
+            temporary_part.replace(part)
+        except Exception:
+            if base is not None:
+                base.close()
+            raise
         finally:
-            piece.close()
-            document.close()
+            temporary_part.unlink(missing_ok=True)
         part_paths[page_index] = part
 
     if generated_file_ids:
@@ -236,19 +255,13 @@ def build_reviewed_layered_print_pdf(
                         f"В просмотренном PDF для страницы {index + 1} нет страницы."
                     )
             ordered_parts.append(source_path)
-        if pdf_merger is not None:
-            pdf_merger(ordered_parts, temporary, str(order.get("order_id") or production_name))
-        else:
-            assembled = pymupdf.open()
-            try:
-                for source_path in ordered_parts:
-                    with pymupdf.open(source_path) as document:
-                        assembled.insert_pdf(document, from_page=0, to_page=0)
-                if assembled.page_count != page_count:
-                    raise ReviewedLayeredPdfError("Не удалось собрать все страницы итогового PDF.")
-                assembled.save(temporary, garbage=3, deflate=True)
-            finally:
-                assembled.close()
+        if pdf_merger is None:
+            raise ReviewedLayeredPdfError(
+                "Сборка печатного PDF невозможна: callas pdfToolbox не настроен. "
+                "Задайте IMAGE_MAGIC_CALLAS_URL и перезапустите службу; "
+                "локальная склейка PyMuPDF отключена."
+            )
+        pdf_merger(ordered_parts, temporary, str(order.get("order_id") or production_name))
         with pymupdf.open(temporary) as result_doc:
             if result_doc.page_count != page_count:
                 raise ReviewedLayeredPdfError("Не удалось собрать все страницы итогового PDF.")

@@ -48,7 +48,7 @@ Image Magic is a prepress checker: it validates raster artwork for print orders,
 - Never stretch width and height independently, and never use ImageMagick's forced `!` resize. Corrections scale proportionally to cover the target, then center-crop.
 - Never convert color spaces automatically. RGB/sRGB produces a warning, not a failure.
 - `50×90` and `90×50` are equally valid: name order does not define the top of the artwork, and one-sided orders are not auto-rotated.
-- PDFs are merged with PyMuPDF `insert_pdf()` (direct page copy, no rasterization). A final PDF is published only after a Ghostscript control render.
+- All PDF operations (merge, page split, info, render) go through callas pdfToolbox, with no PyMuPDF/Ghostscript fallback; raster TIFF/JPEG/PNG → PDF conversion stays on ImageMagick. A final PDF is published only after a callas pdfToolbox control render; PDF rendering never falls back to Ghostscript or PyMuPDF, and fails with an actionable error when callas is not configured.
 - Reviewed layered TIFF exports do not replace the production PDF. A print assembly built from them gets its own PitStop result, shown separately from the original PDF's report.
 
 ## Configuration
