@@ -50,6 +50,10 @@ class CallasProtocolError(CallasError):
     """Ответ службы нельзя разобрать или он не соответствует контракту."""
 
 
+class CallasReportError(CallasProtocolError):
+    """XML-отчёт pdfToolbox нельзя прочитать или он небезопасен."""
+
+
 class CallasJobFailedError(CallasError):
     """Служба завершила задание статусом failed/cancelled."""
 

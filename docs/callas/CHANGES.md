@@ -89,3 +89,15 @@ DELETE /jobs/{id}; заголовки Authorization: Bearer <token>, X-Callas-Us
 - Новые поля `render` (`simulate_overprint`, `simulate_paper`, `blackpoint_compensation`, `pagebox`) необязательны; при значениях по умолчанию запрос и ответ прежние.
 - Новые типы на стороне службы выключены по умолчанию (`CALLAS_ENABLED_TYPES`). Клиент `services/callas` и приложение их не вызывают: код не менялся, поддерживаются только `merge` и `render`.
 - `docs/callas/openapi.json` не обновлялся (снимок содержит `merge`, `render`, `process`); актуальную схему брать из `/openapi.json` службы.
+
+## [claude] 2026-11-10 — сверка сервера, новый контракт, план проверки и исправления
+- `docs/callas/openapi.json` заменён снимком с сервера: добавлены `InfoSpec`, `SplitSpec`, `VisualizerSpec`, `SeparationsSpec`, `InkCoverageSpec`. Абзац «Контракт API» в начале этого файла описывает только `merge`/`render` и устарел.
+- На сервере включены `process`, `visualizer`, `separations`, `inkcoverage`; клиенту `image-magic` разрешены все профили и типы. Живая проверка трёх типов на копии реального заказа — OK (1,0–1,5 с на задание).
+- Подробности `process` — в XML-отчёте (`hits`/`hit` с правилом, страницей, координатами); `rule_id` порядковый, устойчивый ключ — название правила.
+- Новый план: `docs/callas-preflight-plan.md`. Код приложения не менялся; в клиенте по-прежнему только `merge` и `render`.
+- Нужно от владельца: собственные `.kfpx` в каталог профилей сервера; решение о включении callas в production.
+
+## [claude] 2026-11-10 — исправление `process`/fix: имя документа для профилей, клиент и служба
+- Причина «профиль не растягивает»: pdfToolbox видел имя документа `input.pdf`/`result.pdf`, а профиль `size_correction` берёт размер из имени заказа. Служба callas теперь называет вход и выход по имени входного файла (`process.py`, тесты службы обновлены); клиент: `CallasClient.process(..., keep_name=True)` сохраняет безопасное имя заказа при отправке (кириллическая «х»/«×» в `(99х210)` приводится к «x»).
+- Приложение: каталог планов `config/callas_plans.py`, `services/callas_fix.py`, ручки `/api/checks/{run}/orders/{order}/callas/fix*`, шаг печати из принятого исправления, интерфейс «До и после». Включение: `IMAGE_MAGIC_CALLAS_PROCESS_ENABLED=1` (`sudo scripts/enable_callas.sh fix`).
+- Профиль на сервере: `Image Magic/size_correction`. Живая проверка пройдена (см. docs/callas-fix-preview-plan.md, раздел 8).

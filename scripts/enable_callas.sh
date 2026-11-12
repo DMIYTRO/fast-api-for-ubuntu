@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Включает callas для fastapi-app и перезапускает службу. Запускать: sudo scripts/enable_callas.sh [merge|full]
-#   merge (по умолчанию) — только склейка PDF; full — ещё render и JPEG-превью.
+# Включает callas для fastapi-app и перезапускает службу. Запускать: sudo scripts/enable_callas.sh [merge|fix|full]
+#   merge (по умолчанию) — только склейка PDF; fix — склейка и исправление планами Callas (кнопка «Исправить»);
+#   full — склейка, render, JPEG-превью и исправление.
 # Токен читается из /mnt/shared/callas-image-magic.token и пишется в /etc/default/fastapi-app-callas (600), не выводится.
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "Запустите через sudo." >&2; exit 1; }
@@ -14,6 +15,9 @@ umask 077
   echo "IMAGE_MAGIC_CALLAS_URL=http://192.168.88.109:8765"
   echo "IMAGE_MAGIC_CALLAS_TOKEN=$(tr -d '\r\n' < "$TOKEN_SRC")"
   echo "IMAGE_MAGIC_CALLAS_MERGE_ENABLED=1"
+  if [ "$MODE" = fix ] || [ "$MODE" = full ]; then
+    echo "IMAGE_MAGIC_CALLAS_PROCESS_ENABLED=1"
+  fi
   if [ "$MODE" = full ]; then
     echo "IMAGE_MAGIC_CALLAS_RENDER_ENABLED=1"
     echo "IMAGE_MAGIC_PREVIEW_FORMAT=jpeg"

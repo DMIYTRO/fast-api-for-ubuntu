@@ -67,6 +67,8 @@ class Settings:
     callas_user: str = "image-magic"
     callas_merge_enabled: bool = False
     callas_render_enabled: bool = False
+    callas_process_enabled: bool = False
+    strip_icc_cmyk: bool = False
     callas_request_timeout_seconds: float = 30.0
     callas_job_timeout_seconds: float = 600.0
     callas_poll_interval_seconds: float = 1.0
@@ -222,6 +224,8 @@ class Settings:
             or "image-magic",
             callas_merge_enabled=_env_bool("IMAGE_MAGIC_CALLAS_MERGE_ENABLED", False),
             callas_render_enabled=_env_bool("IMAGE_MAGIC_CALLAS_RENDER_ENABLED", False),
+            callas_process_enabled=_env_bool("IMAGE_MAGIC_CALLAS_PROCESS_ENABLED", False),
+            strip_icc_cmyk=_env_bool("IMAGE_MAGIC_STRIP_ICC_CMYK", False),
             callas_request_timeout_seconds=max(
                 1.0,
                 float(os.environ.get("IMAGE_MAGIC_CALLAS_REQUEST_TIMEOUT_SECONDS", "30")),

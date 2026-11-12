@@ -16,8 +16,13 @@ def convert_image_to_pdf(
     dpi: Union[float, str] = 300.0,
     compression: str = "none",
     ignore_tiff_layers: bool = False,
+    strip_icc: bool = False,
 ) -> str:
-    """Конвертирует одиночное изображение в PDF с сохранением DPI и размера."""
+    """Конвертирует одиночное изображение в PDF с сохранением DPI и размера.
+
+    ``strip_icc`` убирает только встроенный ICC-профиль (тег ``ICCBased``);
+    значения пикселей не пересчитываются.
+    """
     magick_cmd = shutil.which("magick")
     if not magick_cmd:
         raise FileNotFoundError("ImageMagick (`magick`) не найден.")
@@ -27,8 +32,10 @@ def convert_image_to_pdf(
     cmd = [magick_cmd]
     if ignore_tiff_layers:
         cmd += ["-define", "tiff:ignore-layers=true"]
+    cmd += [input_image_path]
+    if strip_icc:
+        cmd += ["+profile", "icc", "+profile", "icm"]
     cmd += [
-        input_image_path,
         "-units", "PixelsPerInch",
         "-density", str(dpi),
         "-compress", compression,
