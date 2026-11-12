@@ -7,6 +7,7 @@ can later compare with the order rules.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -215,3 +216,33 @@ def expected_page_count_error(actual_page_count: int, expected_page_count: int) 
             f"{expected_page_count}"
         )
     return None
+
+
+_RGB_OPERATOR = re.compile(
+    rb"(?:(?:^|\s)-?[\d.]+\s+-?[\d.]+\s+-?[\d.]+\s+(?:rg|RG)(?=\s|$)|/DeviceRGB\s+(?:cs|CS)(?=\s|$))"
+)
+
+
+def find_rgb_pages(path: str | Path) -> tuple[int, ...]:
+    """Номера страниц (с 1), где есть RGB: растры с 3 компонентами и векторные/текстовые операторы цвета DeviceRGB в потоке страницы.
+
+    Только чтение. Lab (тоже 3 компоненты) не считается RGB. Объекты внутри Form XObject не
+    просматриваются.
+    """
+    found: list[int] = []
+    with pymupdf.open(str(path)) as document:
+        for index in range(document.page_count):
+            page = document[index]
+            has_rgb = False
+            for raw in page.get_image_info():
+                name = str(raw.get("cs-name") or "").lower()
+                if raw.get("colorspace") == 3 and "lab" not in name:
+                    has_rgb = True
+                    break
+            if not has_rgb:
+                # get_cdrawings() пересчитывает CMYK в RGB-тройки, поэтому смотрим
+                # операторы цвета DeviceRGB прямо в потоке содержимого страницы.
+                has_rgb = bool(_RGB_OPERATOR.search(page.read_contents()))
+            if has_rgb:
+                found.append(index + 1)
+    return tuple(found)

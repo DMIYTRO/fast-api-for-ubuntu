@@ -72,6 +72,8 @@ class OrderCheck:
     warnings: list[str] = field(default_factory=list)
     # Enriched from Sborka orderinfo when that optional integration is enabled.
     postpress: dict[str, object] | None = None
+    # Итог автоматического перевода RGB → CMYK итогового PDF (None — не требовался).
+    color_conversion: dict[str, object] | None = None
 
     @property
     def aggregate_id(self) -> str:

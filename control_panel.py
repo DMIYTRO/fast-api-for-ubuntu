@@ -607,8 +607,21 @@ def _callas_processor_factory(settings: Settings):
     return partial(
         BatchProcessor,
         callas_client=client,
+        pdf_color_converter=_callas_rgb_to_cmyk_converter(settings, client),
         callas_render=settings.callas_render_enabled,
         strip_icc_cmyk=settings.strip_icc_cmyk,
+    )
+
+
+def _callas_rgb_to_cmyk_converter(settings: Settings, client=None):
+    """Конвертер RGB → CMYK через callas; None, если выключен или callas не настроен."""
+    if not settings.callas_url or not settings.callas_rgb_to_cmyk_enabled:
+        return None
+    from services.callas import CallasClient
+    from services.callas.color_conversion import CallasRgbToCmykConverter
+
+    return CallasRgbToCmykConverter(
+        client or CallasClient.from_settings(settings), settings.callas_rgb_to_cmyk_profile
     )
 
 
@@ -847,6 +860,7 @@ def create_app(
             processor_factory, "pitstop_service_for", None
         ),
         pdf_merger=_callas_pdf_merger(settings),
+        pdf_color_converter=_callas_rgb_to_cmyk_converter(settings),
         pdf_page_extractor=_callas_page_extractor(settings),
         accepted_pdf_provider=(
             callas_fix_service.publish_accepted if callas_fix_service else None

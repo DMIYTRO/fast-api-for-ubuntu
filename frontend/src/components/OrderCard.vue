@@ -52,6 +52,12 @@ const expectedSize = computed(() => parsed.value.width_mm && parsed.value.height
 const issueText = (value) => typeof value === "string" ? value : value?.message || value?.code;
 // Локальные проблемы группируются по типу (order.issue_groups с бэкенда, иначе на месте);
 // проблемы PitStop показывает PitStopReport.
+const rgbConverted = computed(() => props.order.color_conversion?.status === "converted");
+const rgbConvertedTitle = computed(() => {
+  const info = props.order.color_conversion || {};
+  const pages = (info.pages || []).join(", ");
+  return `Цветовая модель скорректирована: RGB переведён в CMYK${pages ? ` (стр. ${pages})` : ""}${info.profile ? `. Профиль: ${info.profile}` : ""}`;
+});
 const localIssueGroups = computed(() => orderIssueGroups({ ...props.order, files: files.value }).filter((group) => group.source !== "pitstop"));
 const groupedErrors = computed(() => localIssueGroups.value.filter((group) => group.severity === "error"));
 const groupedWarnings = computed(() => localIssueGroups.value.filter((group) => group.severity === "warning"));
@@ -200,6 +206,7 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
         </small>
       </div>
       <div class="order-meta">
+        <span v-if="rgbConverted" class="rgb-cmyk-indicator" :title="rgbConvertedTitle" :aria-label="rgbConvertedTitle" role="img"><b class="c-r">R</b><b class="c-g">G</b><b class="c-b">B</b></span>
         <span v-if="flattenedTiffs.length" class="tiff-flatten-indicator" :title="tiffFlattenTitle" :aria-label="tiffFlattenTitle">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" aria-hidden="true"><path d="m3 7 9-4 9 4-9 4-9-4Zm0 5 9 4 9-4M3 17l9 4 9-4" /></svg>
           TIFF сведён

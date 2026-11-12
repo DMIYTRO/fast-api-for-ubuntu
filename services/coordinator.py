@@ -443,6 +443,7 @@ class RunCoordinator:
         errors: list[str] | None = None,
         warnings: list[str] | None = None,
         preview_paths: list[str] | None = None,
+        color_conversion: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Replace the production PDF with a re-checked revision.
 
@@ -473,6 +474,8 @@ class RunCoordinator:
             }
             order["preview_paths"] = list(preview_paths or [])
             order["revision_check"] = {"errors": errors or [], "warnings": warnings or []}
+            if color_conversion is not None:
+                order["color_conversion"] = color_conversion
             order["processing_errors"] = list(errors or [])
             order["status"] = status
             order["passed"] = status in {"passed", "warning"}
