@@ -87,3 +87,17 @@ describe("OrderCard issue grouping", () => {
     expect(items[0].textContent).toContain("Размер не соответствует ожидаемому — 2 повтора");
   });
 });
+
+describe("OrderCard TIFF flatten result", () => {
+  it("shows flatten icon only for successful processing metadata", async () => {
+    const pending = mount({ order_id: "1", files: [{ name: "layered.tif", has_unflattened_layers: true }] });
+    const completed = mount({ order_id: "2", files: [{
+      name: "layered.tif", has_unflattened_layers: true, tiff_flattened: true,
+      tiff_visible_layer_count: 2, tiff_hidden_layer_count: 1,
+    }] });
+    await nextTick();
+    expect(pending.querySelector(".tiff-flatten-indicator")).toBeNull();
+    expect(completed.querySelector(".tiff-flatten-indicator")?.textContent).toContain("TIFF сведён");
+    expect(completed.querySelector(".tiff-flatten-indicator")?.title).toContain("видимых слоёв 2, скрытых 1");
+  });
+});

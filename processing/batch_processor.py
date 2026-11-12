@@ -165,22 +165,11 @@ class BatchProcessor:
                             check.errors.append(
                                 "TIFF содержит альфа-канал; перед отправкой удалите прозрачность"
                             )
-                        if structure.has_unflattened_layers:
-                            if structure.layer_count == 1:
-                                check.warnings.append(
-                                    "TIFF содержит один несведённый слой; в PDF будет включён "
-                                    "сохранённый композит ImageMagick (tiff:ignore-layers=true)"
-                                )
-                            elif structure.layer_count is not None and structure.layer_count > 1:
-                                check.errors.append(
-                                    f"В TIFF найдено несведённых слоёв: {structure.layer_count}; "
-                                    "требуется ручное решение"
-                                )
-                            else:
-                                check.errors.append(
-                                    "TIFF содержит несведённые слои, но ImageMagick не смог "
-                                    "определить их число; требуется ручное решение"
-                                )
+                        if structure.has_unflattened_layers and not structure.layer_count:
+                            check.errors.append(
+                                "TIFF содержит несведённые слои, но ImageMagick не смог "
+                                "определить их число; требуется ручное решение"
+                            )
                         if structure.page_count > 1:
                             check.errors.append(
                                 f"TIFF содержит {structure.page_count} страниц; "
@@ -663,13 +652,20 @@ class BatchProcessor:
                 continue
 
             source_image_path = str(item.path)
+            flattened = None
+            if item.has_unflattened_layers and item.tiff_layer_count:
+                from core.tiff_flatten import flatten_visible_tiff
+
+                flat_path = temporary_dir / f"flattened_{page_number}.tif"
+                flattened = flatten_visible_tiff(item.path, flat_path)
+                source_image_path = str(flat_path)
             dpi_arg = f"{item.dpi_x}x{item.dpi_y}"
             if item.needs_resample and item.resample_target_mm:
                 resampled_path = temporary_dir / (
                     f"resampled_{page_number}_{ref.expected_side}{item.path.suffix}"
                 )
                 resample_image(
-                    str(item.path),
+                    source_image_path,
                     str(resampled_path),
                     target_width_mm=item.resample_target_mm[0],
                     target_height_mm=item.resample_target_mm[1],
@@ -690,6 +686,11 @@ class BatchProcessor:
                 strip_icc=self.strip_icc_cmyk
                 and (item.colorspace or "").upper() == "CMYK",
             )
+            if flattened is not None:
+                item.tiff_flattened = True
+                item.tiff_visible_layer_count = flattened.visible_layer_count
+                item.tiff_hidden_layer_count = flattened.hidden_layer_count
+                item.tiff_flatten_strategy = flattened.strategy
             converted[item.path] = str(page_path)
             page_pdfs.append(str(page_path))
         return page_pdfs

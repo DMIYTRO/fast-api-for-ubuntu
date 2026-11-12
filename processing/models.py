@@ -32,6 +32,10 @@ class FileCheck:
     channels: Optional[str] = None
     tiff_page_count: Optional[int] = None
     tiff_layer_count: Optional[int] = None
+    tiff_flattened: bool = False
+    tiff_visible_layer_count: Optional[int] = None
+    tiff_hidden_layer_count: Optional[int] = None
+    tiff_flatten_strategy: Optional[str] = None
     size_mb: float = 0.0
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
