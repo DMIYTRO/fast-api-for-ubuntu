@@ -13,7 +13,7 @@ Image Magic проверяет растровые макеты перед печ
 - безопасное пропорциональное масштабирование без растягивания сторон;
 - центральная обрезка небольшого избытка макета;
 - подтверждение спорных коррекций перед созданием PDF;
-- RGB/sRGB отображается как предупреждение и сохраняется без преобразования в CMYK;
+- RGB в итоговом PDF автоматически переводится в CMYK через callas pdfToolbox (если включено), в карточке заказа появляется значок «RGB»;
 - одинаково допустимы размеры `50×90` и `90×50` — порядок сторон в имени не задаёт верх макета;
 - контроль ориентации `face/back` без автоматического поворота одностороннего заказа;
 - итоговая проверка количества, порядка и размера страниц PDF;
@@ -25,6 +25,9 @@ Image Magic проверяет растровые макеты перед печ
 - сохранение истории проверок в SQLite через SQLAlchemy.
 - report-only проверка итогового PDF через PitStop Server с отдельным
   отображением проблем PDF и технических сбоев;
+- все операции с PDF (склейка, разделение, информация, рендер, красочность, перевод RGB → CMYK) выполняет сервер callas pdfToolbox;
+- итоговые PDF раскладываются по статусам: `PDF/Print`, `PDF/Rework`, `PDF/Failed`;
+- журнал действий заказа и красочность в карточке (см. `docs/`).
 
 ## Политика размеров
 
@@ -50,9 +53,12 @@ Image Magic проверяет растровые макеты перед печ
 
 ## Цветовая модель
 
-CMYK остаётся рекомендуемой моделью для печати, но RGB/sRGB больше не блокирует заказ. В отчёте появляется предупреждение, а при создании PDF цветовая модель не преобразуется.
+CMYK — рекомендуемая модель для печати. RGB/sRGB не блокирует заказ: до конвертации в отчёте появляется предупреждение.
 
-PyMuPDF объединяет уже созданные PDF-страницы прямым копированием через `insert_pdf()` без растеризации, изменения размеров или преобразования цветов. Ghostscript сохраняется для контрольной проверки открытия и рендеринга итогового PDF.
+**Автоперевод RGB → CMYK.** При `IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_ENABLED=true` итоговый PDF с RGB (растры и векторные/текстовые операторы DeviceRGB) переводится в CMYK процесс-планом callas
+`Convert colors/Convert to CMYK, keep spot colors (ISO Coated v2 (ECI))` (меняется через `IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_PROFILE`). Результат заменяет PDF, только если число страниц не изменилось и RGB не осталось; иначе PDF остаётся в RGB с предупреждением «Не удалось перевести RGB в CMYK». После успешного перевода RGB-предупреждения и RGB-ошибка PitStop не показываются, а карточка получает значок из трёх букв R (красная), G (зелёная), B (синяя). Работает для digital и offset, при сборке PDF, ручном Callas-fix, сборке печати из layered TIFF и повторной проверке ревизии. Исходные изображения не перекрашиваются. Подробности: [docs/rgb-to-cmyk.md](docs/rgb-to-cmyk.md).
+
+Все операции с PDF выполняет callas pdfToolbox (склейка, разделение, информация, рендер). Локальных запасных вариантов через PyMuPDF/Ghostscript нет: без настроенного callas сборка PDF завершается понятной ошибкой. Итоговый PDF публикуется только после контрольного рендера через callas. Растровые TIFF/JPEG/PNG → PDF по-прежнему конвертирует ImageMagick.
 
 ## Архитектура и структура проекта
 
@@ -63,7 +69,7 @@ PyMuPDF объединяет уже созданные PDF-страницы пр
   -> Nginx :80 (production)
   -> Uvicorn/FastAPI :8000
   -> сервисы обработки
-  -> ImageMagick, Ghostscript, PitStop и Sborka
+  -> ImageMagick, callas pdfToolbox, PitStop и Sborka
   -> SQLite и рабочие папки заказов
 ```
 
@@ -83,11 +89,12 @@ v2-web-platform-FastApi/
 ├── core/
 │   ├── inspector.py                # Метаданные через ImageMagick
 │   ├── resampler.py                # Пропорциональная коррекция и обрезка
-│   ├── pdf_exporter.py             # Создание и объединение PDF
+│   ├── pdf_exporter.py             # Растр → одностраничный PDF (ImageMagick)
 │   ├── preview_generator.py        # Превью и контрольные рамки
 │   ├── report_builder.py           # HTML-отчёт
 │   └── history_db.py               # SQLite-аудит
-├── services/                       # Запуски, действия, файлы, Sborka и PitStop
+├── services/                       # Запуски, действия, файлы, Sborka, PitStop
+│   └── callas/                     # Клиент callas, склейка, рендер, красочность, RGB → CMYK
 ├── server/                         # Настройки, авторизация, БД и API-модели
 ├── alembic/                        # Миграции базы данных
 ├── tests/                          # Автоматические тесты
@@ -97,7 +104,7 @@ v2-web-platform-FastApi/
 
 ## Первичная установка
 
-Для веб-сервиса нужен Python 3.10+, Node.js 20+, ImageMagick и Ghostscript.
+Для веб-сервиса нужен Python 3.10+, Node.js 20+, ImageMagick и доступный сервер callas pdfToolbox (`IMAGE_MAGIC_CALLAS_URL`, `IMAGE_MAGIC_CALLAS_TOKEN`). Ghostscript для основного потока больше не нужен.
 После установки системных программ выполните из корня проекта:
 
 ```bash
@@ -117,8 +124,25 @@ cd ..
 ```bash
 python3 --version
 magick -version
-gs --version
 ```
+
+### Сервер callas pdfToolbox
+
+Склейка, разделение, рендер, красочность и перевод RGB → CMYK работают через HTTP-службу callas.
+Настройки (`IMAGE_MAGIC_CALLAS_*`, читаются `Settings.from_env()`):
+
+| Переменная | Назначение |
+| --- | --- |
+| `IMAGE_MAGIC_CALLAS_URL`, `IMAGE_MAGIC_CALLAS_TOKEN` | адрес службы и токен (токен не хранится в git) |
+| `IMAGE_MAGIC_CALLAS_SHARE`, `IMAGE_MAGIC_CALLAS_SERVER_SHARE` | общая папка: путь у приложения и у сервера callas (по умолчанию `/mnt/shared`) |
+| `IMAGE_MAGIC_CALLAS_USER` | значение `X-Callas-User` (по умолчанию `image-magic`) |
+| `IMAGE_MAGIC_CALLAS_PROCESS_ENABLED` | ручной Callas-fix и профили проверки |
+| `IMAGE_MAGIC_CALLAS_INKCOVERAGE_ENABLED` | красочность, см. [docs/ink-coverage.md](docs/ink-coverage.md) |
+| `IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_ENABLED` / `_PROFILE` | автоперевод RGB → CMYK (по умолчанию выключен) |
+| `IMAGE_MAGIC_CALLAS_REQUEST_TIMEOUT_SECONDS`, `_JOB_TIMEOUT_SECONDS`, `_POLL_INTERVAL_SECONDS`, `_MAX_CONCURRENT_JOBS`, `_MAX_RETRIES` | таймауты, опрос, параллельность и повторы |
+
+`IMAGE_MAGIC_CALLAS_MERGE_ENABLED` и `_RENDER_ENABLED` устарели: склейка и рендер идут через callas всегда.
+На проде переменные лежат в `/etc/default/fastapi-app-callas` (читается только root).
 
 ### Callas pdfToolbox CLI (опционально)
 
@@ -365,7 +389,7 @@ JSON и XML отчёты в общей папке):
 - запуск, heartbeat и штатная остановка приложения;
 - HTTP-метод, путь, статус, длительность и идентификатор запроса;
 - стадии фоновых проверок, заказы, PDF и превью;
-- ошибки Python, ImageMagick, Ghostscript и восстановление после перезапуска;
+- ошибки Python, ImageMagick, callas и восстановление после перезапуска;
 - свободное место на диске и пиковое потребление памяти.
 
 Тела HTTP-запросов, пароли, cookie и query-параметры не записываются. Журнал
@@ -441,7 +465,7 @@ output_report/       интерактивный report.html
 cd frontend && npm test && npm run build
 ```
 
-Тесты покрывают пороги размеров, эффективный DPI, подтверждения, сохранение пропорций, RGB-предупреждения, команды ImageMagick/Ghostscript и HTML-контроль ориентации.
+Тесты покрывают пороги размеров, эффективный DPI, подтверждения, сохранение пропорций, RGB-предупреждения, команды ImageMagick, клиент callas, перевод RGB → CMYK и HTML-контроль ориентации.
 
 ## Безопасность обработки
 
@@ -449,7 +473,7 @@ cd frontend && npm test && npm run build
 - промежуточные файлы создаются во временной папке;
 - итоговый PDF публикуется только после контрольного рендеринга;
 - при ошибке весь заказ копируется в `Troubles`;
-- цветовые пространства не конвертируются автоматически;
+- цветовые пространства исходных изображений не конвертируются; единственное исключение — перевод итогового PDF из RGB в CMYK через callas (только при включённой настройке);
 - принудительный ImageMagick resize с `!` не используется.
 
 Подробная инструкция: [INSTALL_AND_TEST.md](INSTALL_AND_TEST.md).

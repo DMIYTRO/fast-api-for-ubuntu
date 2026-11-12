@@ -33,7 +33,7 @@ Image Magic/
 
 - Python 3.10 или новее;
 - ImageMagick с доступной командой `magick`;
-- Ghostscript с доступной командой `gs`;
+- доступный сервер callas pdfToolbox (`IMAGE_MAGIC_CALLAS_URL`, `IMAGE_MAGIC_CALLAS_TOKEN`): через него идут склейка, рендер и перевод RGB → CMYK;
 - Python-библиотеки из `requirements.txt` (`FastAPI`, `SQLAlchemy`, `Alembic`,
   `argon2-cffi`, `PyMuPDF` и остальные зависимости).
 - Node.js 20+ для сборки Vue-интерфейса.
@@ -42,7 +42,7 @@ Image Magic/
 
 - Python запускает обработчик и выполняет группировку заказов.
 - ImageMagick читает TIFF/JPEG/PNG, DPI, физический размер и CMYK, определяет количество страниц TIFF и создаёт временные одностраничные PDF.
-- PyMuPDF объединяет временные PDF в итоговый документ прямым копированием страниц; Ghostscript проверяет его открытие, количество и размеры страниц.
+- callas pdfToolbox объединяет временные PDF в итоговый документ, делает контрольный рендер и при включённой настройке переводит RGB в CMYK; PyMuPDF используется только для чтения метаданных. Ghostscript для основного потока не нужен.
 - SQLAlchemy сохраняет историю проверок в базе SQLite.
 
 ## 3. Установка на macOS
@@ -58,7 +58,7 @@ https://brew.sh
 ### Установка зависимостей
 
 ```bash
-brew install python imagemagick ghostscript
+brew install python imagemagick
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 cd frontend
@@ -72,7 +72,6 @@ cd ..
 ```bash
 python3 --version
 magick -version
-gs --version
 ```
 
 ### Подготовка веб-сервиса
@@ -100,7 +99,7 @@ tail -f logs/image-magic.log
 
 ```bash
 sudo apt update
-sudo apt install python3 python3-venv imagemagick ghostscript nginx
+sudo apt install python3 python3-venv imagemagick nginx
 
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
@@ -118,7 +117,6 @@ cd ..
 ```bash
 python3 --version
 magick -version
-gs --version
 ```
 
 На некоторых версиях Linux команда ImageMagick может называться `identify`, а не `magick`. Чтение метаданных поддерживает оба варианта, но создание PDF требует команды `magick`. Для полного цикла рекомендуется ImageMagick 7.
@@ -315,10 +313,11 @@ back.tif/jpg/png
   -> ImageMagick -> временный одностраничный back.pdf
 
 face.pdf + back.pdf
-  -> PyMuPDF (insert_pdf) -> итоговый PDF
+  -> callas pdfToolbox (merge) -> итоговый PDF
+  -> [RGB найден и включён IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_ENABLED] callas fix -> CMYK PDF
 ```
 
-PyMuPDF копирует страницы без растеризации и преобразования цветов. Ghostscript остаётся независимым контрольным рендерером; временные файлы удаляются автоматически.
+Склейка не растеризует страницы. Перевод RGB → CMYK заменяет PDF только после проверки (число страниц, отсутствие RGB); при сбое PDF остаётся в RGB с предупреждением. Временные файлы удаляются автоматически.
 
 Имя итогового PDF берётся от исходного файла `face`, меняется только расширение на `.pdf`.
 
@@ -327,7 +326,7 @@ PyMuPDF копирует страницы без растеризации и п�
 До публикации итогового файла обработчик проверяет:
 
 - файл существует и не пуст;
-- Ghostscript может открыть и отрисовать документ;
+- callas pdfToolbox может отрисовать документ (контрольный рендер);
 - количество страниц совпадает с заказом;
 - первая ожидаемая страница соответствует `face`, вторая — `back`;
 - физический размер каждой страницы совпадает с проверенным исходником.
@@ -378,17 +377,17 @@ min_dpi       = 300.0
 
 ## 14. Возможные ошибки
 
-### Ghostscript не найден
+### callas не настроен или недоступен
 
 ```text
-Ghostscript (`gs`) не найден
+callas pdfToolbox не настроен / не вернул результат
 ```
 
-Проверьте:
+Проверьте `IMAGE_MAGIC_CALLAS_URL`, `IMAGE_MAGIC_CALLAS_TOKEN`, доступность общей папки `IMAGE_MAGIC_CALLAS_SHARE` и журнал `logs/image-magic.log`.
 
-```bash
-gs --version
-```
+### Не удалось перевести RGB в CMYK
+
+PDF остаётся в RGB, в карточке показано причина. Проверьте имя профиля `IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_PROFILE` в каталоге профилей сервера callas и журнал службы. Описание: `docs/rgb-to-cmyk.md`.
 
 ### ImageMagick не найден
 

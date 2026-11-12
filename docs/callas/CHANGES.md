@@ -101,3 +101,7 @@ DELETE /jobs/{id}; заголовки Authorization: Bearer <token>, X-Callas-Us
 - Причина «профиль не растягивает»: pdfToolbox видел имя документа `input.pdf`/`result.pdf`, а профиль `size_correction` берёт размер из имени заказа. Служба callas теперь называет вход и выход по имени входного файла (`process.py`, тесты службы обновлены); клиент: `CallasClient.process(..., keep_name=True)` сохраняет безопасное имя заказа при отправке (кириллическая «х»/«×» в `(99х210)` приводится к «x»).
 - Приложение: каталог планов `config/callas_plans.py`, `services/callas_fix.py`, ручки `/api/checks/{run}/orders/{order}/callas/fix*`, шаг печати из принятого исправления, интерфейс «До и после». Включение: `IMAGE_MAGIC_CALLAS_PROCESS_ENABLED=1` (`sudo scripts/enable_callas.sh fix`).
 - Профиль на сервере: `Image Magic/size_correction`. Живая проверка пройдена (см. docs/callas-fix-preview-plan.md, раздел 8).
+
+## [rgb-to-cmyk] 2026-11-12 — автоперевод RGB → CMYK и снимок входа
+Файлы: `services/callas/color_conversion.py`, `core/pdf_inspector.py::find_rgb_pages`, `server/settings.py` (`callas_rgb_to_cmyk_enabled/_profile`), `processing/batch_processor.py`, `services/order_workflow.py`, `services/coordinator.py`.
+`client.process(pdf, profile, "fix", ...)` отклоняет результат, если size/mtime входа изменились; конвертер поэтому отдаёт callas локальную копию PDF. Описание: `docs/rgb-to-cmyk.md`.
