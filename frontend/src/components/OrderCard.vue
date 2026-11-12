@@ -9,6 +9,8 @@ import PitStopReport from "./PitStopReport.vue";
 import OrderActions from "./OrderActions.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import { orderIssueGroups } from "./issueGroups.js";
+import InkCoverage from "./InkCoverage.vue";
+import { inkCoverageFlagLabel, inkCoverageMainFlag, inkCoverageTitle } from "./inkCoverage.js";
 
 const props = defineProps({ order: Object, runId: String, selected: Boolean, reasons: Array, paidDesign: { type: Boolean, default: true }, designCost: { type: String, default: "0" } });
 const emit = defineEmits(["toggle", "decide", "return-comment", "return-design", "return-cost"]);
@@ -196,7 +198,7 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
         </small>
       </div>
       <div class="order-meta">
-        <span>Красочность <b>{{ colorMode }}</b></span>
+        <span>Красочность <b>{{ colorMode }}</b><span v-if="inkCoverageMainFlag(order.ink_coverage)" class="ink-indicator" :class="inkCoverageMainFlag(order.ink_coverage).kind" :title="inkCoverageTitle(order.ink_coverage)" :aria-label="inkCoverageTitle(order.ink_coverage)"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5c-3 4-5.5 7-5.5 10a5.5 5.5 0 0 0 11 0c0-3-2.5-6-5.5-10Z" /><path v-if="inkCoverageMainFlag(order.ink_coverage).kind === 'overflow'" d="M6 13.5c1.5 1 2.5 1.5 4 1.5s2.5-.5 4-1.5" /><path v-else d="M7 12.5h6" /></svg><b>{{ inkCoverageFlagLabel(inkCoverageMainFlag(order.ink_coverage)) }}</b></span></span>
         <span>Макет <b>{{ declaredSize }}</b></span>
         <span>Файлов <b>{{ files.length }}</b></span>
       </div>
@@ -300,7 +302,7 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
     </div>
 
     <button v-if="files.length" class="details-toggle" @click="expanded = !expanded">{{ expanded ? "Скрыть исходные файлы" : "Исходные файлы и подробности" }} <span>{{ expanded ? "⌃" : "⌄" }}</span></button>
-    <div v-if="expanded" class="parameters-list"><FileParameters v-for="file in files" :key="file.id || file.filename" :file="file" /></div>
+    <div v-if="expanded" class="parameters-list"><FileParameters v-for="file in files" :key="file.id || file.filename" :file="file" /><InkCoverage v-if="order.ink_coverage" :data="order.ink_coverage" /></div>
     <OrderActions v-if="runId" :run-id="runId" :order-id="String(actionId)" />
     <footer class="order-footer">
       <span class="muted">Причины возврата настраиваются кнопкой 💬 в заголовке</span>

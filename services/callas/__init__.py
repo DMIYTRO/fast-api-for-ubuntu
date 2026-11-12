@@ -6,6 +6,16 @@ from services.callas.client import (
     ProcessResult,
     deterministic_job_id,
 )
+from services.callas.ink_coverage import (
+    InkCoverageFlag,
+    InkCoverageInk,
+    InkCoveragePage,
+    InkCoverageResult,
+    InkCoverageThresholds,
+    evaluate_ink_coverage,
+    ink_coverage_to_dto,
+    parse_ink_coverage,
+)
 from services.callas.merger import PdfMerger, make_callas_pdf_merger
 from services.callas.report import CallasFinding, parse_report_bytes, parse_report_xml
 from services.callas.errors import (
@@ -44,6 +54,14 @@ __all__ = [
     "CallasUnavailableError",
     "CallasValidationError",
     "ProcessResult",
+    "InkCoverageFlag",
+    "InkCoverageInk",
+    "InkCoveragePage",
+    "InkCoverageResult",
+    "InkCoverageThresholds",
+    "evaluate_ink_coverage",
+    "ink_coverage_to_dto",
+    "parse_ink_coverage",
     "deterministic_job_id",
     "parse_report_bytes",
     "parse_report_xml",

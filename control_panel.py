@@ -606,6 +606,20 @@ def _callas_pdf_merger(settings: Settings):
     return make_callas_pdf_merger(CallasClient.from_settings(settings))
 
 
+def _ink_coverage_checker(settings: Settings):
+    """Проверка красочности callas ``inkcoverage`` или None, если выключена/не настроена."""
+    if not (settings.callas_inkcoverage_enabled and settings.callas_url):
+        return None
+    from services.callas import CallasClient
+    from services.callas.ink_coverage import build_ink_coverage_checker
+
+    return build_ink_coverage_checker(
+        CallasClient.from_settings(settings),
+        min_percent_override=settings.ink_min_percent,
+        max_percent_override=settings.ink_max_percent,
+    )
+
+
 def _pitstop_adapter_factory(settings: Settings):
     required = {
         "IMAGE_MAGIC_PITSTOP_HOST": settings.pitstop_host,
@@ -663,6 +677,7 @@ def _pitstop_adapter_factory(settings: Settings):
         )
 
     processor_factory = _callas_processor_factory(settings)
+    ink_checker = _ink_coverage_checker(settings)
 
     def factory(options: ProcessingOptions) -> BatchProcessorAdapter:
         service = service_for(Path(options.input_path), options.direction)
@@ -670,6 +685,7 @@ def _pitstop_adapter_factory(settings: Settings):
             options,
             processor_factory=processor_factory,
             pitstop_service=service,
+            ink_coverage_checker=ink_checker,
             order_info_fetcher=(
                 build_order_info_fetcher(
                     settings.sborka_api_dir,
@@ -694,8 +710,12 @@ def _default_adapter_factory(settings: Settings):
         else None
     )
     processor_factory = _callas_processor_factory(settings)
+    ink_checker = _ink_coverage_checker(settings)
     return lambda options: BatchProcessorAdapter(
-        options, processor_factory=processor_factory, order_info_fetcher=fetcher
+        options,
+        processor_factory=processor_factory,
+        order_info_fetcher=fetcher,
+        ink_coverage_checker=ink_checker,
     )
 
 

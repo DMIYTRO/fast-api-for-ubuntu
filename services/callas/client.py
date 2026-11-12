@@ -1,4 +1,4 @@
-"""HTTP-клиент службы callas: merge PDF и render страниц PDF в PNG.
+"""HTTP-клиент службы callas: merge PDF, render страниц PDF в PNG, process, inkcoverage.
 
 Контракт (docs/callas/openapi.json):
   PUT /jobs/{job_id} -> 202, тело MergeSpec / RenderSpec (output, input.path и
@@ -35,6 +35,11 @@ from typing import Any, Callable, Mapping, Sequence
 
 import httpx
 
+from services.callas.ink_coverage import (
+    INK_COVERAGE_BOXES,
+    InkCoverageResult,
+    parse_ink_coverage,
+)
 from services.callas.errors import (
     CallasAuthError,
     CallasCancelledError,
@@ -395,6 +400,65 @@ class CallasClient:
                 output_pdf=output_pdf,
                 report_xml=report_xml,
             )
+
+    def ink_coverage(
+        self,
+        pdf: Path | str,
+        *,
+        pages: str | None = None,
+        resolution: int = 72,
+        box: str = "TrimBox",
+        job_id: str | None = None,
+        cancel: threading.Event | None = None,
+    ) -> InkCoverageResult:
+        """Красочность (среднее покрытие красками по страницам) заданием ``inkcoverage``.
+
+        Вход только читается; выходных файлов у задания нет — результат берётся из
+        блока ``ink_coverage`` ответа службы. ``percent`` в отчёте — среднее покрытие
+        по рамке ``box``, не TAC (см. ``services.callas.ink_coverage``).
+        """
+        if not isinstance(resolution, int) or isinstance(resolution, bool) or not 1 <= resolution <= 1200:
+            raise CallasConfigError("Разрешение расчёта красочности должно быть целым числом от 1 до 1200 ppi.")
+        box_name = next((item for item in INK_COVERAGE_BOXES if item.lower() == str(box).lower()), None)
+        if box_name is None:
+            raise CallasConfigError(
+                "Рамка расчёта красочности должна быть одной из: " + ", ".join(INK_COVERAGE_BOXES) + "."
+            )
+        if pages is not None and (not isinstance(pages, str) or not re.fullmatch(r"[0-9,\- ]+", pages)):
+            raise CallasConfigError("Диапазон страниц красочности задаётся строкой вида «1-3,5».")
+        source = Path(pdf)
+        if not source.is_file():
+            raise CallasConfigError(f"Входной файл не найден: {source.name}")
+        if job_id is None:
+            try:
+                digest = _sha256_file(source)
+            except OSError as exc:
+                raise CallasConfigError(
+                    f"Не удалось прочитать {source.name}: {exc.strerror or exc}"
+                ) from exc
+            job_id = deterministic_job_id(
+                "callas-ink", digest, pages or "", str(resolution), box_name
+            )
+        self._validate_job_id(job_id)
+        ctx = self._new_ctx(job_id, cancel)
+        with self._slot(ctx):
+            staged = self._stage_inputs(job_id, [source])
+            server_path, digest = staged[0]
+            spec: dict[str, Any] = {
+                "type": "inkcoverage",
+                "input": {"path": server_path, "sha256": digest},
+                "resolution": resolution,
+                "box": box_name,
+            }
+            if pages is not None:
+                spec["pages"] = pages
+            job = self._execute(ctx, spec, [source])
+            block = job.get("ink_coverage")
+            if not isinstance(block, dict):
+                raise CallasProtocolError(
+                    "Callas не вернул блок ink_coverage в ответе задания.", job_id=job_id
+                )
+            return parse_ink_coverage(block, job_id=job_id)
 
     def delete(self, job_id: str, *, cancel: threading.Event | None = None) -> None:
         """Удаляет/отменяет задание на стороне службы; 404 не считается ошибкой."""

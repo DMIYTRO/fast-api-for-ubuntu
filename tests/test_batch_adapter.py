@@ -111,6 +111,74 @@ def test_valid_order_runs_pdf_then_pitstop_then_production_preview(tmp_path: Pat
     assert "Final" in str(artifacts.preview_paths[0])
 
 
+def test_ink_coverage_runs_after_pitstop_and_is_attached_to_artifacts(tmp_path: Path):
+    item = FileCheck(path=tmp_path / "order-face.jpg")
+    order = OrderCheck("100", "42", files=[item])
+    processor = PitStopPipelineProcessor()
+    seen = []
+
+    def checker(pdf_path, direction):
+        processor.calls.append("ink_coverage")
+        seen.append((pdf_path, direction))
+        return {
+            "status": "completed",
+            "flags": [{"kind": "overflow", "page": 2, "percent": 262.0, "threshold": 250.0}],
+        }
+
+    adapter = BatchProcessorAdapter(
+        ProcessingOptions(input_path=str(tmp_path), direction="offset"),
+        processor_factory=lambda *_args, **_kwargs: processor,
+        pitstop_service=FakePitStopService(processor),
+        ink_coverage_checker=checker,
+    )
+
+    artifacts = adapter.process_order(order)
+
+    assert processor.calls == ["pdf", "pitstop", "production_preview", "ink_coverage"]
+    assert seen == [(tmp_path / "PDF" / "order.pdf", "offset")]
+    assert artifacts.ink_coverage["flags"][0]["kind"] == "overflow"
+    assert artifacts.errors == []
+    assert artifacts.pitstop["verdict"] == "warning"
+
+
+def test_ink_coverage_failure_never_fails_the_order(tmp_path: Path):
+    item = FileCheck(path=tmp_path / "order-face.jpg")
+    order = OrderCheck("100", "42", files=[item])
+    processor = PitStopPipelineProcessor()
+
+    def checker(_pdf_path, _direction):
+        raise RuntimeError("callas недоступен")
+
+    adapter = BatchProcessorAdapter(
+        ProcessingOptions(input_path=str(tmp_path), direction="digital"),
+        processor_factory=lambda *_args, **_kwargs: processor,
+        ink_coverage_checker=checker,
+    )
+
+    artifacts = adapter.process_order(order)
+
+    assert artifacts.pdf_path is not None
+    assert artifacts.errors == []
+    assert artifacts.ink_coverage["status"] == "failed"
+    assert "callas недоступен" in artifacts.ink_coverage["error"]
+    assert artifacts.ink_coverage["flags"] == []
+
+
+def test_without_checker_ink_coverage_is_absent(tmp_path: Path):
+    item = FileCheck(path=tmp_path / "order-face.jpg")
+    order = OrderCheck("100", "42", files=[item])
+    processor = PitStopPipelineProcessor()
+    adapter = BatchProcessorAdapter(
+        ProcessingOptions(input_path=str(tmp_path), direction="digital"),
+        processor_factory=lambda *_args, **_kwargs: processor,
+    )
+
+    artifacts = adapter.process_order(order)
+
+    assert artifacts.ink_coverage is None
+    assert "ink_coverage" not in processor.calls
+
+
 class IncrementalProcessor:
     """Разбирает имена заранее, затем отдаёт заказы по одному."""
 

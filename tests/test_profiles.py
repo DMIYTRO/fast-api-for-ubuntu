@@ -57,6 +57,12 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(profile.target_dpi, 300.0)
         self.assertIn((4, 4), profile.allowed_color_modes)
 
+    def test_profiles_carry_ink_coverage_thresholds(self):
+        for direction in ("digital", "offset"):
+            profile = get_profile(direction)
+            self.assertIsNone(profile.ink_min_percent)
+            self.assertIsNone(profile.ink_max_percent)
+
     def test_unknown_direction_has_clear_error(self):
         with self.assertRaisesRegex(ValueError, "доступно: digital, offset"):
             get_profile("unknown")

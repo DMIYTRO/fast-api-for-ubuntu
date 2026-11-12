@@ -53,6 +53,9 @@ class OrderArtifacts:
     preview_paths: list[Path] | None = None
     errors: list[str] | None = None
     pitstop: dict[str, object] | None = None
+    # DTO ``ink_coverage`` (services.callas.ink_coverage.to_dto) или None,
+    # если проверка красочности не подключена.
+    ink_coverage: dict[str, object] | None = None
     current_pdf_revision: int | None = None
     current_pdf_sha256: str | None = None
 
@@ -72,6 +75,7 @@ class BatchProcessorAdapter:
         pitstop_service: PitStopService | None = None,
         order_info_fetcher: Callable[[Sequence[str]], list[dict[str, Any]]] | None = None,
         order_info_timeout_seconds: float = 30.0,
+        ink_coverage_checker: Callable[[Path, str], dict[str, Any]] | None = None,
     ) -> None:
         self.options = options
         self.input_dir = Path(options.input_path)
@@ -79,6 +83,9 @@ class BatchProcessorAdapter:
         self.preview_dir = self.input_dir / "Previews"
         self.troubles_dir = self.input_dir / "Troubles"
         self.pitstop_service = pitstop_service
+        # (pdf_path, direction) -> DTO ``ink_coverage``; подключается снаружи
+        # (control_panel) только при включённом callas inkcoverage.
+        self.ink_coverage_checker = ink_coverage_checker
         self.order_info_fetcher = order_info_fetcher
         self.order_info_timeout_seconds = order_info_timeout_seconds
         self._order_info_future: Future[list[dict[str, Any]]] | None = None
@@ -355,6 +362,11 @@ class BatchProcessorAdapter:
                 # Without PitStop there is no production PDF revision to
                 # render, so source previews are the single compact variant.
                 create_source_previews()
+
+            # Красочность считается по тому же итоговому PDF после PitStop.
+            # Сбой проверки никогда не роняет заказ: статус "failed" с текстом.
+            if self.ink_coverage_checker is not None:
+                result.ink_coverage = self._check_ink_coverage(order, pdf_path)
         except Exception as exc:
             # ImageMagick/Ghostscript/programming failures terminate this order,
             # never the worker or the web process.
@@ -372,6 +384,18 @@ class BatchProcessorAdapter:
                 )
         return result
 
+    def _check_ink_coverage(self, order: OrderCheck, pdf_path: Path) -> dict[str, Any]:
+        try:
+            dto = self.ink_coverage_checker(pdf_path, self.options.direction)
+        except Exception as exc:  # noqa: BLE001 - сбой проверки не должен ронять заказ
+            logger.warning(
+                "order.ink_coverage_failed order_id=%s error=%s", order.order_id, exc
+            )
+            return _ink_coverage_failed_dto(f"{type(exc).__name__}: {exc}")
+        if not isinstance(dto, dict):
+            return _ink_coverage_failed_dto("Проверка красочности вернула неожиданный результат.")
+        return dto
+
     @staticmethod
     def _production_page_names(order: OrderCheck) -> list[str]:
         if len(order.files) == 1 and order.files[0].page_count == 2:
@@ -382,6 +406,12 @@ class BatchProcessorAdapter:
             key=lambda item: 0 if item.parsed and item.parsed.side == "face" else 1,
         )
         return [item.path.stem for item in ordered]
+
+
+def _ink_coverage_failed_dto(error: str) -> dict[str, Any]:
+    from services.callas.ink_coverage import InkCoverageResult, to_dto
+
+    return to_dto(InkCoverageResult.failed(error))
 
 
 def _pitstop_result_to_dto(

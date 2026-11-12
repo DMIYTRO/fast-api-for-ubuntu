@@ -101,6 +101,7 @@ def order_check_to_dto(
     pitstop: dict[str, object] | None = None,
     current_pdf_revision: int | None = None,
     current_pdf_sha256: str | None = None,
+    ink_coverage: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     pending = sum(
         item.resample_decision == "ask_confirmation" for item in value.files
@@ -144,4 +145,6 @@ def order_check_to_dto(
         result["current_pdf_sha256"] = current_pdf_sha256
     if pitstop is not None:
         result["pitstop"] = pitstop
+    if ink_coverage is not None:
+        result["ink_coverage"] = ink_coverage
     return attach_issue_groups(result)

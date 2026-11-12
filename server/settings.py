@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import os
+import math
 from pathlib import Path
 
 
@@ -21,6 +22,19 @@ def _default_sborka_api_dir() -> Path:
     if (shared_dir / "sborka_touser.py").is_file():
         return shared_dir
     return PROJECT_DIR / "sborka_api"
+
+
+def _env_optional_float(name: str) -> float | None:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return None
+    try:
+        parsed = float(value.strip().replace(",", "."))
+        if not math.isfinite(parsed) or parsed < 0:
+            raise ValueError("invalid percentage")
+        return parsed
+    except ValueError as exc:
+        raise ValueError(f"{name} должен быть числом (процент), получено: {value!r}") from exc
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -68,6 +82,10 @@ class Settings:
     callas_merge_enabled: bool = False
     callas_render_enabled: bool = False
     callas_process_enabled: bool = False
+    callas_inkcoverage_enabled: bool = False
+    # Переопределение порогов красочности профиля (None — из профиля направления).
+    ink_min_percent: float | None = None
+    ink_max_percent: float | None = None
     strip_icc_cmyk: bool = False
     callas_request_timeout_seconds: float = 30.0
     callas_job_timeout_seconds: float = 600.0
@@ -225,6 +243,11 @@ class Settings:
             callas_merge_enabled=_env_bool("IMAGE_MAGIC_CALLAS_MERGE_ENABLED", False),
             callas_render_enabled=_env_bool("IMAGE_MAGIC_CALLAS_RENDER_ENABLED", False),
             callas_process_enabled=_env_bool("IMAGE_MAGIC_CALLAS_PROCESS_ENABLED", False),
+            callas_inkcoverage_enabled=_env_bool(
+                "IMAGE_MAGIC_CALLAS_INKCOVERAGE_ENABLED", False
+            ),
+            ink_min_percent=_env_optional_float("IMAGE_MAGIC_INK_MIN_PERCENT"),
+            ink_max_percent=_env_optional_float("IMAGE_MAGIC_INK_MAX_PERCENT"),
             strip_icc_cmyk=_env_bool("IMAGE_MAGIC_STRIP_ICC_CMYK", False),
             callas_request_timeout_seconds=max(
                 1.0,

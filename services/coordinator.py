@@ -839,6 +839,7 @@ class RunCoordinator:
                 pitstop=pitstop,
                 current_pdf_revision=artifacts.current_pdf_revision,
                 current_pdf_sha256=artifacts.current_pdf_sha256,
+                ink_coverage=artifacts.ink_coverage,
             )
             run["orders"][context.key_for(order)] = dto
             self._update_counts(run)
