@@ -109,6 +109,24 @@ def generate_and_print_previews(
     print(f"\nУспешно сгенерировано превью для {success_count}/{len(pdf_paths)} PDF файлов.")
 
 
+def _callas_kwargs() -> dict:
+    """callas-клиент для рендера PDF (контроль и превью) из IMAGE_MAGIC_CALLAS_*."""
+    from server.settings import Settings
+    from services.callas import CallasClient
+
+    settings = Settings.from_env()
+    if not settings.callas_url:
+        return {}
+    from services.callas.renderer import configure_pdf_renderer, make_callas_pdf_renderer
+
+    client = CallasClient.from_settings(settings)
+    configure_pdf_renderer(make_callas_pdf_renderer(client))
+    return {
+        "callas_client": client,
+        "callas_merge": settings.callas_merge_enabled,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Проверка заказов, создание PDF и генерация превью с рамками")
     parser.add_argument("--input", type=Path, default=INPUT_DIR, help="Папка с исходными файлами")
@@ -139,7 +157,9 @@ def main() -> None:
 
     output_dir = args.output if args.output is not None else args.input / PDF_DIR_NAME
     preview_dir = args.previews_dir if args.previews_dir is not None else args.input / PREVIEWS_DIR_NAME
-    processor = BatchProcessor(args.input, output_dir, profile=get_profile(args.direction))
+    processor = BatchProcessor(
+        args.input, output_dir, profile=get_profile(args.direction), **_callas_kwargs()
+    )
     print(f"Профиль направления: {processor.profile.name} ({processor.profile.direction})")
 
     if args.previews_only:

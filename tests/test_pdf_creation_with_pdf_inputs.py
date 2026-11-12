@@ -160,7 +160,7 @@ def test_complete_duplex_pdf_uses_face_and_back_preview_names(tmp_path: Path) ->
     ]
 
 
-def test_ghostscript_uses_external_temporary_directory(tmp_path: Path, monkeypatch) -> None:
+def test_preview_render_uses_external_temporary_directory(tmp_path: Path, monkeypatch) -> None:
     share = tmp_path / "share"
     preview_dir = share / "Previews"
     pdf = share / "PDF" / "source.pdf"
@@ -171,23 +171,18 @@ def test_ghostscript_uses_external_temporary_directory(tmp_path: Path, monkeypat
     monkeypatch.setenv("IMAGE_MAGIC_INPUT_DIR", str(share))
     monkeypatch.setenv("IMAGE_MAGIC_PREVIEW_CACHE_DIR", str(cache_dir))
     monkeypatch.setattr("core.preview_cache._is_external_mount", lambda _path: True)
+    seen: list[Path] = []
 
-    def render(command, **kwargs):
-        assert kwargs["env"]["TMPDIR"].startswith(str(cache_dir / ".work"))
-        assert kwargs["env"]["TEMP"] == kwargs["env"]["TMPDIR"]
-        assert kwargs["env"]["TMP"] == kwargs["env"]["TMPDIR"]
-        output_pattern = next(value.split("=", 1)[1] for value in command if value.startswith("-sOutputFile="))
-        Path(output_pattern.replace("%03d", "001")).write_bytes(b"page")
-        return SimpleNamespace(returncode=0, stderr="", stdout="")
+    def render(self, pdf_path, render_dpi, target_dir, **_kwargs):
+        seen.append(Path(target_dir))
+        (Path(target_dir) / "page-001.png").write_bytes(b"page")
+        return [Path(target_dir) / "page-001.png"]
 
-    with patch("processing.batch_processor.shutil.which", return_value="/usr/bin/gs"), patch(
-        "processing.batch_processor.run_command", side_effect=render
-    ) as run_command, patch(
+    with patch.object(BatchProcessor, "_render_pdf_with_callas", render), patch(
         "processing.batch_processor.inspect_file", return_value=_image_metadata("page.png")
     ), patch("processing.batch_processor.generate_preview"):
         processor = BatchProcessor(share, share)
         processor.generate_pdf_previews(pdf, preview_dir)
 
-    scratch_path = Path(run_command.call_args.kwargs["env"]["TMPDIR"])
-    assert scratch_path.is_relative_to(cache_dir / ".work")
-    assert not scratch_path.exists()
+    assert seen and seen[0].is_relative_to(cache_dir / ".work")
+    assert not seen[0].exists()

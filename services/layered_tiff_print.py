@@ -11,6 +11,7 @@ from typing import Any, Callable, Sequence
 import pymupdf
 
 from core.tool_runner import run_command
+from services.callas.renderer import dpi_for_longest_side, render_pdf_to_pngs
 
 
 class ReviewedLayeredPdfError(ValueError):
@@ -47,8 +48,8 @@ def _create_layered_export(source: Path, artifact: Path, preview: Path) -> None:
                     f"Экспорт {source.name} должен содержать одну страницу."
                 )
             page = document.load_page(0)
-            scale = min(1800 / max(page.rect.width, page.rect.height, 1), 4)
-            page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False).save(temporary_png)
+            dpi = dpi_for_longest_side(page.rect.width, page.rect.height, 1800)
+        render_pdf_to_pngs(temporary_pdf, dpi, [temporary_png])
         temporary_pdf.replace(artifact)
         temporary_png.replace(preview)
     except Exception:

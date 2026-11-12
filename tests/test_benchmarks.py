@@ -40,7 +40,10 @@ def test_startup_benchmark_reports_fresh_process_and_lifespan_metrics():
 
 
 @pytest.mark.skipif(not shutil.which("magick"), reason="ImageMagick is required for file benchmark")
-@pytest.mark.skipif(not shutil.which("gs"), reason="Ghostscript is required for full PDF benchmark")
+@pytest.mark.skipif(
+    not os.environ.get("IMAGE_MAGIC_CALLAS_URL"),
+    reason="полный бенчмарк PDF рендерит через callas (отдельный процесс, без фейка)",
+)
 def test_processing_benchmark_fixture_passes_and_creates_pdf_and_preview():
     report = _run_benchmark(
         "benchmark_processing.py", "--orders", "1", "--rounds", "1", "--full", "--previews"

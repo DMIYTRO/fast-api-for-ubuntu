@@ -40,7 +40,7 @@ class FakeCallas:
         pages = []
         for number in range(pymupdf.open(input).page_count):
             page = out / f"page-{number + 1:03d}.png"
-            pymupdf.open(input)[number].get_pixmap(dpi=36).save(page)
+            pymupdf.open(input)[number].get_pixmap(dpi=int(dpi)).save(page)
             pages.append(page)
         return pages
 
@@ -67,14 +67,15 @@ def test_merge_and_render_go_through_callas_when_enabled(tmp_path):
     assert pymupdf.open(pdf).page_count == 2
     previews = proc.generate_previews_for_all([pdf], inp / "Previews")
     assert previews[0][2] is None and len(previews[0][1]) == 2
-    assert fake.calls == ["merge", "render"]
-    assert len(fake.deleted) == 2
+    # merge, контрольный рендер итогового PDF, рендер превью — всё через callas.
+    assert fake.calls == ["merge", "render", "render"]
+    assert len(fake.deleted) == 3
     assert not any(fake.root.glob("*"))  # папки заданий очищены
 
 
-def test_callas_is_off_by_default():
+def test_callas_merge_is_off_by_default_but_render_always_uses_callas():
     proc = BatchProcessor(Path("."), Path("."), callas_client=object())
-    assert not proc.callas_merge and not proc.callas_render
+    assert not proc.callas_merge and proc.callas_render
 
 
 class StickyJobCallas(FakeCallas):
