@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -174,7 +176,11 @@ def test_three_page_pdf_fails(tmp_path: Path) -> None:
 
 
 def test_real_pdf_fixture_has_expected_one_and_two_page_documents() -> None:
+    # ``input_files/PDF/`` is git-ignored: this real-world corpus exists only
+    # on machines where it was copied by hand.  Skip instead of failing there.
     fixture_dir = Path(__file__).parents[1] / "input_files" / "PDF" / "Print"
+    if not fixture_dir.is_dir():
+        pytest.skip(f"локальный набор PDF отсутствует: {fixture_dir}")
     processor = BatchProcessor(fixture_dir, fixture_dir / "_unused_output")
     orders = processor.inspect_orders()
 
