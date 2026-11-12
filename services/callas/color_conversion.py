@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -84,7 +85,12 @@ def convert_rgb_to_cmyk(
     }
     temporary = source.with_name(f".{source.stem}.cmyk.{uuid.uuid4().hex[:8]}.tmp.pdf")
     try:
-        summary = converter(source, temporary, label)
+        # callas отклоняет результат, если size/mtime входа изменились за время работы
+        # (на сетевых дисках mtime «плывёт» после записи). Отдаём ему локальный снимок.
+        with tempfile.TemporaryDirectory(prefix="callas-cmyk-") as snapshot_dir:
+            snapshot = Path(snapshot_dir) / source.name
+            shutil.copyfile(source, snapshot)
+            summary = converter(snapshot, temporary, label)
         if not temporary.is_file() or temporary.stat().st_size == 0:
             raise RuntimeError("callas вернул пустой PDF")
         if _page_count(temporary) != _page_count(source):
