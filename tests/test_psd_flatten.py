@@ -164,3 +164,14 @@ def test_16bit_rgb_and_embedded_icc_are_preserved(tmp_path):
     after = subprocess.run([MAGICK, result.target, 'icc:-'], check=True, capture_output=True).stdout
     assert before and before == after
     assert any('Экспериментальное' in message for message in result.warnings)
+
+
+def test_source_cannot_be_overwritten_even_with_tiff_extension(tmp_path):
+    source = tmp_path / "artwork.psd"
+    _write_cmyk_psd(source)
+    disguised = tmp_path / "artwork.tif"
+    source.rename(disguised)
+    before = disguised.read_bytes()
+    with pytest.raises(ValueError, match="исходный"):
+        flatten_psd(disguised, disguised)
+    assert disguised.read_bytes() == before

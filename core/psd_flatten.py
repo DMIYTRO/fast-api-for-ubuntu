@@ -302,6 +302,8 @@ def flatten_psd(
     """
     source_path = Path(source)
     target_path = Path(target_tiff)
+    if source_path.resolve() == target_path.resolve():
+        raise ValueError("Сведение PSD не должно заменять исходный файл")
     if target_path.suffix.lower() not in (".tif", ".tiff"):
         raise ValueError("Результат сведения PSD должен быть TIFF (.tif/.tiff)")
     structure = inspect_psd(source_path)
