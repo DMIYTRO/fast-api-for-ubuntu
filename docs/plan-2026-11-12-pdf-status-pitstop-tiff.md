@@ -5,7 +5,7 @@ Production: `fastapi-app` (uvicorn :8000) запускается из основ
 `/home/ubuntu/v2-web-platform-FastApi` (ветка `main`); дубликаты процессов не запускаются.
 После приёмки ветка вливается в `main` и прод перезапускается (`/deploy`).
 
-## Как файл проходит обработку (текущее состояние)
+## Исходный поток до выполнения плана
 
 1. `POST /api/checks` → `RunCoordinator.submit` (очередь, один run за раз).
 2. `BatchProcessor.iter_inspect_orders`: сканирование, разбор имени, ImageMagick `identify`
@@ -30,10 +30,19 @@ Production: `fastapi-app` (uvicorn :8000) запускается из основ
 | 3 | `feat/ink-coverage` | `services/callas/ink_coverage.py`, `CallasClient.ink_coverage`, пороги в профиле (`ink_min_percent`/`ink_max_percent`, примеры 20 % / 250 %) и env, ключ `ink_coverage` в DTO, пиктограмма «Недолив»/«Перелив» в карточке |
 | 4 | `feat/tiff-flatten-layers` | `core/tiff_flatten.py`: сведение видимых слоёв TIFF через ImageMagick, различие слоёв и страниц, поля `tiff_flattened` и счётчики слоёв в DTO файла, иконка в карточке |
 | 5 | `docs/psd-support-research` | Исследование PSD: чтение/сведение/редактирование через ImageMagick, замеры по образцу `benchmarks/`, прототип `core/psd_flatten.py`, рекомендация по включению `.psd` |
-| 6 | следующий этап | Единый журнал действий по заказу (проверка, коррекция, Callas fix, сведение TIFF, печать/возврат, шрифты/профили) для выдачи через API |
+| 6 | реализован в ветке интеграции | Единый журнал действий по заказу (проверка, коррекция, Callas fix, сведение TIFF, печать/возврат, шрифты/профили) для выдачи через API |
 
 ## Проверки на реальных инструментах
 
 - ImageMagick 7.1.2 и Ghostscript доступны локально: сведение TIFF, сборка PDF и контрольный рендер проверяются по-настоящему в тестах.
 - callas pdfToolbox: тестовый сервер `http://192.168.88.109:8765` доступен; `inkcoverage` включён. Боевые флаги `IMAGE_MAGIC_CALLAS_*` лежат в `/etc/default/fastapi-app-callas` (только root).
 - PitStop Server: только через прод-конфигурацию (`/etc/default/fastapi-app-pitstop`), в тестах — фейки. Живой прогон делается новым запуском проверки после деплоя.
+
+## Выполнение
+
+Этапы 0–6 реализованы в ветке интеграции. Итоговое поведение и проверки описаны
+в [отчёте](validation-2026-11-12-pdf-status.md),
+[маршрутизации PDF](pdf-status-routing.md), [красочности](ink-coverage.md),
+[исследовании TIFF/PSD](tiff-flatten-psd-research.md) и
+[журнале действий](order-actions-api.md). PSD подготовлен как отдельный прототип;
+приём PSD основным конвейером не включён. Деплой ещё не выполнялся.

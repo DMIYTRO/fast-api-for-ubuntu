@@ -13,7 +13,7 @@
 `-define tiff:write-layers=false`. Это материализация сохранённого композита,
 а не повторное наложение декодированных слоёв поверх него: повторное наложение
 может удвоить полупрозрачность и эффекты. Параметр `tiff:ignore-layers`
-[описан ImageMagick](https://imagemagick.com/formats/).
+[описан ImageMagick](https://imagemagick.org/formats/).
 
 Состояние обработки файла выдаётся через существующий DTO:
 
