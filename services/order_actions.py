@@ -17,6 +17,7 @@ _LABELS = {
     "order.correction_rejected": "Коррекция размера отклонена",
     "order.file_transition": "Перемещение файлов",
     "order.file_transition_rolled_back": "Перемещение отменено",
+    "order.callas_fix.save_failed": "Исправление PDF не сохранено",
     "order.callas_fix.started": "Исправление Callas запущено",
     "order.callas_fix.finished": "Исправление Callas завершено",
     "order.callas_fix.accepted": "Исправление Callas принято",

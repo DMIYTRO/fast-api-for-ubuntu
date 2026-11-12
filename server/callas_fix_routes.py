@@ -169,6 +169,7 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
                             candidate.unlink(missing_ok=True)
                         if previous_state is not None:
                             service.restore_decision(pdf, previous_state)
+                        record(request, run_id, order, "order.callas_fix.save_failed", decision=body.decision, status="failed")
                         raise APIError(409, "callas_fix_save_failed", str(exc)) from exc
         except CallasFixError as exc:
             _raise(exc)
