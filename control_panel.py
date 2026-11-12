@@ -1037,6 +1037,21 @@ def create_app(
         _, order = _find_order(_get_coordinator(request), order_id, run_id)
         return order
 
+    @application.get(
+        "/api/checks/{run_id}/orders/{order_id}/actions",
+        dependencies=[Depends(protected)],
+    )
+    def get_order_actions(request: Request, run_id: str, order_id: str) -> dict[str, Any]:
+        from services.order_actions import order_actions
+
+        coordinator_value = _get_coordinator(request)
+        run, order = _find_order(coordinator_value, order_id, run_id)
+        matches = sum(str(item.get("order_id")) == str(order.get("order_id"))
+                      for item in run["orders"].values())
+        return {"schema_version": 1, "items": order_actions(
+            coordinator_value.events(run_id), order, legacy_unambiguous=matches == 1,
+        )}
+
     @application.post(
         "/api/checks/{run_id}/orders/{order_id}/correction",
         dependencies=[Depends(protected)],

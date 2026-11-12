@@ -6,6 +6,7 @@ import FileParameters from "./FileParameters.vue";
 import CorrectionDecision from "./CorrectionDecision.vue";
 import ReturnReasons from "./ReturnReasons.vue";
 import PitStopReport from "./PitStopReport.vue";
+import OrderActions from "./OrderActions.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import { orderIssueGroups } from "./issueGroups.js";
 
@@ -300,6 +301,7 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
 
     <button v-if="files.length" class="details-toggle" @click="expanded = !expanded">{{ expanded ? "Скрыть исходные файлы" : "Исходные файлы и подробности" }} <span>{{ expanded ? "⌃" : "⌄" }}</span></button>
     <div v-if="expanded" class="parameters-list"><FileParameters v-for="file in files" :key="file.id || file.filename" :file="file" /></div>
+    <OrderActions v-if="runId" :run-id="runId" :order-id="String(actionId)" />
     <footer class="order-footer">
       <span class="muted">Причины возврата настраиваются кнопкой 💬 в заголовке</span>
       <nav class="export-links">

@@ -203,6 +203,21 @@ class ControlPanelTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["authenticated"])
 
+    def test_order_action_feed_is_authenticated_and_persistent(self):
+        url = "/api/checks/run-actions/orders/42:1001/actions"
+        self.assertEqual(self.client.get(url).status_code, 401)
+        self.login()
+        repository = self.client.app.state.coordinator.repository
+        order = {"aggregate_id": "42:1001", "order_id": "1001", "customer_id": "42", "status": "passed", "files": []}
+        repository.create_run({"id": "run-actions", "status": "completed", "options": {}, "orders": {"42:1001": order}})
+        repository.append_event("run-actions", "order.completed", {"aggregate_id": "42:1001", "order_id": "1001", "order": order})
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["schema_version"], 1)
+        self.assertEqual(response.json()["items"][0]["kind"], "order.completed")
+        self.assertEqual(self.client.get(url).json(), response.json())
+        self.assertEqual(self.client.get(url.replace("42:1001", "99:1001")).status_code, 404)
+
     def test_spa_is_public_but_api_and_files_require_authentication(self):
         home = self.client.get("/")
         self.assertEqual(home.status_code, 200)

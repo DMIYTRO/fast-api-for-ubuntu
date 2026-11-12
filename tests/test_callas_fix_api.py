@@ -142,6 +142,10 @@ class EnabledTests(CallasFixApiTests):
         self.assertEqual(decision.json()["comparison"]["status"], "accepted")
         self.assertEqual(source.read_bytes(), original_bytes)
         self.assertEqual(self.client_double.calls[0][1:3], ("Image Magic/size_correction", "fix"))
+        actions = self.client.get(f"/api/checks/{run_id}/orders/1001/actions").json()["items"]
+        self.assertEqual([item["kind"] for item in actions if "callas_fix" in item["kind"]], [
+            "order.callas_fix.started", "order.callas_fix.finished", "order.callas_fix.accepted",
+        ])
 
     def test_unknown_plan_and_bad_decision(self):
         run_id = self.make_run()
