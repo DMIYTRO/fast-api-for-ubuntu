@@ -84,7 +84,7 @@ async function loadPlans() {
     const payload = await api.callasPlans();
     const list = Array.isArray(payload) ? payload : payload?.plans || [];
     plans.value = list.filter((plan) => plan?.key);
-    planKey.value = (plans.value.find((plan) => plan.key === SIZE_PLAN_KEY) || plans.value[0])?.key || "";
+    planKey.value = plans.value.find((plan) => plan.key === SIZE_PLAN_KEY)?.key || "";
   } catch (e) {
     if (UNAVAILABLE.includes(e?.status)) {
       unavailable.value = true;
@@ -102,9 +102,9 @@ async function startSizeCorrection() {
   if (busy.value || loadingPlans.value) return;
   const list = await loadPlans();
   if (unavailable.value) return;
-  const key = (list.find((plan) => plan.key === SIZE_PLAN_KEY) || list[0])?.key;
+  const key = list.find((plan) => plan.key === SIZE_PLAN_KEY)?.key;
   if (!key) {
-    if (!error.value) error.value = "Нет доступных планов Callas";
+    if (!error.value) error.value = "План корректировки размера недоступен";
     return;
   }
   await start(key);

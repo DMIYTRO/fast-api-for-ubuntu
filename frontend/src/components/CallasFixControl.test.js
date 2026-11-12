@@ -15,7 +15,7 @@ function mount(props = {}) {
 const flush = async () => { for (let i = 0; i < 6; i += 1) { await Promise.resolve(); await nextTick(); } };
 const byText = (host, text) => [...host.querySelectorAll("button")].find((b) => b.textContent.includes(text));
 const sizeButton = (host) => host.querySelector("button.callas-size-fix");
-const plan = { key: "size", title: "Коррекция размера" };
+const plan = { key: "size_correction", title: "Коррекция размера" };
 const proc = { comparison: { status: "processing", plan } };
 const ready = { comparison: { status: "ready", plan, original_url: "/o", result_url: "/r", overlay_url: "/v", summary: {} } };
 
@@ -64,7 +64,7 @@ describe("CallasFixControl for a source PDF of an order without a built PDF", ()
     expect(host.textContent).toContain("order.pdf");
     sizeButton(host).click();
     await flush();
-    expect(start).toHaveBeenCalledWith("run-1", "agg-1", "size", "f-1");
+    expect(start).toHaveBeenCalledWith("run-1", "agg-1", "size_correction", "f-1");
     expect(byText(host, "Принять")).toBeUndefined();
     expect(host.querySelector("a[href='/p']")).not.toBeNull();
     expect(host.textContent).toContain("принять исправление в печать отсюда нельзя");
@@ -72,6 +72,16 @@ describe("CallasFixControl for a source PDF of an order without a built PDF", ()
 });
 
 describe("CallasFixControl", () => {
+  it("does not run a different plan when size correction is unavailable", async () => {
+    vi.spyOn(api, "callasPlans").mockResolvedValue({ plans: [{ key: "other", title: "Другой план" }] });
+    const start = vi.spyOn(api, "startCallasFix");
+    const { host } = mount();
+    sizeButton(host).click();
+    await flush();
+    expect(start).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("План корректировки размера недоступен");
+  });
+
   it("starts the size correction with one click on the icon button and polls until ready, then stops", async () => {
     vi.spyOn(api, "callasPlans").mockResolvedValue({ plans: [{ key: "other", title: "Другой план" }, { key: "size_correction", title: "Коррекция размера макета" }] });
     const start = vi.spyOn(api, "startCallasFix").mockResolvedValue(proc);
@@ -132,7 +142,7 @@ describe("CallasFixControl", () => {
     await nextTick();
     byText(host, "Повторить").click();
     await flush();
-    expect(start).toHaveBeenCalledWith("run-1", "agg-1", "size", "");
+    expect(start).toHaveBeenCalledWith("run-1", "agg-1", "size_correction", "");
     expect(host.querySelector(".fix-processing")).not.toBeNull();
   });
 
