@@ -171,10 +171,12 @@ export function buildIssueGroups(order) {
     const { code, label } = normalizeIssueMessage(message);
     builder.add({ source: "local", severity, code, label, message, file });
   };
-  (order?.errors || []).forEach((item) => local("error", item));
-  (order?.processing_errors || []).forEach((item) => local("error", item));
-  (order?.warnings || []).forEach((item) => local("warning", item));
-  for (const file of order?.files || []) {
+  const revision = order?.revision_check;
+  const errors = revision ? revision.errors || [] : order?.errors || [];
+  errors.forEach((item) => local("error", item));
+  (order?.processing_errors || []).filter((item) => !revision || !errors.includes(item)).forEach((item) => local("error", item));
+  (revision ? revision.warnings || [] : order?.warnings || []).forEach((item) => local("warning", item));
+  for (const file of revision ? [] : order?.files || []) {
     const name = file.filename || file.name || (file.path ? String(file.path).split("/").pop() : null);
     (file.errors || []).forEach((item) => local("error", item, name));
     (file.warnings || []).forEach((item) => local("warning", item, name));

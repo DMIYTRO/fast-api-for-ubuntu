@@ -185,3 +185,16 @@ def test_partial_locations_do_not_undercount_objects():
         "severity": "error", "action_id": 2078, "message": "Low DPI", "locations": [],
     }]
     assert build_issue_groups(pitstop_issues=issues)[0]["objects"] is None
+
+
+def test_current_revision_groups_replace_historical_source_findings():
+    from services.issue_groups import attach_issue_groups
+    dto = {"errors": ["old source error"], "files": [{"name": "face.tif", "errors": ["old DPI"]}], "processing_errors": ["new size error"], "revision_check": {"errors": ["new size error"], "warnings": []}}
+    attach_issue_groups(dto)
+    assert len(dto["issue_groups"]) == 1
+    assert dto["issue_groups"][0]["samples"] == ["new size error"]
+    assert dto["issue_groups"][0]["count"] == 1
+    assert dto["files"][0]["errors"] == ["old DPI"]
+    dto["revision_check"] = {"errors": [], "warnings": []}
+    dto["processing_errors"] = []
+    assert attach_issue_groups(dto)["issue_groups"] == []

@@ -122,3 +122,12 @@ it("does not infer objects from page-only or partial locations", () => {
   const [partial] = groupPitStopIssues([pitstopIssue("DPI", 1), { severity: "error", action_id: 2078, message: "DPI" }]);
   expect(partial.objects).toBeNull();
 });
+
+
+it("shows current revision findings without stale source errors", () => {
+  const order = { errors: ["old"], files: [{ errors: ["old DPI"] }], processing_errors: ["new"], revision_check: { errors: ["new"], warnings: [] } };
+  const groups = buildIssueGroups(order);
+  expect(groups).toHaveLength(1);
+  expect(groups[0]).toMatchObject({ count: 1, samples: ["new"] });
+  expect(buildIssueGroups({ ...order, processing_errors: [], revision_check: { errors: [], warnings: [] } })).toEqual([]);
+});

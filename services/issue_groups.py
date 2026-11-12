@@ -284,6 +284,14 @@ def build_issue_groups(
 def issue_groups_for_order_dto(dto: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Собрать ``issue_groups`` из уже готового DTO заказа."""
     pitstop = dto.get("pitstop") or {}
+    revision = dto.get("revision_check")
+    if isinstance(revision, Mapping):
+        errors = list(revision.get("errors") or ())
+        return build_issue_groups(
+            errors=errors, warnings=revision.get("warnings") or (),
+            processing_errors=[message for message in dto.get("processing_errors") or () if message not in errors],
+            pitstop_issues=pitstop.get("issues") or () if isinstance(pitstop, Mapping) else (),
+        )
     return build_issue_groups(
         errors=dto.get("errors") or (),
         warnings=dto.get("warnings") or (),

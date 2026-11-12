@@ -11,6 +11,7 @@ from typing import Any, Iterable
 from services.repository import RunEvent
 
 _LABELS = {
+    "order.pdf_revision": "Исправленный PDF проверен",
     "order.completed": "Проверка завершена",
     "order.correction_confirmed": "Коррекция размера подтверждена",
     "order.correction_rejected": "Коррекция размера отклонена",
