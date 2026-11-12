@@ -49,7 +49,7 @@ describe("OrderCard processing failures", () => {
     });
     await nextTick();
     expect(plain.querySelector(".callas-fix")).toBeNull();
-    expect(withPdf.textContent).toContain("Исправить");
+    expect(withPdf.querySelector("button.callas-size-fix")).not.toBeNull();
     expect(withFix.querySelector(".fix-comparison")?.textContent).toContain("Коррекция размера");
   });
 });
