@@ -8,6 +8,8 @@ from pathlib import Path
 import shutil
 import tempfile
 import uuid
+
+import pymupdf
 from typing import TYPE_CHECKING, Callable, Mapping, Optional
 
 if TYPE_CHECKING:  # services.__init__ imports this module; avoid a cycle
@@ -527,6 +529,59 @@ class BatchProcessor:
                 results.append((order, output_path, str(exc)))
         return results
 
+    def create_diagnostic_pdf(
+        self, order: OrderCheck, output_dir: Path
+    ) -> tuple[Path | None, str | None]:
+        """Build an "as is" PDF for an order that failed local inspection.
+
+        No resampling, no correction, no size validation: every readable
+        page is included so PitStop/Callas can still report on the artwork.
+        Returns ``(path, note)``; ``path`` is ``None`` when nothing could be
+        read, ``note`` lists skipped files (or the reason nothing was built).
+        """
+        ordered_files = self._ordered_files_for_creation(order)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"{self._output_stem(order, ordered_files)}.pdf"
+        skipped: list[str] = []
+        with tempfile.TemporaryDirectory(
+            prefix=f".{order.order_id}_diag_", dir=output_dir
+        ) as temporary_dir:
+            page_pdfs: list[str] = []
+            for page_number, item in enumerate(ordered_files, start=1):
+                try:
+                    if item.path.suffix.lower() == ".pdf":
+                        with pymupdf.open(item.path) as document:
+                            if document.page_count == 0:
+                                raise ValueError("в PDF нет страниц")
+                        if str(item.path) not in page_pdfs:
+                            page_pdfs.append(str(item.path))
+                        continue
+                    if item.dpi_x and item.dpi_y:
+                        dpi_arg: str | float = f"{item.dpi_x}x{item.dpi_y}"
+                    else:
+                        dpi_arg = item.dpi or 300.0
+                    page_path = Path(temporary_dir) / f"{page_number}.pdf"
+                    convert_image_to_pdf(
+                        str(item.path),
+                        str(page_path),
+                        dpi=dpi_arg,
+                        compression="none",
+                        ignore_tiff_layers=item.tiff_layer_count == 1,
+                    )
+                    page_pdfs.append(str(page_path))
+                except Exception as exc:
+                    skipped.append(f"{item.path.name}: {exc}")
+            if not page_pdfs:
+                return None, "ни один файл заказа не удалось прочитать: " + "; ".join(skipped)
+            combined = Path(temporary_dir) / "combined.pdf"
+            merge_pdfs_with_pymupdf(page_pdfs, str(combined))
+            self._render_pdf_pages(combined, Path(temporary_dir) / "validation")
+            combined.replace(output_path)
+        note = (
+            "в диагностический PDF не вошли: " + "; ".join(skipped) if skipped else None
+        )
+        return output_path, note
+
     @staticmethod
     def _file_sha256(path: Path) -> str:
         digest = hashlib.sha256()
@@ -702,13 +757,9 @@ class BatchProcessor:
             page_pdfs.append(str(page_path))
         return page_pdfs
 
-    def _validate_created_pdf(
-        self,
-        pdf_path: Path,
-        page_refs: list[_LogicalPageRef],
-        validation_dir: Path,
-    ) -> None:
-        """Render the final PDF and verify readability, page count, order and page sizes."""
+    @staticmethod
+    def _render_pdf_pages(pdf_path: Path, validation_dir: Path) -> list[Path]:
+        """Ghostscript control render: proves the PDF opens; returns page PNGs."""
         gs_cmd = shutil.which("gs")
         if not gs_cmd:
             raise FileNotFoundError("Ghostscript (`gs`) не найден для проверки PDF.")
@@ -732,8 +783,16 @@ class BatchProcessor:
         if result.returncode != 0:
             details = (result.stderr or result.stdout).strip()
             raise ValueError(f"итоговый PDF повреждён или не открывается: {details}")
+        return sorted(validation_dir.glob("page-*.png"))
 
-        rendered_pages = sorted(validation_dir.glob("page-*.png"))
+    def _validate_created_pdf(
+        self,
+        pdf_path: Path,
+        page_refs: list[_LogicalPageRef],
+        validation_dir: Path,
+    ) -> None:
+        """Render the final PDF and verify readability, page count, order and page sizes."""
+        rendered_pages = self._render_pdf_pages(pdf_path, validation_dir)
         if len(rendered_pages) != len(page_refs):
             raise ValueError(
                 f"в итоговом PDF {len(rendered_pages)} страниц; ожидалось {len(page_refs)}"

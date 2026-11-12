@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from copy import deepcopy
 from datetime import datetime, timezone
 import logging
 import os
@@ -17,6 +18,7 @@ from uuid import uuid4
 from processing.models import OrderCheck
 
 from .batch_adapter import BatchProcessorAdapter, OrderArtifacts, ProcessingOptions
+from .pdf_routing import completed_status
 from .domain import OrderStatus, RunStatus, validate_operator_transition
 from .dto import order_check_to_dto
 from .issue_groups import attach_issue_groups
@@ -425,6 +427,73 @@ class RunCoordinator:
             self._changed.notify_all()
             return self.get_run(run_id)
 
+    def apply_pdf_revision(
+        self,
+        run_id: str,
+        order_id: str,
+        *,
+        status: str,
+        pdf_path: str,
+        pitstop: dict[str, Any] | None,
+        current_pdf_revision: int,
+        current_pdf_sha256: str,
+        errors: list[str] | None = None,
+        warnings: list[str] | None = None,
+        preview_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Replace the production PDF with a re-checked revision.
+
+        This is a system transition (a corrected PDF was re-inspected and
+        routed into its status folder), so the operator transition rules do
+        not apply; the order status becomes the recomputed one.  Returns the
+        updated order DTO.
+        """
+        if status not in {"passed", "warning", "error"}:
+            raise ValueError(f"недопустимый статус ревизии PDF: {status}")
+        with self._lock:
+            run = self.get_run(run_id)
+            stored_key = _stored_order_key(run, order_id)
+            order = run["orders"].get(stored_key) if stored_key else None
+            if order is None:
+                raise RunNotFoundError(f"{run_id}/{order_id}")
+            previous_order = deepcopy(order)
+            order["pdf_path"] = pdf_path
+            order["pdf_kind"] = "production"
+            order["pitstop"] = pitstop
+            order["pitstop_status"] = _pitstop_status_from_dto(pitstop)
+            order.pop("pitstop_skipped_reason", None)
+            order["current_pdf_revision"] = current_pdf_revision
+            order["current_pdf_sha256"] = current_pdf_sha256
+            order["ink_coverage"] = {
+                "status": "not_checked", "flags": [], "pages": [],
+                "error": "PDF изменён: требуется повторная проверка красочности.",
+            }
+            order["preview_paths"] = list(preview_paths or [])
+            order["revision_check"] = {"errors": errors or [], "warnings": warnings or []}
+            order["processing_errors"] = list(errors or [])
+            order["status"] = status
+            order["passed"] = status in {"passed", "warning"}
+            self._update_counts(run)
+            try:
+                self._save_and_emit_locked(
+                    run,
+                    "order.pdf_revision",
+                    {
+                        "aggregate_id": order.get("aggregate_id") or stored_key,
+                        "order_id": order.get("order_id") or order_id,
+                        "customer_id": order.get("customer_id"),
+                        "status": status,
+                        "order": order,
+                    },
+                )
+            except Exception:
+                order.clear()
+                order.update(previous_order)
+                self._update_counts(run)
+                raise
+            self._changed.notify_all()
+            return deepcopy(order)
+
     def restore_order_snapshot(
         self, run_id: str, order_id: str, snapshot: dict[str, Any]
     ) -> dict[str, Any]:
@@ -821,13 +890,7 @@ class RunCoordinator:
             status = _completed_order_status(order, artifacts)
             source_status = _inspection_status(order)
             pitstop = artifacts.pitstop
-            pitstop_status = (
-                str(pitstop.get("verdict") or "error")
-                if pitstop
-                else "not_checked"
-            )
-            if pitstop and pitstop.get("execution_status") != "completed":
-                pitstop_status = "technical_error"
+            pitstop_status = _pitstop_status_from_dto(pitstop)
             dto = order_check_to_dto(
                 order,
                 status=status,
@@ -841,6 +904,10 @@ class RunCoordinator:
                 current_pdf_sha256=artifacts.current_pdf_sha256,
                 ink_coverage=artifacts.ink_coverage,
             )
+            if artifacts.pitstop_skipped_reason:
+                dto["pitstop_skipped_reason"] = artifacts.pitstop_skipped_reason
+            if artifacts.pdf_kind:
+                dto["pdf_kind"] = artifacts.pdf_kind
             run["orders"][context.key_for(order)] = dto
             self._update_counts(run)
             if pitstop:
@@ -1051,6 +1118,14 @@ class RunCoordinator:
         )
 
 
+def _pitstop_status_from_dto(pitstop: dict[str, Any] | None) -> str:
+    if not pitstop:
+        return "not_checked"
+    if pitstop.get("execution_status") != "completed":
+        return "technical_error"
+    return str(pitstop.get("verdict") or "error")
+
+
 def _inspection_status(order: OrderCheck) -> str:
     if any(item.resample_decision == "ask_confirmation" for item in order.files):
         return "waiting_confirmation"
@@ -1064,19 +1139,14 @@ def _inspection_status(order: OrderCheck) -> str:
 def _completed_order_status(
     order: OrderCheck, artifacts: OrderArtifacts
 ) -> str:
-    if artifacts.errors or not order.passed:
-        return "error"
-    if artifacts.pitstop:
-        if artifacts.pitstop.get("execution_status") != "completed":
-            return "error"
-        verdict = artifacts.pitstop.get("verdict")
-        if verdict == "error":
-            return "error"
-        if verdict == "warning":
-            return "warning"
-    if order.warnings or any(item.warnings for item in order.files):
-        return "warning"
-    return "passed"
+    """Final status: a local (first-stage) error is never lifted by PitStop."""
+    return completed_status(
+        local_errors=bool(artifacts.errors) or (not order.passed and artifacts.pdf_kind != "diagnostic"),
+        local_warnings=bool(
+            not order.passed or order.warnings or any(item.warnings for item in order.files)
+        ),
+        pitstop=artifacts.pitstop,
+    )
 
 
 def _now() -> str:

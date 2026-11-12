@@ -19,6 +19,7 @@ from services.pitstop import (
     PitStopExecutionStatus,
     PitStopService,
 )
+from services.pdf_routing import FAILED_FOLDER, completed_status, route_pdf
 from services.postpress import normalize_postpress
 
 
@@ -58,6 +59,11 @@ class OrderArtifacts:
     ink_coverage: dict[str, object] | None = None
     current_pdf_revision: int | None = None
     current_pdf_sha256: str | None = None
+    # "production" (routed into PDF/Print|Rework) or "diagnostic" (built "as is"
+    # for a first-stage failure, lives in PDF/Failed, never printed).
+    pdf_kind: str | None = None
+    # Operator-visible reason when PitStop could not run (Russian).
+    pitstop_skipped_reason: str | None = None
 
     def __post_init__(self) -> None:
         self.preview_paths = list(self.preview_paths or [])
@@ -237,6 +243,90 @@ class BatchProcessorAdapter:
             self.processor.confirm_resample(item, approved)
 
     def process_order(self, order: OrderCheck) -> OrderArtifacts:
+        result = self._process_order_unrouted(order)
+        self._route_production_pdf(order, result)
+        return result
+
+    def _route_production_pdf(self, order: OrderCheck, result: OrderArtifacts) -> None:
+        """Move the built PDF into PDF/Print|Rework|Failed by its final status."""
+        if result.pdf_path is None:
+            if not order.passed or result.errors:
+                self._quarantine_previous_print(order)
+            return
+        status = completed_status(
+            local_errors=bool(result.errors) or (not order.passed and result.pdf_kind != "diagnostic"),
+            local_warnings=bool(
+                not order.passed or order.warnings or any(item.warnings for item in order.files)
+            ),
+            pitstop=result.pitstop,
+        )
+        try:
+            result.pdf_path = route_pdf(result.pdf_path, status, pdf_dir=self.pdf_dir)
+        except OSError as exc:
+            logger.exception(
+                "order.pdf_route_failed order_id=%s status=%s", order.order_id, status
+            )
+            result.errors.append(f"Раскладка PDF по папке статуса: {exc}")
+            # The order is an error now; keep the file out of Print if we can.
+            try:
+                result.pdf_path = route_pdf(result.pdf_path, "error", pdf_dir=self.pdf_dir)
+            except OSError:
+                self._quarantine_previous_print(order)
+
+    def _quarantine_previous_print(self, order: OrderCheck) -> None:
+        """A failed new run must not leave its previous result marked ready."""
+        ordered = sorted(order.files, key=lambda item: 0 if item.parsed and item.parsed.side == "face" else 1)
+        if not ordered:
+            return
+        source = self.pdf_dir / "Print" / f"{ordered[0].path.stem}.pdf"
+        if source.is_file():
+            failed = self.pdf_dir / FAILED_FOLDER / source.name
+            failed.parent.mkdir(parents=True, exist_ok=True)
+            source.replace(failed)
+
+    def _build_diagnostic_pdf(self, order: OrderCheck, result: OrderArtifacts) -> None:
+        """First-stage failure: build an "as is" PDF into PDF/Failed and run PitStop on it."""
+        builder = getattr(self.processor, "create_diagnostic_pdf", None)
+        if builder is None:
+            result.pitstop_skipped_reason = (
+                "PitStop не запускался: диагностический PDF для этого режима не собирается."
+            )
+            return
+        try:
+            pdf_path, note = builder(order, self.pdf_dir / FAILED_FOLDER)
+        except Exception as exc:
+            logger.exception("order.diagnostic_pdf_failed order_id=%s", order.order_id)
+            result.pitstop_skipped_reason = (
+                "PitStop не запускался: не удалось собрать диагностический PDF "
+                f"({type(exc).__name__}: {exc})."
+            )
+            return
+        if pdf_path is None:
+            result.pitstop_skipped_reason = f"PitStop не запускался: {note or 'PDF не собран'}."
+            return
+        if note:
+            result.errors.append(f"Диагностический PDF: {note}")
+        result.pdf_path = pdf_path
+        result.pdf_kind = "diagnostic"
+        result.current_pdf_revision = 1
+        result.current_pdf_sha256 = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+        if self.pitstop_service is None:
+            result.pitstop_skipped_reason = "PitStop не запускался: проверка PitStop не настроена."
+            return
+        try:
+            pitstop_result = self.pitstop_service.check_pdf(
+                pdf_path, profile_id=self.options.direction
+            )
+        except Exception as exc:
+            logger.exception("order.diagnostic_pitstop_failed order_id=%s", order.order_id)
+            result.pitstop_skipped_reason = f"PitStop не завершил проверку: {type(exc).__name__}: {exc}"
+            result.pitstop = {"execution_status": "failed", "verdict": "error", "technical_error": str(exc)}
+            return
+        result.pitstop = _pitstop_result_to_dto(pitstop_result, checked_revision=1)
+        result.current_pdf_revision = 1
+        result.current_pdf_sha256 = pitstop_result.input_sha256
+
+    def _process_order_unrouted(self, order: OrderCheck) -> OrderArtifacts:
         # Fold overlays and previews depend on postpress; wait for Sborka here
         # (bounded) rather than when the order is first shown.
         self._apply_postpress(order, wait=True)
@@ -283,6 +373,12 @@ class BatchProcessorAdapter:
                     result.errors.extend(
                         error for _, _, error in copies if error is not None
                     )
+                if self.options.create_pdfs:
+                    self._build_diagnostic_pdf(order, result)
+                else:
+                    result.pitstop_skipped_reason = (
+                        "PitStop не запускался: создание PDF отключено настройками проверки."
+                    )
                 return result
 
             if not self.options.create_pdfs:
@@ -312,6 +408,9 @@ class BatchProcessorAdapter:
                     )
                 return result
             result.pdf_path = pdf_path
+            result.pdf_kind = "production"
+            result.current_pdf_revision = 1
+            result.current_pdf_sha256 = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
 
             if self.pitstop_service is not None:
                 pitstop_result = self.pitstop_service.check_pdf(

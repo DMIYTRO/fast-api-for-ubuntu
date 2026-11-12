@@ -271,7 +271,8 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
         </div>
         <div v-if="order.status === 'error' && !order.pitstop && order.pitstop_status === 'not_checked'" class="pitstop-skipped">
           <strong>PitStop не проверял этот заказ</strong>
-          <span>Причины обработки указаны выше. Отчёт PitStop появится после успешного создания итогового PDF.</span>
+          <span v-if="order.pitstop_skipped_reason">{{ order.pitstop_skipped_reason }}</span>
+          <span v-else>Причины обработки указаны выше. Отчёт PitStop появится после успешного создания итогового PDF.</span>
         </div>
         <div v-if="groupedWarnings.length" class="issue-list warnings">
           <strong>Предупреждения</strong>

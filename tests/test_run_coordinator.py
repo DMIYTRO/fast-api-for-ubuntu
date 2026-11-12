@@ -341,8 +341,8 @@ class RunCoordinatorTests(unittest.TestCase):
         adapter.release_processing.set()
         completed = self.coordinator.wait_for(run_id, {"completed"}, timeout=2)
         final = completed["orders"]["pitstop-order"]
-        self.assertEqual(final["status"], "error")
-        self.assertFalse(final["passed"])
+        self.assertEqual(final["status"], "warning")
+        self.assertTrue(final["passed"])
         event_types = [event.type for event in self.coordinator.events(run_id)]
         self.assertIn("pitstop.check_completed", event_types)
 

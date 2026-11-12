@@ -5,10 +5,16 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 import hashlib
+
+import pymupdf
 import logging
 import json
+import os
+import shutil
+import tempfile
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -22,12 +28,13 @@ from server.models import OrderAction, OrderResult
 from .coordinator import RunCoordinator
 from .domain import validate_operator_transition
 from .file_lifecycle import FileConflictError, FileLifecycle, FileLifecycleError
+from .pdf_routing import completed_status, pdf_root_for, route_pdf
+from .pdf_revision_validation import readable_pdf, validate_pdf_revision
 from .return_preview import custom_return_preview_path, prepare_return_preview_name
 from .layered_tiff_print import (
     ReviewedLayeredPdfError,
     build_reviewed_layered_print_pdf,
 )
-from core.pdf_inspector import inspect_pdf
 
 
 logger = logging.getLogger("image_magic.order_workflow")
@@ -76,6 +83,104 @@ class OrderWorkflowService:
         self._background_guard = Lock()
         self._background_actions: set[tuple[str, str, str]] = set()
         self._background_executor: ThreadPoolExecutor | None = None
+
+    @contextmanager
+    def correction_guard(self, run_id: str, order: dict[str, Any]):
+        """Serialize correction acceptance with print/return for the same order."""
+        with self.session_factory() as session:
+            query = select(OrderResult.id).where(
+                OrderResult.run_id == run_id,
+                OrderResult.order_id == str(order["order_id"]),
+            )
+            if order.get("customer_id") is not None:
+                query = query.where(OrderResult.customer_id == str(order["customer_id"]))
+            stored_id = session.scalar(query)
+        if stored_id is None:
+            raise FileLifecycleError("Заказ для исправления не найден.")
+        if self._claim_action(stored_id, "correct") is not None:
+            raise FileLifecycleError("Над заказом уже выполняется другое действие.")
+        try:
+            yield
+        finally:
+            self._release_action(stored_id)
+
+    def recheck_pdf_revision(
+        self, run: dict[str, Any], order: dict[str, Any], candidate: Path
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, int, str]:
+        """Validate a candidate before replacing the current PDF and its status."""
+        direction = str(run["options"].get("direction") or "digital")
+        inspection = validate_pdf_revision(candidate, order, direction)
+        revision = int(order.get("current_pdf_revision") or 0) + 1
+        pitstop = None
+        if readable_pdf(inspection) and self.reviewed_pdf_pitstop_service_factory is not None:
+            try:
+                service = self.reviewed_pdf_pitstop_service_factory(
+                    Path(run["options"]["input_path"]), direction
+                )
+                result = service.check_pdf(candidate, profile_id=direction)
+                from .batch_adapter import _pitstop_result_to_dto
+                pitstop = _pitstop_result_to_dto(result, checked_revision=revision)
+            except Exception as exc:
+                pitstop = {
+                    "execution_status": "failed", "verdict": "error",
+                    "technical_error": f"Повторная проверка PitStop: {type(exc).__name__}: {exc}",
+                    "issues": [], "reports": {},
+                }
+        elif order.get("pitstop"):
+            pitstop = {
+                "execution_status": "failed", "verdict": "error",
+                "technical_error": "Для повторной проверки исправленного PDF не настроен PitStop.",
+                "issues": [], "reports": {},
+            }
+        status = completed_status(
+            local_errors=not readable_pdf(inspection),
+            local_warnings=bool(inspection.errors or inspection.warnings),
+            pitstop=pitstop,
+        )
+        previews: list[str] = []
+        if readable_pdf(inspection):
+            preview_dir = Path(run["options"]["input_path"]) / "Previews" / "Final" / str(order.get("aggregate_id") or order["order_id"]) / f"r{revision:04d}"
+            preview_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                with pymupdf.open(candidate) as document:
+                    for index, page in enumerate(document):
+                        preview = preview_dir / f"page-{index + 1}_preview.png"
+                        scale = min(480 / max(page.rect.width, page.rect.height, 1), 4)
+                        page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False).save(preview)
+                        previews.append(str(preview))
+            except Exception as exc:
+                status = "error"
+                inspection = replace(inspection, errors=(*inspection.errors, f"Превью исправленного PDF: {exc}"))
+                previews = []
+        previous = Path(str(order["pdf_path"])) if order.get("pdf_path") else None
+        root = pdf_root_for(previous) if previous else Path(run["options"]["input_path"]) / "PDF"
+        root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".revision-", dir=root) as backup_dir:
+            backup = Path(backup_dir) / "previous.pdf"
+            if previous and previous.is_file():
+                shutil.copy2(previous, backup)
+            try:
+                routed = route_pdf(candidate, status, pdf_dir=root, name=previous.name if previous else None)
+            except OSError as exc:
+                raise FileLifecycleError(f"Не удалось сохранить исправленный PDF: {exc}") from exc
+            sha256 = hashlib.sha256(routed.read_bytes()).hexdigest()
+            try:
+                updated = self.coordinator.apply_pdf_revision(
+                    run["id"], str(order.get("aggregate_id") or order["order_id"]),
+                    status=status, pdf_path=str(routed), pitstop=pitstop,
+                    current_pdf_revision=revision, current_pdf_sha256=sha256,
+                    errors=list(inspection.errors), warnings=list(inspection.warnings),
+                    preview_paths=previews,
+                )
+            except Exception:
+                # Storage did not commit the new status: restore its previous bytes.
+                if previous and backup.is_file():
+                    previous.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(backup, previous)
+                if previous is None or routed != previous:
+                    routed.unlink(missing_ok=True)
+                raise
+        return updated, pitstop, revision, sha256
 
     def _claim_action(self, order_result_id: int, action: str) -> str | None:
         """Claim an order without waiting; return the action already in progress."""
@@ -516,6 +621,13 @@ class OrderWorkflowService:
                         reviewed_sha256 = None
                         if action == "print":
                             input_root = Path(run["options"]["input_path"]).resolve()
+                            current_pdf = Path(str(order.get("pdf_path") or ""))
+                            if current_pdf.is_file() and order.get("current_pdf_sha256") and hashlib.sha256(current_pdf.read_bytes()).hexdigest() != order["current_pdf_sha256"]:
+                                order, reviewed_pitstop, reviewed_revision, reviewed_sha256 = self.recheck_pdf_revision(run, order, current_pdf)
+                                previous_order = deepcopy(order)
+                                transition_order = order
+                                if order["status"] != "passed":
+                                    raise FileLifecycleError("PDF изменился и не прошёл повторную проверку.")
                             reviewed_pdf = build_reviewed_layered_print_pdf(
                                 order, input_root, pdf_merger=self.pdf_merger
                             )
@@ -531,61 +643,16 @@ class OrderWorkflowService:
                                     Path(str(order["pdf_path"]))
                                 )
                             if reviewed_pdf is not None:
-                                inspection = inspect_pdf(reviewed_pdf)
-                                if inspection.errors:
+                                order, reviewed_pitstop, reviewed_revision, reviewed_sha256 = self.recheck_pdf_revision(
+                                    run, order, reviewed_pdf
+                                )
+                                previous_order = deepcopy(order)
+                                if order["status"] != "passed":
                                     raise FileLifecycleError(
-                                        "Итоговый PDF из просмотренных TIFF не прошёл проверку: "
-                                        + "; ".join(inspection.errors)
+                                        "Исправленный PDF требует доработки и не отправлен в печать."
                                     )
-                                reviewed_revision = int(order.get("current_pdf_revision") or 0) + 1
-                                reviewed_sha256 = hashlib.sha256(reviewed_pdf.read_bytes()).hexdigest()
-                                if self.reviewed_pdf_pitstop_service_factory is not None:
-                                    pitstop_service = self.reviewed_pdf_pitstop_service_factory(
-                                        input_root, str(run["options"].get("direction") or "")
-                                    )
-                                    pitstop_result = pitstop_service.check_pdf(
-                                        reviewed_pdf,
-                                        profile_id=str(run["options"].get("direction") or ""),
-                                    )
-                                    from .batch_adapter import _pitstop_result_to_dto
+                                transition_order = order
 
-                                    reviewed_pitstop = _pitstop_result_to_dto(
-                                        pitstop_result,
-                                        checked_revision=reviewed_revision,
-                                    )
-                                    if not pitstop_result.passed:
-                                        # Local report paths are not browser URLs.
-                                        reviewed_pitstop["reports"] = {}
-                                        counts = reviewed_pitstop.get("counts") or {}
-                                        error_count = int(counts.get("errors") or 0)
-                                        warning_count = int(counts.get("warnings") or 0)
-                                        if pitstop_result.technical_error:
-                                            reason = pitstop_result.technical_error
-                                        elif error_count:
-                                            reason = (
-                                                f"PitStop: ошибок {error_count}, "
-                                                f"предупреждений {warning_count}."
-                                            )
-                                            issue_messages = [
-                                                str(issue.get("message") or "")
-                                                for issue in reviewed_pitstop.get("issues", [])
-                                                if issue.get("severity") == "error"
-                                                and issue.get("message")
-                                            ][:3]
-                                            if issue_messages:
-                                                reason += " Причины: " + "; ".join(issue_messages)
-                                        else:
-                                            reason = (
-                                                "PitStop не завершил проверку итогового PDF."
-                                            )
-                                        raise FileLifecycleError(
-                                            f"Итоговый PDF из просмотренных TIFF не отправлен в печать: {reason}"
-                                        )
-                                elif order.get("pitstop"):
-                                    raise FileLifecycleError(
-                                        "Для повторной проверки итогового PDF не настроен PitStop."
-                                    )
-                                transition_order = {**order, "pdf_path": str(reviewed_pdf)}
                         lifecycle = self.lifecycle_factory(
                             Path(run["options"]["input_path"])
                         )

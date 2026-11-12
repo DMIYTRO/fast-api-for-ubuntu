@@ -146,7 +146,7 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
         file_id: str | None = None,
     ) -> dict[str, Any]:
         service = _service(request)
-        _run, _order, pdf = resolve_order(request, run_id, order_id, file_id)
+        run, order, pdf = resolve_order(request, run_id, order_id, file_id)
         if file_id:
             raise APIError(
                 409,
@@ -155,10 +155,23 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
                 "принять его в печать из этого блока нельзя.",
             )
         try:
-            state = service.decide(pdf, body.decision)
+            with request.app.state.order_workflow.correction_guard(run_id, order):
+                state = service.decide(pdf, body.decision)
+                if body.decision == "accept":
+                    candidate = service.publish_accepted(pdf)
+                    if candidate is not None:
+                        try:
+                            request.app.state.order_workflow.recheck_pdf_revision(run, order, candidate)
+                        except Exception as exc:
+                            candidate.unlink(missing_ok=True)
+                            raise APIError(409, "callas_fix_save_failed", str(exc)) from exc
         except CallasFixError as exc:
             _raise(exc)
-        record(request, run_id, _order, f"order.callas_fix.{state.get("status")}", decision=body.decision, status=state.get("status"))
+        except APIError:
+            raise
+        except Exception as exc:
+            raise APIError(409, "callas_fix_save_failed", str(exc)) from exc
+        record(request, run_id, order, f"order.callas_fix.{state.get('status')}", decision=body.decision, status=state.get("status"))
         return {"comparison": payload(state, run_id, order_id, None)}
 
     @router.get(
