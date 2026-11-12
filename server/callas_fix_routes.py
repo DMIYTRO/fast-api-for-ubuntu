@@ -156,15 +156,20 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
             )
         try:
             with request.app.state.order_workflow.correction_guard(run_id, order):
+                previous_state = service.read_state(pdf)
                 state = service.decide(pdf, body.decision)
                 if body.decision == "accept":
-                    candidate = service.publish_accepted(pdf)
-                    if candidate is not None:
-                        try:
+                    candidate = None
+                    try:
+                        candidate = service.publish_accepted(pdf)
+                        if candidate is not None:
                             request.app.state.order_workflow.recheck_pdf_revision(run, order, candidate)
-                        except Exception as exc:
+                    except Exception as exc:
+                        if candidate is not None:
                             candidate.unlink(missing_ok=True)
-                            raise APIError(409, "callas_fix_save_failed", str(exc)) from exc
+                        if previous_state is not None:
+                            service.restore_decision(pdf, previous_state)
+                        raise APIError(409, "callas_fix_save_failed", str(exc)) from exc
         except CallasFixError as exc:
             _raise(exc)
         except APIError:

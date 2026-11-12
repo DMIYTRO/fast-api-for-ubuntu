@@ -245,6 +245,9 @@ class EnabledTests(CallasFixApiTests):
         with patch("services.pdf_routing.os.replace", side_effect=fail_publish):
             accepted = self.client.post(self.url(run_id, "/decision"), json={"decision": "accept"})
         self.assertEqual(accepted.status_code, 409, accepted.text)
+        comparison = self.client.get(self.url(run_id)).json()["comparison"]
+        self.assertEqual(comparison["status"], "ready")
+        self.assertIsNone(comparison["decision"])
         order = self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]
         self.assertEqual(order["status"], "passed")
         self.assertEqual(Path(order["pdf_path"]).read_bytes(), original)
@@ -267,10 +270,34 @@ class EnabledTests(CallasFixApiTests):
         with patch.object(repository, "save_run_with_event", side_effect=fail_revision):
             accepted = self.client.post(self.url(run_id, "/decision"), json={"decision": "accept"})
         self.assertEqual(accepted.status_code, 409, accepted.text)
+        comparison = self.client.get(self.url(run_id)).json()["comparison"]
+        self.assertEqual(comparison["status"], "ready")
+        self.assertIsNone(comparison["decision"])
         order = self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]
         self.assertEqual(order["status"], "passed")
         self.assertEqual(Path(order["pdf_path"]).read_bytes(), original)
         self.assertFalse((self.root / "PDF" / "Print" / "sample.pdf").exists())
+
+    def test_candidate_publication_failure_restores_ready_comparison(self):
+        from unittest.mock import patch
+        run_id = self.make_run()
+        self.client.post(self.url(run_id), json={"plan": "size_correction"})
+        from services import callas_fix
+        real_replace = callas_fix.os.replace
+        def fail_candidate(source, destination):
+            if Path(destination).name == "sample_callas-fixed.pdf":
+                raise OSError("disk full")
+            return real_replace(source, destination)
+        with patch("services.callas_fix.os.replace", side_effect=fail_candidate):
+            accepted = self.client.post(self.url(run_id, "/decision"), json={"decision": "accept"})
+        self.assertEqual(accepted.status_code, 409, accepted.text)
+        comparison = self.client.get(self.url(run_id)).json()["comparison"]
+        self.assertEqual(comparison["status"], "ready")
+        self.assertIsNone(comparison["decision"])
+        self.assertFalse(list(self.root.glob("PDF/**/.*.tmp.pdf")))
+        retry = self.client.post(self.url(run_id, "/decision"), json={"decision": "accept"})
+        self.assertEqual(retry.status_code, 200, retry.text)
+        self.assertEqual(retry.json()["comparison"]["status"], "accepted")
 
     def test_rejected_fix_keeps_the_original_pdf_for_print(self):
         run_id = self.make_run()

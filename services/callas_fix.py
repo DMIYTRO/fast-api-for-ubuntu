@@ -291,6 +291,14 @@ class CallasFixService:
         _write_state(fix_dir_for(pdf), state)
         return state
 
+    def restore_decision(self, pdf_path: Path | str, previous: dict[str, Any]) -> None:
+        """Undo a decision whose PDF publication/recheck did not commit.
+
+        Called under the workflow correction guard. Keep the completed fix
+        and its comparison available so the operator can retry or reject it.
+        """
+        _write_state(fix_dir_for(pdf_path), previous)
+
     def accepted_pdf(self, pdf_path: Path | str) -> Path | None:
         """Принятый результат исправления или ``None``."""
         state = read_state_file(pdf_path)
@@ -328,8 +336,11 @@ class CallasFixService:
             )
         target = fix_dir_for(pdf) / f"{pdf.stem}_callas-fixed.pdf"
         temporary = target.with_name(f".{target.stem}.{uuid4().hex[:8]}.tmp.pdf")
-        shutil.copyfile(accepted, temporary)
-        os.replace(temporary, target)
+        try:
+            shutil.copyfile(accepted, temporary)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
         return target
 
     def file_path(self, pdf_path: Path | str, kind: str) -> Path | None:
