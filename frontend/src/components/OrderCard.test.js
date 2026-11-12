@@ -101,3 +101,24 @@ describe("OrderCard TIFF flatten result", () => {
     expect(completed.querySelector(".tiff-flatten-indicator")?.title).toContain("видимых слоёв 2, скрытых 1");
   });
 });
+
+describe("OrderCard RGB to CMYK badge", () => {
+  const base = { order_id: "1", customer_id: "2", status: "passed", errors: [], files: [] };
+
+  it("shows the RGB badge only when the color model was converted", async () => {
+    const host = mount({ ...base, color_conversion: { status: "converted", profile: "P", pages: [1, 2] } });
+    await nextTick();
+    const badge = host.querySelector(".rgb-cmyk-indicator");
+    expect(badge?.textContent).toBe("RGB");
+    expect(badge?.title).toContain("RGB переведён в CMYK");
+    expect(badge?.title).toContain("1, 2");
+  });
+
+  it("has no badge without conversion or after a failed conversion", async () => {
+    const none = mount(base);
+    const failed = mount({ ...base, color_conversion: { status: "failed", error: "x" } });
+    await nextTick();
+    expect(none.querySelector(".rgb-cmyk-indicator")).toBeNull();
+    expect(failed.querySelector(".rgb-cmyk-indicator")).toBeNull();
+  });
+});

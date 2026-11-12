@@ -95,7 +95,10 @@ class BatchProcessor:
         callas_render: bool = False,
         strip_icc_cmyk: bool = False,
         pdf_merger: "Callable[[Sequence[Path], Path, str], None] | None" = None,
+        pdf_color_converter: "Callable[[Path, Path, str], object] | None" = None,
     ):
+        # Перевод RGB → CMYK итогового PDF через callas; None — не конвертируем.
+        self.pdf_color_converter = pdf_color_converter
         # Только CMYK-растры: убираем тег ICCBased без пересчёта значений.
         self.strip_icc_cmyk = bool(strip_icc_cmyk)
         self.callas_client = callas_client
@@ -554,6 +557,7 @@ class BatchProcessor:
 
                     temporary_output = Path(temporary_dir) / "combined.pdf"
                     self._merge_page_pdfs(page_pdfs, temporary_output, order)
+                    self._convert_rgb_to_cmyk(temporary_output, order)
                     self._validate_created_pdf(
                         temporary_output,
                         page_refs,
@@ -655,6 +659,29 @@ class BatchProcessor:
             raise RuntimeError(
                 "callas pdfToolbox не вернул объединённый PDF для заказа "
                 f"{order.order_id}. Проверьте журнал службы callas и повторите проверку."
+            )
+
+    def _convert_rgb_to_cmyk(self, pdf_path: Path, order: OrderCheck) -> None:
+        """RGB → CMYK итогового PDF; при успехе снимает предупреждения про RGB."""
+        if self.pdf_color_converter is None:
+            return
+        from services.callas.color_conversion import (
+            STATUS_CONVERTED,
+            convert_rgb_to_cmyk,
+            rgb_warning,
+        )
+
+        record = convert_rgb_to_cmyk(pdf_path, self.pdf_color_converter, order.order_id)
+        if record is None:
+            return
+        order.color_conversion = record
+        if record["status"] == STATUS_CONVERTED:
+            order.warnings[:] = [text for text in order.warnings if not rgb_warning(text)]
+            for item in order.files:
+                item.warnings[:] = [text for text in item.warnings if not rgb_warning(text)]
+        else:
+            order.warnings.append(
+                f"Не удалось перевести RGB в CMYK: {record['error']}. PDF оставлен в RGB."
             )
 
     def _render_pdf_with_callas(

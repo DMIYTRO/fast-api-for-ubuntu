@@ -69,7 +69,9 @@ class OrderWorkflowService:
         pdf_merger: Callable[[Any, Path, str], None] | None = None,
         pdf_page_extractor: Callable[[Path, int, Path, str], None] | None = None,
         accepted_pdf_provider: Callable[[Path], Path | None] | None = None,
+        pdf_color_converter: Callable[[Path, Path, str], Any] | None = None,
     ) -> None:
+        self.pdf_color_converter = pdf_color_converter
         self.coordinator = coordinator
         self.session_factory = session_factory
         self.order_finder = order_finder
@@ -112,7 +114,22 @@ class OrderWorkflowService:
     ) -> tuple[dict[str, Any], dict[str, Any] | None, int, str]:
         """Validate a candidate before replacing the current PDF and its status."""
         direction = str(run["options"].get("direction") or "digital")
+        conversion = None
+        if self.pdf_color_converter is not None:
+            from .callas.color_conversion import convert_rgb_to_cmyk
+
+            conversion = convert_rgb_to_cmyk(
+                candidate, self.pdf_color_converter, str(order.get("order_id") or "order")
+            )
         inspection = validate_pdf_revision(candidate, order, direction)
+        if conversion is not None and conversion.get("status") != "converted":
+            inspection = replace(
+                inspection,
+                warnings=(
+                    *inspection.warnings,
+                    f"Не удалось перевести RGB в CMYK: {conversion.get('error')}. PDF оставлен в RGB.",
+                ),
+            )
         revision = int(order.get("current_pdf_revision") or 0) + 1
         pitstop = None
         if readable_pdf(inspection) and self.reviewed_pdf_pitstop_service_factory is not None:
@@ -178,6 +195,7 @@ class OrderWorkflowService:
                     current_pdf_revision=revision, current_pdf_sha256=sha256,
                     errors=list(inspection.errors), warnings=list(inspection.warnings),
                     preview_paths=previews,
+                    color_conversion=conversion,
                 )
             except Exception:
                 # Storage did not commit the new status: restore its previous bytes.
