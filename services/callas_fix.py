@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import filecmp
+import hashlib
 import json
 import logging
 import os
@@ -299,6 +300,14 @@ class CallasFixService:
         """
         _write_state(fix_dir_for(pdf_path), previous)
 
+    def mark_published(self, pdf_path: Path | str, *, sha256: str, revision: int) -> None:
+        """Запоминает ревизию, ставшую производственным PDF после принятия исправления."""
+        state = read_state_file(pdf_path)
+        if not state:
+            return
+        state["published"] = {"sha256": sha256, "revision": revision, "at": _now()}
+        _write_state(fix_dir_for(pdf_path), state)
+
     def accepted_pdf(self, pdf_path: Path | str) -> Path | None:
         """Принятый результат исправления или ``None``."""
         state = read_state_file(pdf_path)
@@ -318,11 +327,21 @@ class CallasFixService:
         if accepted is None:
             return None
         pdf = Path(pdf_path)
+        state = read_state_file(pdf) or {}
+        published = state.get("published") or {}
+        if (
+            pdf.is_file()
+            and published.get("sha256")
+            and hashlib.sha256(pdf.read_bytes()).hexdigest() == published["sha256"]
+        ):
+            # Производственный PDF — ровно та ревизия, что была опубликована после
+            # принятия (в т. ч. после перевода RGB → CMYK, когда байты уже не совпадают
+            # с fixed.pdf): публиковать нечего.
+            return None
         if pdf.is_file() and filecmp.cmp(accepted, pdf, shallow=False):
             # Принятое исправление уже стало производственным PDF (после
             # повторной проверки и раскладки по папке статуса): публиковать нечего.
             return None
-        state = read_state_file(pdf) or {}
         source = state.get("source") or {}
         current = _signature(pdf) if pdf.is_file() else None
         if current is None or (source.get("size"), source.get("mtime_ns")) != (
