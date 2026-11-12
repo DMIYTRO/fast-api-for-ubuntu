@@ -96,7 +96,7 @@ onBeforeUnmount(() => {
     <div v-else class="loading-page"><span class="spinner"></span> Загружаем рабочий пульт…</div>
   </main>
   <StartCheckPanel :open="checks.drawerOpen" :config="checks.config" :busy="checks.loading" @close="checks.drawerOpen = false" @start="checks.start" />
-  <ActionBar :count="checks.selected.length" :selected-ids="checks.selected" :comments="checks.returnComments" :can-print="checks.canPrint" :busy="actionBusy" :reasons="checks.config?.return_reasons || []" @clear="checks.clearSelection" @action="act" />
+  <ActionBar :count="checks.selected.length" :selected-ids="checks.selected" :comments="checks.returnComments" :can-print="checks.canPrint" :block-reason="checks.printBlockReason" :busy="actionBusy" :reasons="checks.config?.return_reasons || []" @clear="checks.clearSelection" @action="act" />
   <div v-if="checks.conflictPrompt" class="confirm-backdrop">
     <section class="confirm-card">
       <h3>Файл уже существует</h3>

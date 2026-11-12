@@ -270,6 +270,17 @@ describe("checks store", () => {
     expect(isOrderPrintable({ status: "completed", pitstop_status: "not_checked" })).toBe(true);
   });
 
+  it("blocks print with the server-provided reason (file, check or approval)", () => {
+    const blocked = { status: "passed", print_blockers: [{ kind: "approval", code: "callas_fix_pending", message: "Исправление Callas ждёт решения." }] };
+    expect(isOrderPrintable(blocked)).toBe(false);
+    expect(isOrderPrintable({ status: "passed", print_blockers: [] })).toBe(true);
+    const store = useChecksStore();
+    store.orders = [{ ...blocked, order_id: "9" }];
+    store.selected = [orderIdentity(store.orders[0])];
+    expect(store.canPrint).toBe(false);
+    expect(store.printBlockReason).toBe("Исправление Callas ждёт решения.");
+  });
+
   it("blocks print while PitStop is running or after a technical failure", () => {
     const store = useChecksStore();
     store.orders = [{
