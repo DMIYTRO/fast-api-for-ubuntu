@@ -62,7 +62,8 @@ def parse_report_xml(path: Path | str) -> list[CallasFinding]:
     return parse_report_bytes(data)
 
 
-def parse_report_bytes(data: bytes) -> list[CallasFinding]:
+def parse_report_root(data: bytes) -> ET.Element:
+    """Безопасно разбирает XML-отчёт и возвращает корневой элемент."""
     if len(data) > _MAX_REPORT_BYTES:
         raise CallasReportError("XML-отчёт callas слишком большой для разбора.")
     if _FORBIDDEN_RE.search(data) or _utf16_forbidden(data):
@@ -70,9 +71,26 @@ def parse_report_bytes(data: bytes) -> list[CallasFinding]:
             "XML-отчёт callas отклонён: объявления DOCTYPE/ENTITY не допускаются."
         )
     try:
-        root = ET.fromstring(data)
+        return ET.fromstring(data)
     except ET.ParseError as exc:
         raise CallasReportError(f"XML-отчёт callas повреждён: {exc}") from exc
+
+
+def read_report_root(path: Path | str) -> ET.Element:
+    """Читает XML-отчёт с диска (с ограничением размера) и возвращает корень."""
+    report_path = Path(path)
+    try:
+        if report_path.stat().st_size > _MAX_REPORT_BYTES:
+            raise CallasReportError("XML-отчёт callas слишком большой для разбора.")
+        return parse_report_root(report_path.read_bytes())
+    except OSError as exc:
+        raise CallasReportError(
+            f"Не удалось прочитать XML-отчёт callas {report_path.name}: {exc.strerror or exc}"
+        ) from exc
+
+
+def parse_report_bytes(data: bytes) -> list[CallasFinding]:
+    root = parse_report_root(data)
 
     names = _rule_names(root)
     findings: list[CallasFinding] = []

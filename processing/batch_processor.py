@@ -96,7 +96,10 @@ class BatchProcessor:
         strip_icc_cmyk: bool = False,
         pdf_merger: "Callable[[Sequence[Path], Path, str], None] | None" = None,
         pdf_color_converter: "Callable[[Path, Path, str], object] | None" = None,
+        pdf_prepress_checker: "Callable[..., dict[str, object]] | None" = None,
     ):
+        # Допечатные проверки итогового PDF (шрифты, ppi, плашка K100); None — не проверяем.
+        self.pdf_prepress_checker = pdf_prepress_checker
         # Перевод RGB → CMYK итогового PDF через callas; None — не конвертируем.
         self.pdf_color_converter = pdf_color_converter
         # Только CMYK-растры: убираем тег ICCBased без пересчёта значений.
@@ -558,6 +561,7 @@ class BatchProcessor:
                     temporary_output = Path(temporary_dir) / "combined.pdf"
                     self._merge_page_pdfs(page_pdfs, temporary_output, order)
                     self._convert_rgb_to_cmyk(temporary_output, order)
+                    self._check_prepress(temporary_output, order)
                     self._validate_created_pdf(
                         temporary_output,
                         page_refs,
@@ -660,6 +664,16 @@ class BatchProcessor:
                 "callas pdfToolbox не вернул объединённый PDF для заказа "
                 f"{order.order_id}. Проверьте журнал службы callas и повторите проверку."
             )
+
+    def _check_prepress(self, pdf_path: Path, order: OrderCheck) -> None:
+        """Шрифты, растры выше предела ppi, плашка K100; сбой проверки заказ не роняет."""
+        if self.pdf_prepress_checker is None:
+            return
+        try:
+            order.prepress = self.pdf_prepress_checker(pdf_path, order.order_id, order.prepress)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("prepress.failed order_id=%s error=%s", order.order_id, exc)
+            order.prepress = {"status": "failed", "error": str(exc).strip() or exc.__class__.__name__}
 
     def _convert_rgb_to_cmyk(self, pdf_path: Path, order: OrderCheck) -> None:
         """RGB → CMYK итогового PDF; при успехе снимает предупреждения про RGB."""

@@ -77,6 +77,14 @@ _LOCAL_RULES: tuple[tuple[str, re.Pattern[str], str], ...] = tuple(
     )
 )
 
+# Известные проверки PitStop: ActionID -> (подпись группы, план исправления Callas).
+# «Clipping objects found» (ActionID 2079) создаёт Enfocus PitStop, не callas; объекты
+# сгруппированы в одну строку с числом и страницами, а исправление предлагает план
+# «remove_clipping» (профиль callas «Remove all clipping paths»).
+_PITSTOP_ACTIONS: dict[str, tuple[str, str]] = {
+    "2079": ("Обтравка: Clipping objects found (PitStop)", "remove_clipping"),
+}
+
 _NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
 _SPACES_RE = re.compile(r"\s+")
 
@@ -111,7 +119,7 @@ def pitstop_severity(value: object) -> str:
 class _Group:
     __slots__ = (
         "code", "severity", "source", "label", "count", "objects",
-        "pages", "files", "samples", "has_locations", "unknown_objects",
+        "pages", "files", "samples", "has_locations", "unknown_objects", "fix_plan",
     )
 
     def __init__(self, code: str, severity: str, source: str, label: str) -> None:
@@ -126,6 +134,7 @@ class _Group:
         self.samples: list[str] = []
         self.has_locations = False
         self.unknown_objects = False
+        self.fix_plan: str | None = None
 
     def add(
         self,
@@ -162,8 +171,8 @@ class _Group:
     def to_dict(self) -> dict[str, Any]:
         objects = len(self.objects) if self.has_locations and not self.unknown_objects else None
         pages = sorted(self.pages)
-        base = self.samples[0] if self.count == 1 and self.samples else self.label
-        return {
+        base = self.samples[0] if self.count == 1 and self.samples and not self.fix_plan else self.label
+        result = {
             "code": self.code,
             "severity": self.severity,
             "source": self.source,
@@ -176,6 +185,9 @@ class _Group:
             "files": list(self.files),
             "samples": list(self.samples),
         }
+        if self.fix_plan:
+            result["fix_plan"] = self.fix_plan
+        return result
 
 
 def plural_ru(count: int, one: str, few: str, many: str) -> str:
@@ -264,7 +276,10 @@ def build_issue_groups(
         key = (SOURCE_PITSTOP, severity, code)
         group = groups.get(key)
         if group is None:
-            group = groups[key] = _Group(code, severity, SOURCE_PITSTOP, message)
+            known = _PITSTOP_ACTIONS.get(str(action_id)) if action_id not in (None, "") else None
+            group = groups[key] = _Group(code, severity, SOURCE_PITSTOP, known[0] if known else message)
+            if known:
+                group.fix_plan = known[1]
         locations = issue.get("locations") or ()
         group.add(
             message,

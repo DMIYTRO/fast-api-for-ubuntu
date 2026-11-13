@@ -22,7 +22,9 @@ export const matchesStatusFilter = (order, filter) => {
   return status === filter;
 };
 
+export const printBlockMessage = (order) => (order?.print_blockers || []).map((item) => item.message).join(" ");
 export const isOrderPrintable = (order) => {
+  if ((order?.print_blockers || []).length) return false;
   if (!printableStatuses.includes(order?.status)) return false;
   const pitstop = order?.pitstop;
   if (!pitstop) return !order?.pitstop_required && (!order?.pitstop_status || order.pitstop_status === "not_checked");
@@ -78,6 +80,7 @@ export const useChecksStore = defineStore("checks", {
       });
     },
     selectedOrders: (state) => state.selected.map((id) => state.selectedOrderSnapshots[id] || state.orders.find((order) => orderIdentity(order) === String(id) || String(order.order_id ?? order.id) === String(id))).filter(Boolean),
+    printBlockReason() { return this.selectedOrders.map(printBlockMessage).filter(Boolean).join(" ") || "В печать можно отправить только прошедшие заказы"; },
     canPrint() { return this.selectedOrders.length > 0 && this.selectedOrders.every(isOrderPrintable); },
   },
   actions: {
@@ -311,7 +314,7 @@ export const useChecksStore = defineStore("checks", {
     async act(action, comment, conflictStrategy = "fail") {
       const selectedOrders = this.selectedOrders;
       if (action === "force-print" || (action === "print" && !this.canPrint)) {
-        throw new Error("В печать можно отправить только заказы, прошедшие все обязательные проверки.");
+        throw new Error((this.selectedOrders.some((order) => (order.print_blockers || []).length) && this.printBlockReason) || "В печать можно отправить только заказы, прошедшие все обязательные проверки.");
       }
       const order_ids = selectedOrders.map((order) => order.aggregate_id ?? order.order_id ?? order.id);
       const run_id = this.activeRun?.id;

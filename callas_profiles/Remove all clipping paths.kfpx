@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<pdfpreflight version="23.0">
+	<package>
+		<id3>bff3f3c256b841d829189fe883aaa621</id3>
+		<exportfingerprint>Fe44f02dc563168f3dbcfb78ec5916f0c</exportfingerprint>
+		<pdfxoutintentlist>
+		</pdfxoutintentlist>
+		<iccprofilelist>
+		</iccprofilelist>
+		<ccpolicies>
+		</ccpolicies>
+		<occdsetups>
+		</occdsetups>
+		<curves>
+		</curves>
+		<fspolicies>
+		</fspolicies>
+		<resources>
+		</resources>
+		<variables>
+		</variables>
+		<conditions>
+		</conditions>
+		<rules>
+		</rules>
+		<rulesets>
+		</rulesets>
+		<fixups>
+			<fixup>
+				<id1>F568f356dbe5100a5b38d476f87d41460</id1>
+				<id2>F6a7f1f13f3e13e9673346dbb2bef8925</id2>
+				<id3>5b513eef28f80f12e6627294b7780151</id3>
+				<id4>7bc86890f693fa4edf5f2b67a9cc1a60</id4>
+				<id5>Fe44f02dc563168f3dbcfb78ec5916f0c</id5>
+				<name>Remove all clipping paths</name>
+				<comment></comment>
+				<flags user_units="1" scope="16" edit="1" visible="1"></flags>
+				<creation>D:20261113231123+02&apos;00&apos;</creation>
+				<modification>D:20261113231123+02&apos;00&apos;</modification>
+				<fcfgs>
+					<fcfg>
+						<ffeat>RemoveClipPathes</ffeat>
+						<fparams>
+						</fparams>
+					</fcfg>
+				</fcfgs>
+				<reportFailed></reportFailed>
+				<proc_steps_options>0</proc_steps_options>
+			</fixup>
+		</fixups>
+		<fixupsets>
+			<fixupset>
+				<id1>Ud7be07eff240d0919f19560a1a48930d</id1>
+				<id2>U250a57fcc58175d5d7d97c6aa7c56dc2</id2>
+				<id3>ce9978b116256828602061deb0abab46</id3>
+				<id4>9d3cdb206d857447d0e47d7172463f36</id4>
+				<id5>U250a57fcc58175d5d7d97c6aa7c56dc2</id5>
+				<name>UUUU_FIXUPSET_DEF_NAME</name>
+				<comment>UUUU_FIXUPSET_DEF_NAME</comment>
+				<flags edit="1" visible="1" dict="1"></flags>
+				<fixups>
+					<fixup>F568f356dbe5100a5b38d476f87d41460</fixup>
+				</fixups>
+			</fixupset>
+		</fixupsets>
+		<actions>
+		</actions>
+		<quickfixes>
+		</quickfixes>
+		<profiles>
+			<profile>
+				<id1>P4b1bfdc3a229abd43f22e176307ba879</id1>
+				<id2>F6a7f1f13f3e13e9673346dbb2bef8925</id2>
+				<id3>e90cb2f5749470061e396b44923d96b9</id3>
+				<id4>c4516f830c6d05a3676ca88132e43048</id4>
+				<id5>F6a7f1f13f3e13e9673346dbb2bef8925</id5>
+				<name>Remove all clipping paths</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20261113231141+02&apos;00&apos;</creation>
+				<modification>D:20261113231212+02&apos;00&apos;</modification>
+				<aar_template></aar_template>
+				<pdfstd>
+					<pdfx convert="0"></pdfx>
+					<pdfa convert="0"></pdfa>
+					<pdfe convert="0"></pdfe>
+					<outcond></outcond>
+					<trapped>0</trapped>
+					<oioptions>0</oioptions>
+				</pdfstd>
+				<pdfstdemb>
+					<pdfx convert="0"></pdfx>
+					<pdfa convert="0"></pdfa>
+					<pdfe convert="0"></pdfe>
+					<outcond></outcond>
+					<trapped>0</trapped>
+					<oioptions>0</oioptions>
+					<afrelationship set_relationship="0"></afrelationship>
+				</pdfstdemb>
+				<wizard>
+				</wizard>
+				<rulesets>
+				</rulesets>
+				<fixupsets>
+					<fixupset>Ud7be07eff240d0919f19560a1a48930d</fixupset>
+				</fixupsets>
+			</profile>
+		</profiles>
+		<metaprofs>
+		</metaprofs>
+		<profgroups>
+		</profgroups>
+	</package>
+</pdfpreflight>

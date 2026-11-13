@@ -81,7 +81,12 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
         service = _service(request)
         return {
             "plans": [
-                {"key": plan.key, "title": plan.title, "requires_confirmation": plan.requires_confirmation}
+                {
+                    "key": plan.key, "title": plan.title,
+                    "requires_confirmation": plan.requires_confirmation,
+                    "description": plan.description, "warning": plan.warning,
+                    "requires_cmyk": plan.requires_cmyk,
+                }
                 for plan in service.plans(direction)
             ]
         }
@@ -163,7 +168,10 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
                     try:
                         candidate = service.publish_accepted(pdf)
                         if candidate is not None:
-                            request.app.state.order_workflow.recheck_pdf_revision(run, order, candidate)
+                            _updated, _pitstop, revision, sha256 = (
+                                request.app.state.order_workflow.recheck_pdf_revision(run, order, candidate)
+                            )
+                            service.mark_published(pdf, sha256=sha256, revision=revision)
                     except Exception as exc:
                         if candidate is not None:
                             candidate.unlink(missing_ok=True)

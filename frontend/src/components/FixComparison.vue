@@ -120,6 +120,12 @@ function close() {
         <span v-if="changedText">{{ changedText }}</span>
       </p>
 
+      <p v-if="summary.plan_warning" class="fix-plan-warning" role="note"><i aria-hidden="true">!</i><span>{{ summary.plan_warning }}</span></p>
+      <p v-if="summary.partial_failure" class="fix-plan-warning fix-partial" role="alert"><i aria-hidden="true">!</i><span>{{ summary.partial_failure }}</span></p>
+      <ul v-if="summary.post_check?.messages?.length" class="fix-post-check" :class="`post-${summary.post_check.level}`" aria-label="Повторная проверка результата">
+        <li v-for="(message, index) in summary.post_check.messages" :key="index">{{ message }}</li>
+      </ul>
+
       <p v-if="summary.distortion" :id="noteId" class="fix-distortion" role="status"><i aria-hidden="true">ℹ</i><span><b>Масштаб по осям.</b> {{ distortionText }}</span></p>
 
       <p v-if="status === 'ready' && comparison.source_only" class="fix-note" role="status"><i aria-hidden="true">ℹ</i> Итогового PDF у заказа нет, поэтому принять исправление в печать отсюда нельзя. Скачайте исправленный PDF и проверьте заказ заново.</p>

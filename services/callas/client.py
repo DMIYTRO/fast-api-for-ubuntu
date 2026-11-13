@@ -59,6 +59,7 @@ logger = logging.getLogger("services.callas")
 
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _PAGE_RE = re.compile(r"^page-(\d+)\.png$", re.IGNORECASE)
+_SEPARATION_RE = re.compile(r"^(?:.*_)?(?:page-)?(\d+)_sep_(Cyan|Magenta|Yellow|Black)\.png$", re.IGNORECASE)
 _RETRY_STATUSES = frozenset({429, 502, 503, 504})
 _AMBIGUOUS_STATUSES = frozenset({502, 503, 504})
 _DONE_STATUSES = frozenset({"done", "succeeded", "success", "completed"})
@@ -459,6 +460,47 @@ class CallasClient:
                     "Callas не вернул блок ink_coverage в ответе задания.", job_id=job_id
                 )
             return parse_ink_coverage(block, job_id=job_id)
+
+    def separations(
+        self,
+        pdf: Path | str,
+        *,
+        resolution: int = 50,
+        job_id: str,
+        cancel: threading.Event | None = None,
+    ) -> dict[tuple[int, str], Path]:
+        """Цветоделения процессных красок (``--createseparations --part=sep_process``) в PNG.
+
+        Возвращает ``{(страница, краска): путь к PNG}``; краска: ``Cyan``, ``Magenta``,
+        ``Yellow``, ``Black``. Нужен тип задания ``separations`` на службе
+        (``CALLAS_ENABLED_TYPES``). Папку ``job_dir(job_id)`` удаляет вызывающий код.
+        """
+        self._validate_job_id(job_id)
+        if not isinstance(resolution, int) or isinstance(resolution, bool) or not 10 <= resolution <= 300:
+            raise CallasConfigError("Разрешение цветоделений должно быть целым числом от 10 до 300 ppi.", job_id=job_id)
+        source = self._existing_source(pdf)
+        ctx = self._new_ctx(job_id, cancel)
+        with self._slot(ctx):
+            staged = self._stage_inputs(job_id, [source])
+            server_path, digest = staged[0]
+            spec = {
+                "type": "separations",
+                "input": {"path": server_path, "sha256": digest},
+                "out_dir": str(self._server_job_dir(job_id) / "out"),
+                "parts": ["sep_process"],
+                "imgformat": "PNG",
+                "resolution": resolution,
+            }
+            job = self._execute(ctx, spec, [source])
+            files = self._verify_files(ctx, job)
+            result: dict[tuple[int, str], Path] = {}
+            for name, local in files.items():
+                match = _SEPARATION_RE.match(name)
+                if match:
+                    result[(int(match.group(1)), match.group(2))] = local
+            if not result:
+                raise CallasResultError("Callas не вернул ни одного цветоделения.", job_id=job_id)
+            return result
 
     def info(
         self,

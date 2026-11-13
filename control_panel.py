@@ -60,6 +60,7 @@ from services.sborka_integration import (
     build_sender,
 )
 from services.callas_fix import comparison_payload as callas_fix_payload, read_state_file as read_callas_fix_state
+from services.print_readiness import print_blockers
 from services.ftp_preview_uploader import build_ftp_preview_uploader
 from services.return_preview import CUSTOM_PREVIEWS_RELATIVE_PATH, custom_return_preview_path
 from core.preview_cache import full_preview_cache_path, preview_media_type, preview_variants
@@ -174,7 +175,9 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
             fix_state = read_callas_fix_state(order["pdf_path"])
             if fix_state:
                 order["callas_fix"] = {"comparison": callas_fix_payload(fix_state, fix_base)}
+            order["print_blockers"] = print_blockers(order, fix_state)
         elif input_path:
+            order["print_blockers"] = print_blockers(order)
             # Итогового PDF нет (например, ошибка размера): исправлять можно исходные PDF.
             input_root = input_path.resolve()
             for index, entry in enumerate(order.get("files") or []):
@@ -573,7 +576,16 @@ def _callas_fix_service(settings: Settings):
     from services.callas import CallasClient
     from services.callas_fix import CallasFixService
 
-    return CallasFixService(CallasClient.from_settings(settings))
+    from services.callas.fix_checks import build_post_checks
+    from services.callas.prepress import PrepressAnalyzer
+
+    client = CallasClient.from_settings(settings)
+    analyzer = PrepressAnalyzer(
+        client,
+        high_ppi_limit=settings.high_ppi_limit,
+        black_solid_threshold=settings.black_solid_area_threshold,
+    )
+    return CallasFixService(client, post_checks=build_post_checks(analyzer))
 
 
 def _configure_callas_pdf_renderer(settings: Settings) -> None:
@@ -608,6 +620,7 @@ def _callas_processor_factory(settings: Settings):
         BatchProcessor,
         callas_client=client,
         pdf_color_converter=_callas_rgb_to_cmyk_converter(settings, client),
+        pdf_prepress_checker=_callas_prepress_checker(settings, client),
         callas_render=settings.callas_render_enabled,
         strip_icc_cmyk=settings.strip_icc_cmyk,
     )
@@ -622,6 +635,20 @@ def _callas_rgb_to_cmyk_converter(settings: Settings, client=None):
 
     return CallasRgbToCmykConverter(
         client or CallasClient.from_settings(settings), settings.callas_rgb_to_cmyk_profile
+    )
+
+
+def _callas_prepress_checker(settings: Settings, client=None):
+    """Допечатные проверки (шрифты, ppi, плашка K100); None, если выключены или callas не настроен."""
+    if not settings.callas_url or not settings.callas_prepress_enabled:
+        return None
+    from services.callas import CallasClient
+    from services.callas.prepress import PrepressAnalyzer
+
+    return PrepressAnalyzer(
+        client or CallasClient.from_settings(settings),
+        high_ppi_limit=settings.high_ppi_limit,
+        black_solid_threshold=settings.black_solid_area_threshold,
     )
 
 
@@ -861,6 +888,7 @@ def create_app(
         ),
         pdf_merger=_callas_pdf_merger(settings),
         pdf_color_converter=_callas_rgb_to_cmyk_converter(settings),
+        pdf_prepress_checker=_callas_prepress_checker(settings),
         pdf_page_extractor=_callas_page_extractor(settings),
         accepted_pdf_provider=(
             callas_fix_service.publish_accepted if callas_fix_service else None
