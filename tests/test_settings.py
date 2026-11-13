@@ -80,3 +80,34 @@ class SettingsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrepressSettingsTests(unittest.TestCase):
+    def test_defaults(self):
+        with patch.dict(os.environ, {}, clear=False):
+            for name in ("IMAGE_MAGIC_BLACK_SOLID_AREA_THRESHOLD", "IMAGE_MAGIC_HIGH_PPI_LIMIT",
+                         "IMAGE_MAGIC_CALLAS_PREPRESS_ENABLED", "IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_PROFILE"):
+                os.environ.pop(name, None)
+            settings = Settings.from_env()
+        self.assertEqual(settings.black_solid_area_threshold, 0.25)
+        self.assertEqual(settings.high_ppi_limit, 500.0)
+        self.assertTrue(settings.callas_prepress_enabled)
+        self.assertEqual(
+            settings.callas_rgb_to_cmyk_profile, "Image Magic/NEW_Convert color to 4c for digital printing"
+        )
+
+    def test_overrides_and_bad_values(self):
+        with patch.dict(os.environ, {
+            "IMAGE_MAGIC_BLACK_SOLID_AREA_THRESHOLD": "0,4",
+            "IMAGE_MAGIC_HIGH_PPI_LIMIT": "600",
+            "IMAGE_MAGIC_CALLAS_PREPRESS_ENABLED": "false",
+            "IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_PROFILE": "Convert colors/Old",
+        }):
+            settings = Settings.from_env()
+        self.assertEqual((settings.black_solid_area_threshold, settings.high_ppi_limit), (0.4, 600.0))
+        self.assertFalse(settings.callas_prepress_enabled)
+        self.assertEqual(settings.callas_rgb_to_cmyk_profile, "Convert colors/Old")
+        with patch.dict(os.environ, {"IMAGE_MAGIC_BLACK_SOLID_AREA_THRESHOLD": "abc", "IMAGE_MAGIC_HIGH_PPI_LIMIT": "5"}):
+            settings = Settings.from_env()
+        self.assertEqual(settings.black_solid_area_threshold, 0.25)
+        self.assertEqual(settings.high_ppi_limit, 72.0)  # нижняя граница

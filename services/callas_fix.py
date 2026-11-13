@@ -242,9 +242,15 @@ class CallasFixService:
             callas_summary = dict(result.summary)
             applied = int(callas_summary.get("fixups_applied") or 0)
             failed = int(callas_summary.get("fixups_failed") or 0)
-            if plan.unfixable_message and failed > 0 and applied == 0:
+            # Счётчики берутся из XML-отчёта; если в нём вместо fixup-записей стоит ошибка
+            # (например утверждение pdfToolbox на PDF без XMP), надёжнее код выхода:
+            # 5-7 — исправлено, 8 — ошибки после исправления.
+            exit_code = int(getattr(result, "exit_code", 0) or 0)
+            changed = applied > 0 or exit_code in (5, 6, 7)
+            errors_left = failed > 0 or exit_code == 8
+            if plan.unfixable_message and errors_left and applied == 0:
                 raise CallasFixError(plan.unfixable_message, code="callas_unfixable")
-            if plan.no_change_message and applied == 0 and failed == 0:
+            if plan.no_change_message and not changed and not errors_left:
                 raise CallasFixError(plan.no_change_message, code="callas_no_change")
             fixed = directory / FIXED_PDF_NAME
             shutil.copyfile(result.output_pdf, fixed)

@@ -195,3 +195,12 @@ def test_missing_pdf_is_rejected(env):
     with pytest.raises(CallasFixError) as error:
         env.service.start(env.tmp / "PDF" / "absent.pdf", "fonts_to_outlines")
     assert error.value.code == "pdf_not_found"
+
+
+def test_exit_code_decides_when_report_has_no_fixup_counters(env):
+    """Отчёт без fixup-записей (ошибка утверждения pdfToolbox): код 5 значит «исправлено», код 8 «ошибки»."""
+    env.profiles[CLIP] = lambda pdf, mode: {"exit_code": 5, "xml": "<r/>", "fixed": env.fixed}
+    assert env.run("remove_clipping")["status"] == "ready"
+    env.profiles[FONTS] = lambda pdf, mode: {"exit_code": 8, "status": "errors", "xml": "<r/>"}
+    state = env.run("fonts_to_outlines")
+    assert state["status"] == "failed" and state["error"].startswith("Шрифты не встроены")
