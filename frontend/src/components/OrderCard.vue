@@ -10,6 +10,7 @@ import OrderActions from "./OrderActions.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import { orderIssueGroups } from "./issueGroups.js";
 import InkCoverage from "./InkCoverage.vue";
+import { availableFixes, fontLabel, fontsInfo, iccOff, prepressNotices } from "./prepress.js";
 import { inkCoverageFlagLabel, inkCoverageMainFlag, inkCoverageTitle } from "./inkCoverage.js";
 
 const props = defineProps({ order: Object, runId: String, selected: Boolean, reasons: Array, paidDesign: { type: Boolean, default: true }, designCost: { type: String, default: "0" } });
@@ -58,6 +59,11 @@ const rgbConvertedTitle = computed(() => {
   const pages = (info.pages || []).join(", ");
   return `Цветовая модель скорректирована: RGB переведён в CMYK${pages ? ` (стр. ${pages})` : ""}${info.profile ? `. Профиль: ${info.profile}` : ""}`;
 });
+const iccOffTitle = computed(() => iccOff(props.order));
+const fonts = computed(() => fontsInfo(props.order));
+const fontsList = computed(() => (fonts.value?.fonts || []).map(fontLabel).join("; "));
+const prepressNotes = computed(() => prepressNotices(props.order));
+const fixButtons = computed(() => availableFixes(props.order));
 const localIssueGroups = computed(() => orderIssueGroups({ ...props.order, files: files.value }).filter((group) => group.source !== "pitstop"));
 const groupedErrors = computed(() => localIssueGroups.value.filter((group) => group.severity === "error"));
 const groupedWarnings = computed(() => localIssueGroups.value.filter((group) => group.severity === "warning"));
@@ -207,6 +213,8 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
       </div>
       <div class="order-meta">
         <span v-if="rgbConverted" class="rgb-cmyk-indicator" :title="rgbConvertedTitle" :aria-label="rgbConvertedTitle" role="img"><b class="c-r">R</b><b class="c-g">G</b><b class="c-b">B</b></span>
+        <span v-if="iccOffTitle" class="icc-off-indicator" :title="iccOffTitle" :aria-label="iccOffTitle" role="img">ICC off</span>
+        <span v-if="fonts?.converted" class="fonts-outlined-indicator" title="Шрифты переведены в кривые" aria-label="Шрифты переведены в кривые" role="img"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 16 9 4h2l5 12M6.5 11.5h7" /></svg></span>
         <span v-if="flattenedTiffs.length" class="tiff-flatten-indicator" :title="tiffFlattenTitle" :aria-label="tiffFlattenTitle">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" aria-hidden="true"><path d="m3 7 9-4 9 4-9 4-9-4Zm0 5 9 4 9-4M3 17l9 4 9-4" /></svg>
           TIFF сведён
@@ -255,6 +263,7 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
               <tr><th>Разрешение</th><td>{{ dpi(face) }}</td><td v-if="back">{{ dpi(back) }}</td><td>≥ 250 DPI</td></tr>
               <tr><th>Цветовая модель</th><td>{{ color(face) }}</td><td v-if="back">{{ color(back) }}</td><td>CMYK</td></tr>
               <tr><th>Формат файла</th><td>{{ format(face) }}</td><td v-if="back">{{ format(back) }}</td><td>JPG / JPEG / TIFF / PDF</td></tr>
+              <tr v-if="fonts && fonts.count > 0" class="fonts-row"><th>Шрифты</th><td :colspan="back ? 2 : 1"><b>{{ fonts.count }}</b>: {{ fontsList }}</td><td>Кривые</td></tr>
               <tr><th>Автоповорот</th><td>{{ rotation(face) }}</td><td v-if="back">{{ rotation(back) }}</td><td>Минимальный</td></tr>
             </tbody>
           </table>
@@ -297,10 +306,14 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
             </li>
           </ul>
         </div>
+        <div v-if="prepressNotes.length" class="issue-list warnings prepress-notes">
+          <strong>Допечатные замечания</strong>
+          <ul><li v-for="note in prepressNotes" :key="note.key" class="issue-group" :class="`note-${note.level}`" :data-note="note.key">{{ note.text }}</li></ul>
+        </div>
         <div v-if="successful && !groupedErrors.length && !groupedWarnings.length" class="issue-list success-note"><strong>Заказ соответствует требованиям допечатной подготовки.</strong></div>
         <PitStopReport v-if="order.pitstop" :pitstop="order.pitstop" section-title="Проверка PDF из первоначальной обработки" />
         <PitStopReport v-if="order.action_result?.pitstop" :pitstop="order.action_result.pitstop" section-title="Повторная проверка печатного PDF из просмотренных TIFF" />
-        <CallasFixControl v-if="order.pdf_path || order.pdf_url || order.callas_fix?.comparison" :run-id="runId" :order-id="actionId" :initial="order.callas_fix" :can-start="Boolean(order.pdf_path || order.pdf_url)" />
+        <CallasFixControl v-if="order.pdf_path || order.pdf_url || order.callas_fix?.comparison" :run-id="runId" :order-id="actionId" :initial="order.callas_fix" :can-start="Boolean(order.pdf_path || order.pdf_url)" :fixes="fixButtons" />
         <CallasFixControl
           v-for="file in sourceFixFiles"
           :key="`fix-${file.callas_fix_file_id}`"

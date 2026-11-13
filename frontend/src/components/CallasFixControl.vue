@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, useId, watch } from "vue";
 import { api } from "../services/api.js";
 import FixComparison from "./FixComparison.vue";
+import { FIX_BUTTONS } from "./prepress.js";
 
 const POLL_MS = 1500;
 const UNAVAILABLE = [404, 405, 501];
@@ -16,7 +17,10 @@ const props = defineProps({
   // Исходный PDF-файл заказа без собранного PDF: результат только для просмотра и скачивания.
   fileId: { type: String, default: "" },
   fileLabel: { type: String, default: "" },
+  // Ключи дополнительных планов, применимых к заказу (шрифты, плашка K100, обтравка).
+  fixes: { type: Array, default: () => [] },
 });
+const extraButtons = computed(() => props.fixes.filter((key) => FIX_BUTTONS[key]).map((key) => ({ key, ...FIX_BUTTONS[key] })));
 
 const uid = useId();
 const comparison = ref(null);
@@ -179,6 +183,17 @@ onBeforeUnmount(() => {
         </svg>
         <span class="icon-button-label">{{ busy || loadingPlans ? "Запуск…" : "Размер" }}</span>
       </button>
+      <button
+        v-for="item in extraButtons"
+        :key="item.key"
+        type="button"
+        class="callas-size-fix callas-extra-fix"
+        :class="`callas-fix-${item.key}`"
+        :title="item.title"
+        :aria-label="item.label"
+        :disabled="busy"
+        @click="start(item.key)"
+      >{{ item.label }}</button>
     </div>
     <p v-if="error" class="form-error" role="alert">{{ error }}</p>
   </div>
