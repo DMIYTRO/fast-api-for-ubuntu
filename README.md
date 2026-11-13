@@ -56,7 +56,7 @@ Image Magic проверяет растровые макеты перед печ
 CMYK — рекомендуемая модель для печати. RGB/sRGB не блокирует заказ: до конвертации в отчёте появляется предупреждение.
 
 **Автоперевод RGB → CMYK.** При `IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_ENABLED=true` итоговый PDF с RGB (растры и векторные/текстовые операторы DeviceRGB) переводится в CMYK процесс-планом callas
-`Convert colors/Convert to CMYK, keep spot colors (ISO Coated v2 (ECI))` (меняется через `IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_PROFILE`). Результат заменяет PDF, только если число страниц не изменилось и RGB не осталось; иначе PDF остаётся в RGB с предупреждением «Не удалось перевести RGB в CMYK». После успешного перевода RGB-предупреждения и RGB-ошибка PitStop не показываются, а карточка получает значок из трёх букв R (красная), G (зелёная), B (синяя). Работает для digital и offset, при сборке PDF, ручном Callas-fix, сборке печати из layered TIFF и повторной проверке ревизии. Исходные изображения не перекрашиваются. Подробности: [docs/rgb-to-cmyk.md](docs/rgb-to-cmyk.md).
+`Image Magic/NEW_Convert color to 4c for digital printing` (с 2026-11-14 вместо `Convert colors/Convert to CMYK ... (ISO Coated v2 (ECI))`; меняется через `IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_PROFILE`). Если в документе был ICC/Lab цвет, карточка показывает значок «ICC off». Результат заменяет PDF, только если число страниц не изменилось и RGB не осталось; иначе PDF остаётся в RGB с предупреждением «Не удалось перевести RGB в CMYK». После успешного перевода RGB-предупреждения и RGB-ошибка PitStop не показываются, а карточка получает значок из трёх букв R (красная), G (зелёная), B (синяя). Работает для digital и offset, при сборке PDF, ручном Callas-fix, сборке печати из layered TIFF и повторной проверке ревизии. Исходные изображения не перекрашиваются. Подробности: [docs/rgb-to-cmyk.md](docs/rgb-to-cmyk.md).
 
 Все операции с PDF выполняет callas pdfToolbox (склейка, разделение, информация, рендер). Локальных запасных вариантов через PyMuPDF/Ghostscript нет: без настроенного callas сборка PDF завершается понятной ошибкой. Итоговый PDF публикуется только после контрольного рендера через callas. Растровые TIFF/JPEG/PNG → PDF по-прежнему конвертирует ImageMagick.
 
@@ -138,7 +138,10 @@ magick -version
 | `IMAGE_MAGIC_CALLAS_USER` | значение `X-Callas-User` (по умолчанию `image-magic`) |
 | `IMAGE_MAGIC_CALLAS_PROCESS_ENABLED` | ручной Callas-fix и профили проверки |
 | `IMAGE_MAGIC_CALLAS_INKCOVERAGE_ENABLED` | красочность, см. [docs/ink-coverage.md](docs/ink-coverage.md) |
-| `IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_ENABLED` / `_PROFILE` | автоперевод RGB → CMYK (по умолчанию выключен) |
+| `IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_ENABLED` / `_PROFILE` | автоперевод RGB → CMYK (по умолчанию выключен; профиль по умолчанию `Image Magic/NEW_Convert color to 4c for digital printing`) |
+| `IMAGE_MAGIC_CALLAS_PREPRESS_ENABLED` | автоматические допечатные проверки callas: шрифты, растры выше предела ppi, плашка 100% K (по умолчанию включено при заданном `IMAGE_MAGIC_CALLAS_URL`) |
+| `IMAGE_MAGIC_BLACK_SOLID_AREA_THRESHOLD` | доля площади чистого K100, с которой показывается «Плашка 100% K» и кнопка составного чёрного (по умолчанию `0.25`, `0` выключает проверку) |
+| `IMAGE_MAGIC_HIGH_PPI_LIMIT` | предел разрешения растров, ppi (по умолчанию `500`) |
 | `IMAGE_MAGIC_CALLAS_REQUEST_TIMEOUT_SECONDS`, `_JOB_TIMEOUT_SECONDS`, `_POLL_INTERVAL_SECONDS`, `_MAX_CONCURRENT_JOBS`, `_MAX_RETRIES` | таймауты, опрос, параллельность и повторы |
 
 `IMAGE_MAGIC_CALLAS_MERGE_ENABLED` и `_RENDER_ENABLED` устарели: склейка и рендер идут через callas всегда.
