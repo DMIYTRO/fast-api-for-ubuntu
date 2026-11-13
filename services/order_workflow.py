@@ -72,8 +72,10 @@ class OrderWorkflowService:
         pdf_page_extractor: Callable[[Path, int, Path, str], None] | None = None,
         accepted_pdf_provider: Callable[[Path], Path | None] | None = None,
         pdf_color_converter: Callable[[Path, Path, str], Any] | None = None,
+        pdf_prepress_checker: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self.pdf_color_converter = pdf_color_converter
+        self.pdf_prepress_checker = pdf_prepress_checker
         self.coordinator = coordinator
         self.session_factory = session_factory
         self.order_finder = order_finder
@@ -123,6 +125,16 @@ class OrderWorkflowService:
             conversion = convert_rgb_to_cmyk(
                 candidate, self.pdf_color_converter, str(order.get("order_id") or "order")
             )
+        prepress = None
+        if self.pdf_prepress_checker is not None:
+            # Повторяем допечатные проверки на кандидате (после исправления и перевода в CMYK):
+            # число шрифтов, ppi, плашка K100 пересчитываются заново.
+            try:
+                prepress = self.pdf_prepress_checker(
+                    candidate, str(order.get("order_id") or "order"), order.get("prepress")
+                )
+            except Exception as exc:  # noqa: BLE001
+                prepress = {"status": "failed", "error": str(exc).strip() or exc.__class__.__name__}
         inspection = validate_pdf_revision(candidate, order, direction)
         if conversion is not None and conversion.get("status") != "converted":
             inspection = replace(
@@ -198,6 +210,7 @@ class OrderWorkflowService:
                     errors=list(inspection.errors), warnings=list(inspection.warnings),
                     preview_paths=previews,
                     color_conversion=conversion,
+                    prepress=prepress,
                 )
             except Exception:
                 # Storage did not commit the new status: restore its previous bytes.

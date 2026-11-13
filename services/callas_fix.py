@@ -23,7 +23,7 @@ import shutil
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from config.callas_plans import CALLAS_PLANS, CallasPlan
@@ -127,8 +127,10 @@ class CallasFixService:
         plans: dict[str, CallasPlan] | None = None,
         *,
         compare: Callable[..., Any] = build_fix_comparison,
+        post_checks: Mapping[str, Callable[[Path, Path, dict[str, Any]], dict[str, Any]]] | None = None,
     ) -> None:
         self._client = client
+        self._post_checks = dict(post_checks or {})
         self._plans = plans if plans is not None else CALLAS_PLANS
         self._compare = compare
         self._lock = threading.Lock()
@@ -174,6 +176,8 @@ class CallasFixService:
             raise CallasFixError("План недоступен для выбранного направления.", code="callas_plan_direction")
         if not pdf.is_file():
             raise CallasFixError("PDF заказа не найден.", status_code=404, code="pdf_not_found")
+        if plan.requires_cmyk:
+            self._require_no_rgb(pdf)
         key = str(fix_dir_for(pdf))
         with self._lock:
             if key in self._active:
@@ -184,7 +188,10 @@ class CallasFixService:
         try:
             state = {
                 "status": STATUS_PROCESSING,
-                "plan": {"key": plan.key, "title": plan.title},
+                "plan": {
+                    "key": plan.key, "title": plan.title,
+                    "description": plan.description, "warning": plan.warning,
+                },
                 "started_at": _now(),
                 "finished_at": None,
                 "error": None,
@@ -200,6 +207,26 @@ class CallasFixService:
             raise
         return state
 
+    @staticmethod
+    def _require_no_rgb(pdf: Path) -> None:
+        """Перед «чёрным» планом RGB уже должен быть переведён в CMYK (иначе RGB-чёрный не станет K100)."""
+        from core.pdf_inspector import find_rgb_pages
+
+        try:
+            pages = find_rgb_pages(pdf)
+        except Exception as exc:  # noqa: BLE001
+            raise CallasFixError(
+                f"Не удалось проверить цвет PDF перед исправлением: {exc}", code="rgb_check_failed"
+            ) from exc
+        if pages:
+            raise CallasFixError(
+                "В PDF остался RGB (стр. " + ", ".join(str(page) for page in pages) + "). "
+                "Сначала переведите RGB в CMYK (включите автоконвертацию или исправьте макет), "
+                "затем запускайте этот план: иначе RGB-чёрный не станет K100.",
+                status_code=409,
+                code="rgb_not_converted",
+            )
+
     def execute(self, pdf_path: Path | str, plan_key: str) -> dict[str, Any]:
         """Выполняет исправление. Исключения не выпускает: ошибка попадает в состояние ``failed``."""
         pdf = Path(pdf_path)
@@ -212,6 +239,13 @@ class CallasFixService:
             result = self._client.process(
                 pdf, plan.profile, "fix", job_id=job_id, report=("xml",), keep_name=True
             )
+            callas_summary = dict(result.summary)
+            applied = int(callas_summary.get("fixups_applied") or 0)
+            failed = int(callas_summary.get("fixups_failed") or 0)
+            if plan.unfixable_message and failed > 0 and applied == 0:
+                raise CallasFixError(plan.unfixable_message, code="callas_unfixable")
+            if plan.no_change_message and applied == 0 and failed == 0:
+                raise CallasFixError(plan.no_change_message, code="callas_no_change")
             fixed = directory / FIXED_PDF_NAME
             shutil.copyfile(result.output_pdf, fixed)
             compare_dir = directory / COMPARE_DIR
@@ -226,8 +260,24 @@ class CallasFixService:
             for side, field in (("original", "original_size_mm"), ("result", "result_size_mm")):
                 described = summary.get(side) or {}
                 summary[field] = [described.get("page_width_mm"), described.get("page_height_mm")]
-            summary["callas"] = dict(result.summary)
+            summary["callas"] = callas_summary
             summary["callas_status"] = result.status
+            if plan.warning:
+                summary["plan_warning"] = plan.warning
+            if failed > 0:
+                summary["partial_failure"] = plan.unfixable_message or (
+                    "Часть исправлений callas не удалось выполнить."
+                )
+            check = self._post_checks.get(plan_key)
+            if check is not None:
+                try:
+                    summary["post_check"] = check(pdf, fixed, summary)
+                except Exception as exc:  # noqa: BLE001 — повторная проверка не должна терять результат
+                    logger.warning("callas_fix.post_check_failed plan=%s", plan_key, exc_info=True)
+                    summary["post_check"] = {
+                        "kind": plan_key, "level": "warning",
+                        "messages": [f"Повторная проверка результата не выполнена: {exc}"],
+                    }
             state.update(
                 status=STATUS_READY,
                 finished_at=_now(),
@@ -240,7 +290,7 @@ class CallasFixService:
         except Exception as exc:  # noqa: BLE001 — любое сбой должен дойти до оператора
             logger.exception("callas_fix.failed pdf=%s plan=%s", pdf.name, plan_key)
             message = str(exc).strip() or exc.__class__.__name__
-            if not isinstance(exc, (CallasError, FixCompareError)):
+            if not isinstance(exc, (CallasError, FixCompareError, CallasFixError)):
                 message = f"Исправление не выполнено: {message}"
             state.update(status=STATUS_FAILED, finished_at=_now(), error=message)
             _write_state(directory, state)

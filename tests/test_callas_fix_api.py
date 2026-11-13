@@ -105,7 +105,10 @@ class CallasFixApiTests(unittest.TestCase):
 class EnabledTests(CallasFixApiTests):
     def test_plans_lists_catalog(self):
         plans = self.client.get("/api/callas/plans?direction=offset").json()["plans"]
-        self.assertEqual([plan["key"] for plan in plans], ["size_correction"])
+        self.assertEqual(
+            [plan["key"] for plan in plans],
+            ["size_correction", "fonts_to_outlines", "black_to_rich", "remove_clipping"],
+        )
         self.assertEqual(self.client.get("/api/callas/plans?direction=nope").json()["plans"], [])
 
     def test_status_is_empty_before_any_fix(self):

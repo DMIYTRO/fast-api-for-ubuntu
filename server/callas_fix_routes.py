@@ -81,7 +81,12 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
         service = _service(request)
         return {
             "plans": [
-                {"key": plan.key, "title": plan.title, "requires_confirmation": plan.requires_confirmation}
+                {
+                    "key": plan.key, "title": plan.title,
+                    "requires_confirmation": plan.requires_confirmation,
+                    "description": plan.description, "warning": plan.warning,
+                    "requires_cmyk": plan.requires_cmyk,
+                }
                 for plan in service.plans(direction)
             ]
         }

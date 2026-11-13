@@ -44,9 +44,23 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-DEFAULT_RGB_TO_CMYK_PROFILE = (
-    "Convert colors/Convert to CMYK, keep spot colors (ISO Coated v2 (ECI))"
-)
+# Профиль .kfpx сделан в desktop pdfToolbox и лежит на сервере в «Image Magic/» (callas_profiles/).
+# Прежний профиль «Convert colors/Convert to CMYK, keep spot colors (ISO Coated v2 (ECI))»
+# по-прежнему можно задать через IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_PROFILE.
+DEFAULT_RGB_TO_CMYK_PROFILE = "Image Magic/NEW_Convert color to 4c for digital printing"
+DEFAULT_BLACK_SOLID_AREA_THRESHOLD = 0.25
+DEFAULT_HIGH_PPI_LIMIT = 500.0
+
+
+def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw.replace(",", "."))
+    except ValueError:
+        return default
+    return min(max(value, minimum), maximum)
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +110,11 @@ class Settings:
     # Автоматический перевод RGB → CMYK итогового PDF процесс-планом callas.
     callas_rgb_to_cmyk_enabled: bool = False
     callas_rgb_to_cmyk_profile: str = DEFAULT_RGB_TO_CMYK_PROFILE
+    # Автоматические допечатные проверки callas на итоговом PDF: шрифты (Warn Fonts),
+    # растры выше предела ppi, крупная плашка 100% K (цветоделения).
+    callas_prepress_enabled: bool = True
+    black_solid_area_threshold: float = DEFAULT_BLACK_SOLID_AREA_THRESHOLD
+    high_ppi_limit: float = DEFAULT_HIGH_PPI_LIMIT
     callas_request_timeout_seconds: float = 30.0
     callas_job_timeout_seconds: float = 600.0
     callas_poll_interval_seconds: float = 1.0
@@ -265,6 +284,14 @@ class Settings:
                 "IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_PROFILE", ""
             ).strip()
             or DEFAULT_RGB_TO_CMYK_PROFILE,
+            callas_prepress_enabled=_env_bool("IMAGE_MAGIC_CALLAS_PREPRESS_ENABLED", True),
+            black_solid_area_threshold=_env_float(
+                "IMAGE_MAGIC_BLACK_SOLID_AREA_THRESHOLD",
+                DEFAULT_BLACK_SOLID_AREA_THRESHOLD, minimum=0.0, maximum=1.0,
+            ),
+            high_ppi_limit=_env_float(
+                "IMAGE_MAGIC_HIGH_PPI_LIMIT", DEFAULT_HIGH_PPI_LIMIT, minimum=72.0, maximum=5000.0
+            ),
             callas_request_timeout_seconds=max(
                 1.0,
                 float(os.environ.get("IMAGE_MAGIC_CALLAS_REQUEST_TIMEOUT_SECONDS", "30")),

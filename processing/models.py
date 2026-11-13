@@ -74,6 +74,8 @@ class OrderCheck:
     postpress: dict[str, object] | None = None
     # Итог автоматического перевода RGB → CMYK итогового PDF (None — не требовался).
     color_conversion: dict[str, object] | None = None
+    # Допечатные проверки callas итогового PDF: шрифты, ppi, плашка K100 (services/callas/prepress.py).
+    prepress: dict[str, object] | None = None
 
     @property
     def aggregate_id(self) -> str:

@@ -146,6 +146,8 @@ def order_check_to_dto(
         result["postpress"] = value.postpress
     if value.color_conversion is not None:
         result["color_conversion"] = value.color_conversion
+    if value.prepress is not None:
+        result["prepress"] = value.prepress
     if current_pdf_revision is not None:
         result["current_pdf_revision"] = current_pdf_revision
     if current_pdf_sha256 is not None:
