@@ -139,3 +139,22 @@ class PrintAfterFixTests(CallasFixApiTests):
             "pitstop": {"execution_status": "completed", "verdict": "passed", "checked_revision": 1},
         })
         self.assertEqual([(b["kind"], b["code"]) for b in stale], [("check", "pitstop_stale")])
+
+    def test_accepted_fix_reruns_prepress_checks_and_marks_fonts_converted(self):
+        calls = []
+
+        def checker(candidate, label, previous):
+            calls.append(previous)
+            count = 0 if previous else 2  # первая ревизия: 2 шрифта; после фикса: 0
+            return {"fonts": {"status": "ok", "count": count, "converted": bool(previous and previous["fonts"]["count"])}}
+
+        self.client.app.state.order_workflow.pdf_prepress_checker = checker
+        run_id = self.make_run()
+        self.fix_and_accept(run_id)
+        self.assertEqual(self.order(run_id)["prepress"]["fonts"]["count"], 2)
+        make_pdf(self.client_double.fixed_source, 103, 214)
+        self.fix_and_accept(run_id)
+        order = self.order(run_id)
+        self.assertEqual(calls[1]["fonts"]["count"], 2)  # прежний результат передан для флага «переведены»
+        self.assertTrue(order["prepress"]["fonts"]["converted"])
+        self.assertEqual(order["prepress"]["fonts"]["count"], 0)
