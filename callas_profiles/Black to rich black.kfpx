@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<pdfpreflight version="23.0">
+	<package>
+		<id3>8214caedb39e649dd1c00fc961039827</id3>
+		<exportfingerprint>F4dca101bc57f2a56d32239f2345cdb85</exportfingerprint>
+		<pdfxoutintentlist>
+		</pdfxoutintentlist>
+		<iccprofilelist>
+		</iccprofilelist>
+		<ccpolicies>
+		</ccpolicies>
+		<occdsetups>
+		</occdsetups>
+		<curves>
+		</curves>
+		<fspolicies>
+		</fspolicies>
+		<resources>
+		</resources>
+		<variables>
+		</variables>
+		<conditions>
+			<condition>
+				<id1>Cb3de38139ac1ba78c1d1dc9475838a08</id1>
+				<id2>Cf3b8843760fae2ca9cfd5647aac00f64</id2>
+				<id3>513e988579246230eb0251d55dc768ac</id3>
+				<id4>e683925e241032ddbe42580e7906a904</id4>
+				<id5>Cf3b8843760fae2ca9cfd5647aac00f64</id5>
+				<name></name>
+				<comment></comment>
+				<flags user_units="1" edit="1" visible="1"></flags>
+				<atom>
+					<group>Group::CSCOLOR</group>
+					<token>CSCOLOR::ObjectUsesBlackOnly</token>
+					<operator>OP::is_true</operator>
+					<data>
+						<text>
+							<value></value>
+						</text>
+					</data>
+				</atom>
+			</condition>
+		</conditions>
+		<rules>
+			<rule>
+				<id1>R7a155d1f221a1fefc73c1b5d87c95a7f</id1>
+				<id2>Re3c22e218c0aefd510dc8bfa8b86549f</id2>
+				<id3>6dc5b857a85285491339aa7a9edff6ab</id3>
+				<id4>b7dbb81a1029e092116ff94be77069ff</id4>
+				<id5>Re3c22e218c0aefd510dc8bfa8b86549f</id5>
+				<name>R_18_Objectusesblackonly</name>
+				<comment>R_18_Objectusesblackonly</comment>
+				<flags analysis="17" condition_logic="0" ignore_objects="0" edit="1" visible="1" dict="1"></flags>
+				<creation>D:20200505142259+02&apos;00&apos;</creation>
+				<modification>D:20261113205511+02&apos;00&apos;</modification>
+				<report_no_match></report_no_match>
+				<proc_steps_options>0</proc_steps_options>
+				<outpuintent_scope>0</outpuintent_scope>
+				<conditions>
+					<condition>Cb3de38139ac1ba78c1d1dc9475838a08</condition>
+				</conditions>
+			</rule>
+		</rules>
+		<rulesets>
+		</rulesets>
+		<fixups>
+			<fixup>
+				<id1>F665493712be97807149b49fdaf56dc7a</id1>
+				<id2>F8caee7142b4bae64a32e44b78aa6b2d7</id2>
+				<id3>eda726ee03a3cbe002900e73d047dd34</id3>
+				<id4>0fc8663a277047afa6ac0a522eb9eb7a</id4>
+				<id5>F4dca101bc57f2a56d32239f2345cdb85</id5>
+				<name>Black to rich black</name>
+				<comment>Converts black objects into rich black (C40 K100).</comment>
+				<flags user_units="1" scope="16" edit="1" visible="1"></flags>
+				<creation>D:20201009150450+02&apos;00&apos;</creation>
+				<modification>D:20261113205511+02&apos;00&apos;</modification>
+				<fcfgs>
+					<fcfg>
+						<ffeat>SetColor</ffeat>
+						<fparams>
+							<fparam>PRCCUSTOMCHECK</fparam>
+							<fparam>CMYKPercent</fparam>
+							<fparam>40</fparam>
+							<fparam>40</fparam>
+							<fparam>40</fparam>
+							<fparam>100</fparam>
+							<fparam>0</fparam>
+							<fparam></fparam>
+							<fparam>100</fparam>
+							<fparam>FillsAndStrokes</fparam>
+						</fparams>
+					</fcfg>
+				</fcfgs>
+				<reportFailed></reportFailed>
+				<proc_steps_options>0</proc_steps_options>
+				<rules>
+					<metalists>
+						<metalist metaid="Md87d75c8d948a300dae42161beef657f">
+							<metadata>
+								<metakey>CALS_CLM_REFRULE_IDX</metakey>
+								<metavalue>0</metavalue>
+							</metadata>
+						</metalist>
+					</metalists>
+					<rule metaid="Md87d75c8d948a300dae42161beef657f">R7a155d1f221a1fefc73c1b5d87c95a7f</rule>
+				</rules>
+			</fixup>
+		</fixups>
+		<fixupsets>
+			<fixupset>
+				<id1>U52f19d393be4015a5ac8b2dbf05be6dc</id1>
+				<id2>U2ea4eb8f800742ae85834a5efde5e032</id2>
+				<id3>c454c4247afbec199997228e7bea39b0</id3>
+				<id4>1632d19cf7067dbb0a380069c6d02211</id4>
+				<id5>U2ea4eb8f800742ae85834a5efde5e032</id5>
+				<name>UUUU_FIXUPSET_DEF_NAME</name>
+				<comment>UUUU_FIXUPSET_DEF_NAME</comment>
+				<flags edit="1" visible="1" dict="1"></flags>
+				<fixups>
+					<fixup>F665493712be97807149b49fdaf56dc7a</fixup>
+				</fixups>
+			</fixupset>
+		</fixupsets>
+		<actions>
+		</actions>
+		<quickfixes>
+		</quickfixes>
+		<profiles>
+			<profile>
+				<id1>P29c2642e3efeeacc7809428861789b97</id1>
+				<id2>F8caee7142b4bae64a32e44b78aa6b2d7</id2>
+				<id3>6ae611ce2f480cb2ad8bac12523ee1ea</id3>
+				<id4>496a8ca7f4d570f4041fd3ecbf9bb9f7</id4>
+				<id5>F8caee7142b4bae64a32e44b78aa6b2d7</id5>
+				<name>Black to rich black</name>
+				<comment>Converts black objects into rich black (C40 K100).</comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20261113205454+02&apos;00&apos;</creation>
+				<modification>D:20261113205511+02&apos;00&apos;</modification>
+				<aar_template></aar_template>
+				<pdfstd>
+					<pdfx convert="0"></pdfx>
+					<pdfa convert="0"></pdfa>
+					<pdfe convert="0"></pdfe>
+					<outcond></outcond>
+					<trapped>0</trapped>
+					<oioptions>0</oioptions>
+				</pdfstd>
+				<pdfstdemb>
+					<pdfx convert="0"></pdfx>
+					<pdfa convert="0"></pdfa>
+					<pdfe convert="0"></pdfe>
+					<outcond></outcond>
+					<trapped>0</trapped>
+					<oioptions>0</oioptions>
+					<afrelationship set_relationship="0"></afrelationship>
+				</pdfstdemb>
+				<wizard>
+				</wizard>
+				<rulesets>
+				</rulesets>
+				<fixupsets>
+					<fixupset>U52f19d393be4015a5ac8b2dbf05be6dc</fixupset>
+				</fixupsets>
+			</profile>
+		</profiles>
+		<metaprofs>
+		</metaprofs>
+		<profgroups>
+		</profgroups>
+	</package>
+</pdfpreflight>

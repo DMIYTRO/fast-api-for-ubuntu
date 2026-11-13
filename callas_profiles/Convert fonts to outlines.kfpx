@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<pdfpreflight version="23.0">
+	<package>
+		<id3>efa59384e001bb342b0e9914d7524eee</id3>
+		<exportfingerprint>F7e845377a10ef24b03a3f5678b40dbcd</exportfingerprint>
+		<pdfxoutintentlist>
+		</pdfxoutintentlist>
+		<iccprofilelist>
+		</iccprofilelist>
+		<ccpolicies>
+		</ccpolicies>
+		<occdsetups>
+		</occdsetups>
+		<curves>
+		</curves>
+		<fspolicies>
+		</fspolicies>
+		<resources>
+		</resources>
+		<variables>
+		</variables>
+		<conditions>
+		</conditions>
+		<rules>
+		</rules>
+		<rulesets>
+		</rulesets>
+		<fixups>
+			<fixup>
+				<id1>F00a5ed4577da4e87a8daeb257f94338b</id1>
+				<id2>F7e845377a10ef24b03a3f5678b40dbcd</id2>
+				<id3>07d9446b07142050d1c2e259081278c2</id3>
+				<id4>825d7f3f59b79eb330e965e3504b1ded</id4>
+				<id5>F7e845377a10ef24b03a3f5678b40dbcd</id5>
+				<name>F_7_Convertfontstooutlines</name>
+				<comment>F_7_Convertfontstooutlines</comment>
+				<flags user_units="0" scope="16" edit="1" visible="1" dict="1"></flags>
+				<creation>D:20180409091325+02&apos;00&apos;</creation>
+				<modification>D:20260402081204+02&apos;00&apos;</modification>
+				<fcfgs>
+					<fcfg>
+						<ffeat>ConvertFontsToOutlines</ffeat>
+						<fparams>
+						</fparams>
+					</fcfg>
+				</fcfgs>
+				<reportFailed></reportFailed>
+				<proc_steps_options>0</proc_steps_options>
+			</fixup>
+		</fixups>
+		<fixupsets>
+			<fixupset>
+				<id1>U8149265b9023df706d3932df17847296</id1>
+				<id2>Udf68dd692398aabf4169dfb9b4dc026c</id2>
+				<id3>5ffe5c95dea6f0e50cc4adffe83877fc</id3>
+				<id4>e2adf8e66db3401f286997358224a24a</id4>
+				<id5>Udf68dd692398aabf4169dfb9b4dc026c</id5>
+				<name>UUUU_FIXUPSET_DEF_NAME</name>
+				<comment>UUUU_FIXUPSET_DEF_NAME</comment>
+				<flags edit="1" visible="1" dict="1"></flags>
+				<fixups>
+					<fixup>F00a5ed4577da4e87a8daeb257f94338b</fixup>
+				</fixups>
+			</fixupset>
+		</fixupsets>
+		<actions>
+		</actions>
+		<quickfixes>
+		</quickfixes>
+		<profiles>
+			<profile>
+				<id1>Pc113310c7a149c1267b683a3cedade93</id1>
+				<id2>F7e845377a10ef24b03a3f5678b40dbcd</id2>
+				<id3>e67da90b32ace0f4e28896638c483e81</id3>
+				<id4>d450d5f648bb44f5d81703dcceec69ed</id4>
+				<id5>F7e845377a10ef24b03a3f5678b40dbcd</id5>
+				<name>Convert fonts to outlines</name>
+				<comment>Converts fonts to outlines.</comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20261113122040+02&apos;00&apos;</creation>
+				<modification>D:20261113122044+02&apos;00&apos;</modification>
+				<aar_template></aar_template>
+				<pdfstd>
+					<pdfx convert="0"></pdfx>
+					<pdfa convert="0"></pdfa>
+					<pdfe convert="0"></pdfe>
+					<outcond></outcond>
+					<trapped>0</trapped>
+					<oioptions>0</oioptions>
+				</pdfstd>
+				<pdfstdemb>
+					<pdfx convert="0"></pdfx>
+					<pdfa convert="0"></pdfa>
+					<pdfe convert="0"></pdfe>
+					<outcond></outcond>
+					<trapped>0</trapped>
+					<oioptions>0</oioptions>
+					<afrelationship set_relationship="0"></afrelationship>
+				</pdfstdemb>
+				<wizard>
+				</wizard>
+				<rulesets>
+				</rulesets>
+				<fixupsets>
+					<fixupset>U8149265b9023df706d3932df17847296</fixupset>
+				</fixupsets>
+			</profile>
+		</profiles>
+		<metaprofs>
+		</metaprofs>
+		<profgroups>
+		</profgroups>
+	</package>
+</pdfpreflight>

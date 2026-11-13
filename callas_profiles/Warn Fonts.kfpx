@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<pdfpreflight version="23.0">
+	<package>
+		<id3>6ad393df89e41faefd6e44739975ea69</id3>
+		<pdfxoutintentlist>
+		</pdfxoutintentlist>
+		<iccprofilelist>
+		</iccprofilelist>
+		<ccpolicies>
+		</ccpolicies>
+		<occdsetups>
+		</occdsetups>
+		<curves>
+		</curves>
+		<fspolicies>
+		</fspolicies>
+		<resources>
+		</resources>
+		<variables>
+		</variables>
+		<conditions>
+			<condition>
+				<id1>Ce695126074b16a5da62648eae0d21af2</id1>
+				<id2>C14deb071dca084f120793ac043810cfd</id2>
+				<id3>a14605af1a65ca0942e9c1a1fa898184</id3>
+				<id4>a77fc059fc1052b1d33b7a3e516d7a95</id4>
+				<id5>C14deb071dca084f120793ac043810cfd</id5>
+				<name></name>
+				<comment></comment>
+				<flags user_units="1" edit="1" visible="1"></flags>
+				<atom>
+					<group>Group::CSFONT</group>
+					<token>CSFONT::FontType</token>
+					<operator>OP::is_regex</operator>
+					<data>
+						<text>
+							<value>.+</value>
+						</text>
+					</data>
+				</atom>
+			</condition>
+		</conditions>
+		<rules>
+			<rule>
+				<id1>R1c86a418b8f9082a3a93a25268f18ab9</id1>
+				<id2>R8548eb2c3fa4371e23c80fdb4aea00f8</id2>
+				<id3>bdb865605e86517e7d3e30a06e3a58a9</id3>
+				<id4>e5e9351a66ba54922cb957a725f48084</id4>
+				<id5>Rb075fda92bf3f0fe11d9894641f13735</id5>
+				<name>Fonts found in PDF</name>
+				<comment></comment>
+				<flags analysis="31" condition_logic="0" ignore_objects="0" edit="1" visible="1"></flags>
+				<creation>D:20261113122203+02&apos;00&apos;</creation>
+				<modification>D:20261113122344+02&apos;00&apos;</modification>
+				<report_no_match></report_no_match>
+				<proc_steps_options>0</proc_steps_options>
+				<outpuintent_scope>0</outpuintent_scope>
+				<conditions>
+					<condition>Ce695126074b16a5da62648eae0d21af2</condition>
+				</conditions>
+			</rule>
+		</rules>
+		<rulesets>
+			<ruleset>
+				<id1>S6cc4a387ff3d241a58011808396452ed</id1>
+				<id2>S0cd8d1b1adee087217256f7dd8849412</id2>
+				<id3>6ad4f2a43c03e6447b6bcdc99cd39e0c</id3>
+				<id4>773ca4578c46cb1878f31248957ac236</id4>
+				<id5>Sc5ad60f0a40a588f28745aa1c971d076</id5>
+				<name>SSS_RULESET_DEF_NAME</name>
+				<comment>SSS_RULESET_DEF_NAME</comment>
+				<flags edit="1" visible="1" dict="1"></flags>
+				<rules>
+					<rule check_severity="2" check_timing="2">R1c86a418b8f9082a3a93a25268f18ab9</rule>
+				</rules>
+			</ruleset>
+		</rulesets>
+		<fixups>
+		</fixups>
+		<fixupsets>
+		</fixupsets>
+		<actions>
+		</actions>
+		<quickfixes>
+		</quickfixes>
+		<profiles>
+			<profile>
+				<id1>P732e6b73e00b5531de0cf5dea78a8705</id1>
+				<id2>P046f8aa862a4958335ad57881f2b55cf</id2>
+				<id3>644c46040472dfc86f8cdcc0b5a0536e</id3>
+				<id4>585350bc95d17de04706a21c51a377b5</id4>
+				<id5>P58fc66623a21025a044144943f2e6ce4</id5>
+				<name>Warn if PDF uses fonts</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<metalist>
+					<metadata>
+						<metakey>author</metakey>
+						<metavalue>admin</metavalue>
+					</metadata>
+					<metadata>
+						<metakey>email</metakey>
+						<metavalue>1kuperster@gmail.com</metavalue>
+					</metadata>
+				</metalist>
+				<creation>D:20261113122215+02&apos;00&apos;</creation>
+				<modification>D:20261113122344+02&apos;00&apos;</modification>
+				<aar_template></aar_template>
+				<pdfstd>
+					<pdfx convert="0"></pdfx>
+					<pdfa convert="0"></pdfa>
+					<pdfe convert="0"></pdfe>
+					<outcond></outcond>
+					<trapped>0</trapped>
+					<oioptions>0</oioptions>
+				</pdfstd>
+				<pdfstdemb>
+					<pdfx convert="0"></pdfx>
+					<pdfa convert="0"></pdfa>
+					<pdfe convert="0"></pdfe>
+					<outcond></outcond>
+					<trapped>0</trapped>
+					<oioptions>0</oioptions>
+					<afrelationship set_relationship="0"></afrelationship>
+				</pdfstdemb>
+				<wizard>
+				</wizard>
+				<rulesets>
+					<ruleset>S6cc4a387ff3d241a58011808396452ed</ruleset>
+				</rulesets>
+				<fixupsets>
+				</fixupsets>
+			</profile>
+		</profiles>
+		<metaprofs>
+		</metaprofs>
+		<profgroups>
+		</profgroups>
+	</package>
+</pdfpreflight>
