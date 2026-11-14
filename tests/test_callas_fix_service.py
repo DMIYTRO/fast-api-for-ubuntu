@@ -104,8 +104,10 @@ def test_job_folder_is_cleaned_and_state_survives_reread(env):
     persisted = read_state_file(env.source)
     assert persisted["status"] == "ready"
     payload = comparison_payload(persisted, "/base")
-    assert payload["original_url"] == "/base/files/original"
-    assert payload["pdf_url"] == "/base/files/pdf"
+    # Метка завершения в URL не даёт браузеру показать картинки прошлого исправления из кэша.
+    assert payload["original_url"].startswith("/base/files/original?v=")
+    assert payload["pdf_url"].startswith("/base/files/pdf?v=")
+    assert payload["original_url"].split("?v=")[1] != ""
     assert payload["plan"]["key"] == "size_correction"
 
 

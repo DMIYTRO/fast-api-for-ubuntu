@@ -41,6 +41,18 @@ describe("FixComparison", () => {
     vi.stubGlobal("fetch", vi.fn(ok));
   };
 
+  it("explains an empty overlay for structural fixes and always shows the legend", async () => {
+    setup();
+    const structural = mount({ comparison: { ...base, status: "ready", summary: { changed_percent: 0, overlay_changed_percent: 0 } } });
+    await nextTick();
+    expect(structural.textContent).toContain("Внешний вид макета не изменился");
+    expect(structural.querySelector(".fix-legend")).not.toBeNull();
+
+    const visible = mount({ comparison: { ...base, status: "ready", summary: { changed_percent: 0, overlay_changed_percent: 1.5 } } });
+    await nextTick();
+    expect(visible.textContent).not.toContain("Внешний вид макета не изменился");
+  });
+
   it("shows plan title, three tiles and change summary when ready", async () => {
     setup();
     const host = mount({ comparison: { ...base, status: "ready" } });

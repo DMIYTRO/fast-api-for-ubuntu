@@ -14,7 +14,7 @@ import { availableFixes, fontLabel, fontsInfo, iccOff, prepressNotices } from ".
 import { inkCoverageFlagLabel, inkCoverageMainFlag, inkCoverageTitle } from "./inkCoverage.js";
 
 const props = defineProps({ order: Object, runId: String, selected: Boolean, reasons: Array, paidDesign: { type: Boolean, default: true }, designCost: { type: String, default: "0" } });
-const emit = defineEmits(["toggle", "decide", "return-comment", "return-design", "return-cost"]);
+const emit = defineEmits(["toggle", "decide", "return-comment", "return-design", "return-cost", "fix-applied"]);
 const expanded = ref(false);
 const busy = ref(false);
 const uploadInput = ref(null);
@@ -313,7 +313,7 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
         <div v-if="successful && !groupedErrors.length && !groupedWarnings.length" class="issue-list success-note"><strong>Заказ соответствует требованиям допечатной подготовки.</strong></div>
         <PitStopReport v-if="order.pitstop" :pitstop="order.pitstop" section-title="Проверка PDF из первоначальной обработки" />
         <PitStopReport v-if="order.action_result?.pitstop" :pitstop="order.action_result.pitstop" section-title="Повторная проверка печатного PDF из просмотренных TIFF" />
-        <CallasFixControl v-if="order.pdf_path || order.pdf_url || order.callas_fix?.comparison" :run-id="runId" :order-id="actionId" :initial="order.callas_fix" :can-start="Boolean(order.pdf_path || order.pdf_url)" :fixes="fixButtons" />
+        <CallasFixControl v-if="order.pdf_path || order.pdf_url || order.callas_fix?.comparison" :run-id="runId" :order-id="actionId" :initial="order.callas_fix" :can-start="Boolean(order.pdf_path || order.pdf_url)" :fixes="fixButtons" @applied="emit('fix-applied')" />
         <CallasFixControl
           v-for="file in sourceFixFiles"
           :key="`fix-${file.callas_fix_file_id}`"
@@ -322,6 +322,7 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
           :initial="file.callas_fix"
           :file-id="file.callas_fix_file_id"
           :file-label="sourceFixFiles.length > 1 ? file.filename : ''"
+          @applied="emit('fix-applied')"
         />
         <CorrectionDecision :order="order" :busy="busy" @decide="decide" />
         <p v-if="order.action_result" class="action-result" :class="`status-${order.action_result.status}`">Действие: {{ order.action_result.status === "prepared" ? "подготовлено" : (order.action_result.message || order.action_result.status) }}</p>

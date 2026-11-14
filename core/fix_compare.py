@@ -2,9 +2,11 @@
 
 Страницы выравниваются по центру TrimBox (если TrimBox нет, по центру страницы)
 и кладутся на общий холст по большему размеру, так что видны и края страниц,
-и смещение содержимого. Наложение рисует оригинал красным, результат голубым,
-совпадающее остаётся тёмным; контур TrimBox оригинала красный сплошной, результата
-синий пунктирный.
+и смещение содержимого. Наложение — приглушённый оригинал, поверх которого цветом
+отмечено всё, что в результате выглядит иначе: красным — стало светлее (краска
+убрана), синим — стало темнее (краска добавлена), пурпурным — сменился цвет при той
+же яркости (например RGB → CMYK). Контур TrimBox оригинала красный сплошной,
+результата синий пунктирный.
 
 Модуль только читает исходные PDF и пишет три изображения в ``out_dir``.
 Для работы нужен один PyMuPDF: пиксели собираются из байтовых буферов без numpy/PIL.
@@ -34,6 +36,14 @@ BACKGROUND_GRAY = 232  # светло-серый холст, чтобы края
 # Порог отличия серого (0..255) для changed_percent: гасит шум сглаживания.
 DIFF_THRESHOLD = 40
 INK_THRESHOLD = 250  # пиксель темнее этого считается «краской»
+# Наложение: отличие любого канала RGB выше порога подсвечивается; яркость сравнивается отдельно.
+OVERLAY_COLOR_THRESHOLD = 32
+OVERLAY_LUMA_THRESHOLD = 24
+OVERLAY_FADE = 0.55  # доля исходной «краски» оригинала, остающаяся на наложении
+OVERLAY_REMOVED = (214, 40, 40)
+OVERLAY_ADDED = (20, 90, 220)
+OVERLAY_RECOLORED = (200, 0, 190)
+_OVERLAY_CHUNK = 64  # пикселей: одинаковые куски строк пропускаются без разбора по пикселям
 
 # Допуск различия масштабов по осям: больше 1 % считается искажением.
 DISTORTION_TOLERANCE = 0.01
@@ -138,12 +148,14 @@ def build_fix_comparison(
         scale_info = _estimate_scale(page_o, page_r, geo_o, geo_r)
 
     changed_percent, changed_content_percent = _measure_difference(layer_o, layer_r)
-    overlay = _build_overlay(layer_o, layer_r, scale, canvas_w, canvas_h)
+    overlay, overlay_changed_percent = _build_overlay(layer_o, layer_r, scale, canvas_w, canvas_h)
 
     summary = _build_summary(
         geo_o, geo_r, page, dpi, canvas_w, canvas_h,
         changed_percent, changed_content_percent, scale_info,
     )
+    # Доля площади, подсвеченной на наложении (учитывает и смену цвета без смены яркости).
+    summary["overlay_changed_percent"] = round(overlay_changed_percent, 2)
 
     try:
         out_path.mkdir(parents=True, exist_ok=True)
@@ -355,12 +367,19 @@ def _measure_difference(layer_o: _Layer, layer_r: _Layer) -> tuple[float, float]
     return float(min(100.0, changed)), float(min(100.0, changed_content))
 
 
-def _build_overlay(layer_o: _Layer, layer_r: _Layer, scale: float, width: int, height: int) -> bytearray:
-    """Оригинал красным (R=результат, G=B=оригинал), результат голубым, общее тёмное."""
+def _build_overlay(
+    layer_o: _Layer, layer_r: _Layer, scale: float, width: int, height: int
+) -> tuple[bytearray, float]:
+    """Приглушённый оригинал с цветной подсветкой отличий результата.
+
+    Возвращает буфер RGB и долю площади страниц (в процентах), где результат отличается.
+    """
+    fade = bytes(255 - int((255 - value) * OVERLAY_FADE) for value in range(256))
+    base = layer_o.gray.translate(fade)
     out = bytearray(width * height * 3)
-    out[0::3] = layer_r.gray
-    out[1::3] = layer_o.gray
-    out[2::3] = layer_o.gray
+    out[0::3] = base
+    out[1::3] = base
+    out[2::3] = base
 
     # Вне обеих страниц возвращаем серый фон (в серых слоях там белый).
     background = bytes([BACKGROUND_GRAY]) * 3
@@ -383,10 +402,52 @@ def _build_overlay(layer_o: _Layer, layer_r: _Layer, scale: float, width: int, h
                 out[(y * width + cursor) * 3:(y * width + start) * 3] = background * (start - cursor)
             cursor = end
 
+    highlighted = _highlight_differences(out, layer_o, layer_r)
+    page_area = _union_area(layer_o.box, layer_r.box)
+    changed_percent = min(100.0, 100.0 * highlighted / page_area) if page_area else 0.0
+
     thickness = max(1, round(scale * 72.0 / 100.0))
     _draw_outline(out, width, height, layer_o.trim, ORIGINAL_OUTLINE, thickness, dashed=False)
     _draw_outline(out, width, height, layer_r.trim, RESULT_OUTLINE, thickness, dashed=True)
-    return out
+    return out, changed_percent
+
+
+def _highlight_differences(out: bytearray, layer_o: _Layer, layer_r: _Layer) -> int:
+    """Красит в ``out`` пиксели, где оригинал и результат различаются; возвращает их число."""
+    width, height = layer_o.canvas_w, layer_o.canvas_h
+    x0 = max(layer_o.box[0], layer_r.box[0], 0)
+    x1 = min(layer_o.box[2], layer_r.box[2], width)
+    y0 = max(layer_o.box[1], layer_r.box[1], 0)
+    y1 = min(layer_o.box[3], layer_r.box[3], height)
+    if x1 <= x0 or y1 <= y0:
+        return 0
+
+    rgb_o, rgb_r = layer_o.rgb, layer_r.rgb
+    removed, added, recolored = bytes(OVERLAY_REMOVED), bytes(OVERLAY_ADDED), bytes(OVERLAY_RECOLORED)
+    count = 0
+    for y in range(y0, y1):
+        row = y * width
+        for chunk_start in range(x0, x1, _OVERLAY_CHUNK):
+            chunk_end = min(x1, chunk_start + _OVERLAY_CHUNK)
+            a, b = (row + chunk_start) * 3, (row + chunk_end) * 3
+            if rgb_o[a:b] == rgb_r[a:b]:
+                continue
+            for x in range(chunk_start, chunk_end):
+                i = (row + x) * 3
+                ro, go, bo = rgb_o[i], rgb_o[i + 1], rgb_o[i + 2]
+                rr, gr, br = rgb_r[i], rgb_r[i + 1], rgb_r[i + 2]
+                if max(abs(ro - rr), abs(go - gr), abs(bo - br)) <= OVERLAY_COLOR_THRESHOLD:
+                    continue
+                luma_o = (299 * ro + 587 * go + 114 * bo) // 1000
+                luma_r = (299 * rr + 587 * gr + 114 * br) // 1000
+                if luma_r - luma_o > OVERLAY_LUMA_THRESHOLD:
+                    out[i:i + 3] = removed
+                elif luma_o - luma_r > OVERLAY_LUMA_THRESHOLD:
+                    out[i:i + 3] = added
+                else:
+                    out[i:i + 3] = recolored
+                count += 1
+    return count
 
 
 def _draw_outline(

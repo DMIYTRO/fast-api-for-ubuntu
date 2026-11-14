@@ -24,6 +24,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from urllib.parse import quote
 from uuid import uuid4
 
 from config.callas_plans import CALLAS_PLANS, CallasPlan
@@ -104,6 +105,8 @@ def comparison_payload(
     if not state:
         return None
     images = state.get("images") or {}
+    # Метка завершения в URL: новое исправление того же заказа не показывает старые картинки из кэша.
+    version = f"?v={quote(str(state.get('finished_at') or ''), safe='')}" if state.get("finished_at") else ""
     return {
         "status": state.get("status") or STATUS_FAILED,
         "source_only": source_only,
@@ -113,10 +116,10 @@ def comparison_payload(
         "started_at": state.get("started_at"),
         "finished_at": state.get("finished_at"),
         "summary": state.get("summary") or {},
-        "original_url": f"{base_url}/files/original" if "original" in images else None,
-        "result_url": f"{base_url}/files/result" if "result" in images else None,
-        "overlay_url": f"{base_url}/files/overlay" if "overlay" in images else None,
-        "pdf_url": f"{base_url}/files/pdf" if state.get("fixed_pdf") else None,
+        "original_url": f"{base_url}/files/original{version}" if "original" in images else None,
+        "result_url": f"{base_url}/files/result{version}" if "result" in images else None,
+        "overlay_url": f"{base_url}/files/overlay{version}" if "overlay" in images else None,
+        "pdf_url": f"{base_url}/files/pdf{version}" if state.get("fixed_pdf") else None,
     }
 
 

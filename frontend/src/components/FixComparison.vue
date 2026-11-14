@@ -54,6 +54,11 @@ const distortionText = computed(() => {
   const axes = x && y ? ` (по ширине ×${x}, по высоте ×${y})` : "";
   return `Макет растянут неравномерно${axes}. Проверьте наложение перед принятием`;
 });
+// Исправление структурное (шрифты в кривые, обтравка…): картинка не изменилась, наложение пустое — это норма.
+const noVisibleChange = computed(() => {
+  const overlay = Number(summary.value.overlay_changed_percent);
+  return Number.isFinite(overlay) && overlay === 0 && !(Number(summary.value.changed_percent) > 0);
+});
 const decisionText = computed(() => status.value === "accepted"
   ? "Исправление принято: результат станет новой ревизией печатного PDF."
   : "Исправление отклонено: в печать уходит исходный PDF.");
@@ -114,6 +119,11 @@ function close() {
           <div v-else class="preview-empty">Нет изображения</div>
         </figure>
       </div>
+
+      <p class="fix-legend muted" aria-label="Обозначения наложения">
+        Наложение: <span class="legend-removed">красный — стало светлее</span> · <span class="legend-added">синий — стало темнее</span> · <span class="legend-recolored">пурпурный — сменился цвет</span>
+      </p>
+      <p v-if="noVisibleChange" class="fix-note" role="status"><i aria-hidden="true">ℹ</i> Внешний вид макета не изменился: исправление затрагивает структуру PDF (шрифты, обтравка, цветовая модель), поэтому наложение пустое.</p>
 
       <p v-if="sizeText || changedText" class="fix-summary">
         <span v-if="sizeText">{{ sizeText }}</span>

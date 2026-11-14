@@ -166,6 +166,16 @@ export const useChecksStore = defineStore("checks", {
       if (!id) return;
       await this.loadOrders(this.page);
     },
+    // Принятое исправление Callas меняет заказ (новая ревизия PDF, статус, замечания, превью). Прогон к
+    // этому моменту обычно завершён и поток событий закрыт, поэтому перечитываем и прогон, и страницу заказов.
+    async refreshAfterFix(id = this.activeRun?.id) {
+      if (!id) return;
+      try {
+        const run = await api.run(id, { include_orders: false });
+        if (String(this.activeRun?.id) === String(id)) this.activeRun = run;
+      } catch { /* счётчики обновятся при следующей загрузке */ }
+      await this.loadOrders(this.page).catch(() => {});
+    },
     applyEvent(event) {
       this.events.unshift(event);
       this.events = this.events.slice(0, 100);
