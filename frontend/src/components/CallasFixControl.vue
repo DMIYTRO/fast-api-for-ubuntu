@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, useId, watch } from "vue";
 import { api } from "../services/api.js";
 import FixComparison from "./FixComparison.vue";
-import { FIX_BUTTONS, UNCONFIRMED_NOTE } from "./prepress.js";
+import { FIX_BUTTONS, NOT_DETECTED_NOTE } from "./prepress.js";
 
 const POLL_MS = 1500;
 const UNAVAILABLE = [404, 405, 501];
@@ -19,15 +19,14 @@ const props = defineProps({
   fileLabel: { type: String, default: "" },
   // Ключи дополнительных планов, применимых к заказу (шрифты, плашка K100, обтравка).
   fixes: { type: Array, default: () => [] },
-  // Подмножество fixes, показанное без подтверждения проверкой (второстепенный вид + пояснение).
-  unconfirmed: { type: Array, default: () => [] },
+  // Подмножество fixes, где проверка нашла что исправлять: такие кнопки подсвечены.
+  recommended: { type: Array, default: () => [] },
 });
 const extraButtons = computed(() => props.fixes.filter((key) => FIX_BUTTONS[key]).map((key) => {
-  const unconfirmed = props.unconfirmed.includes(key);
+  const recommended = props.recommended.includes(key);
   const base = FIX_BUTTONS[key];
-  return { key, ...base, unconfirmed, title: unconfirmed ? `${UNCONFIRMED_NOTE}. ${base.title}` : base.title };
+  return { key, ...base, recommended, title: recommended ? base.title : `${NOT_DETECTED_NOTE}. ${base.title}` };
 }));
-const unconfirmedShown = computed(() => extraButtons.value.some((item) => item.unconfirmed));
 
 // «applied» — принятое исправление стало новой ревизией PDF: карточка заказа (статус, замечания,
 // кнопки исправлений, превью) устарела и должна перечитаться.
@@ -199,14 +198,25 @@ onBeforeUnmount(() => {
         :key="item.key"
         type="button"
         class="callas-size-fix callas-extra-fix"
-        :class="[`callas-fix-${item.key}`, { unconfirmed: item.unconfirmed }]"
+        :class="[`callas-fix-${item.key}`, { recommended: item.recommended }]"
         :title="item.title"
         :aria-label="item.label"
         :disabled="busy"
         @click="start(item.key)"
-      >{{ item.label }}</button>
+      >
+        <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+          <path v-if="item.key === 'fonts_to_outlines'" d="M4 16 9 4h2l5 12M6.5 11.5h7" />
+          <template v-else-if="item.key === 'black_to_rich'">
+            <circle cx="7" cy="8" r="4" /><circle cx="13" cy="8" r="4" /><circle cx="10" cy="13" r="4" />
+          </template>
+          <template v-else-if="item.key === 'remove_clipping'">
+            <rect x="3" y="3" width="14" height="14" rx="1.5" stroke-dasharray="2.5 2" /><path d="M5 15 15 5" />
+          </template>
+        </svg>
+        <span>{{ item.label }}</span>
+        <i v-if="item.recommended" class="fix-recommended-dot" aria-label="рекомендовано проверкой" title="Проверка нашла, что исправлять"></i>
+      </button>
     </div>
-    <p v-if="canPickPlan && unconfirmedShown" class="callas-fix-note muted" data-note="fix_unconfirmed">{{ UNCONFIRMED_NOTE }}</p>
     <p v-if="error" class="form-error" role="alert">{{ error }}</p>
   </div>
 </template>

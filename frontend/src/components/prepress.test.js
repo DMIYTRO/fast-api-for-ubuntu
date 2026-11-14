@@ -4,7 +4,7 @@ import OrderCard from "./OrderCard.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import FixComparison from "./FixComparison.vue";
 import { api } from "../services/api.js";
-import { UNCONFIRMED_NOTE, availableFixes, blackFixAvailable, fontLabel, iccOff, prepressNotices, unconfirmedFixes } from "./prepress.js";
+import { ALL_FIXES, NOT_DETECTED_NOTE, availableFixes, blackFixAvailable, fontLabel, iccOff, prepressNotices, recommendedFixes } from "./prepress.js";
 
 const mounted = [];
 function mountComponent(component, props) {
@@ -42,12 +42,16 @@ describe("ICC off badge", () => {
     expect(host.querySelector(".rgb-cmyk-indicator")).not.toBeNull(); // старый бейдж RGB остаётся
   });
 
-  it("is absent without ICC or for failed conversion", async () => {
+  it("is shown as inactive without ICC or for failed conversion", async () => {
     const plain = card({ color_conversion: { status: "converted", icc_removed: false } });
     const failed = card({ color_conversion: { status: "failed", icc_removed: true } });
     await nextTick();
-    expect(plain.querySelector(".icc-off-indicator")).toBeNull();
-    expect(failed.querySelector(".icc-off-indicator")).toBeNull();
+    for (const host of [plain, failed]) {
+      const badge = host.querySelector(".icc-off-indicator");
+      expect(badge).not.toBeNull();
+      expect(badge.classList.contains("inactive")).toBe(true);
+      expect(badge.title).toBe("ICC-профиль не снимался");
+    }
   });
 
   it("shows the badge whenever the backend says the profile was removed, even without a converted status", () => {
@@ -79,26 +83,42 @@ describe("fonts field", () => {
     expect(row?.textContent).toContain("2");
     expect(row?.textContent).toContain("BirchCTT (TrueType, встроен)");
     expect(row?.textContent).toContain("Helvetica (Type1, не встроен)");
-    expect(host.querySelector(".fonts-outlined-indicator")).toBeNull();
+    const outlined = host.querySelector(".fonts-outlined-indicator");
+    expect(outlined?.classList.contains("inactive")).toBe(true);
+    expect(outlined?.title).toBe("Шрифты в кривые не переводились");
     expect(host.querySelector("[data-note='fonts_not_embedded']")?.textContent).toContain("перевод в кривые невозможен");
   });
 
-  it("with zero live fonts after outlining shows only the icon with a tooltip, no row and no button", async () => {
+  it("with zero live fonts after outlining shows the active icon, no row, and a non-recommended button", async () => {
     const host = card({ pdf_path: "/p.pdf", prepress: { fonts: { status: "ok", count: 0, fonts: [], not_embedded: 0, converted: true } } });
     await nextTick();
     expect(host.querySelector(".fonts-row")).toBeNull();
-    expect(host.querySelector(".fonts-outlined-indicator")?.title).toBe("Шрифты переведены в кривые");
-    expect(host.querySelector(".callas-fix-fonts_to_outlines")).toBeNull();
+    const outlined = host.querySelector(".fonts-outlined-indicator");
+    expect(outlined?.title).toBe("Шрифты переведены в кривые");
+    expect(outlined?.classList.contains("inactive")).toBe(false);
+    const button = host.querySelector(".callas-fix-fonts_to_outlines");
+    expect(button).not.toBeNull();
+    expect(button.classList.contains("recommended")).toBe(false);
   });
 
-  it("offers the outlines button only when there are fonts to convert", async () => {
+  it("recommends the outlines button only when there are fonts to convert", async () => {
     const withFonts = card({ pdf_path: "/p.pdf", prepress: { fonts: fontsBlock() } });
     const noFonts = card({ pdf_path: "/p.pdf", prepress: { fonts: { status: "ok", count: 0, fonts: [], converted: false } } });
     const allMissing = card({ pdf_path: "/p.pdf", prepress: { fonts: fontsBlock({ count: 1, not_embedded: 1 }) } });
     await nextTick();
-    expect(withFonts.querySelector(".callas-fix-fonts_to_outlines")?.textContent).toBe("Перевести шрифты в кривые");
-    expect(noFonts.querySelector(".callas-fix-fonts_to_outlines")).toBeNull();
-    expect(allMissing.querySelector(".callas-fix-fonts_to_outlines")).toBeNull();
+    const recommended = withFonts.querySelector(".callas-fix-fonts_to_outlines");
+    expect(recommended?.textContent).toContain("Перевести шрифты в кривые");
+    expect(recommended.classList.contains("recommended")).toBe(true);
+    expect(recommended.querySelector(".fix-recommended-dot")).not.toBeNull();
+    expect(recommended.title).not.toContain(NOT_DETECTED_NOTE);
+    for (const host of [noFonts, allMissing]) {
+      const button = host.querySelector(".callas-fix-fonts_to_outlines");
+      expect(button).not.toBeNull();
+      expect(button.disabled).toBe(false);
+      expect(button.classList.contains("recommended")).toBe(false);
+      expect(button.querySelector(".fix-recommended-dot")).toBeNull();
+      expect(button.title.startsWith(NOT_DETECTED_NOTE)).toBe(true);
+    }
   });
 });
 
@@ -132,10 +152,13 @@ describe("grouped prepress notices and buttons", () => {
     expect(clip?.title).toContain("скрытое содержимое");
   });
 
-  it("has no black button below the threshold and warns about manual check for a raster field", async () => {
+  it("keeps the black button non-recommended below the threshold and warns about manual check for a raster field", async () => {
     const host = card({ pdf_path: "/p.pdf", prepress: { black_solid: { status: "ok", detected: false, manual_check: true, message: "Крупное чёрное поле, стр. 1, не является чистым K100: скорректируйте вручную." } } });
     await nextTick();
-    expect(host.querySelector(".callas-fix-black_to_rich")).toBeNull();
+    const black = host.querySelector(".callas-fix-black_to_rich");
+    expect(black).not.toBeNull();
+    expect(black.classList.contains("recommended")).toBe(false);
+    expect(black.title.startsWith(NOT_DETECTED_NOTE)).toBe(true);
     expect(host.querySelector("[data-note='black_manual']")?.textContent).toContain("скорректируйте вручную");
   });
 
@@ -149,38 +172,53 @@ describe("grouped prepress notices and buttons", () => {
     expect(prepressNotices({ prepress: { black_solid: black } })[0].level).toBe("info");
   });
 
-  it("still offers the black button when the K100 detector did not run, but not when it found nothing", () => {
-    expect(blackFixAvailable({ status: "failed", error: "separations отключены" })).toBe(true);
-    expect(blackFixAvailable({ status: "skipped" })).toBe(true);
+  it("recommends the black button only when the K100 check found something", () => {
+    expect(blackFixAvailable({ status: "ok", detected: true })).toBe(true);
+    expect(blackFixAvailable({ status: "ok", detected: false, fix_available: true })).toBe(true);
+    expect(blackFixAvailable({ status: "failed", error: "separations отключены" })).toBe(false);
+    expect(blackFixAvailable({ status: "skipped" })).toBe(false);
     expect(blackFixAvailable({ status: "ok", detected: false, fix_available: false })).toBe(false);
     expect(blackFixAvailable(undefined)).toBe(false);
-    expect(availableFixes({ prepress: { black_solid: { status: "failed" } } })).toEqual(["black_to_rich"]);
-    expect(availableFixes({ prepress: { black_solid: { status: "ok", detected: false, manual_check: true } } })).toEqual([]);
+    expect(recommendedFixes({ prepress: { black_solid: { status: "failed" } } })).toEqual([]);
+    expect(recommendedFixes({ prepress: { black_solid: { status: "ok", detected: false, manual_check: true } } })).toEqual([]);
+    expect(recommendedFixes({ prepress: { black_solid: { status: "ok", detected: true } } })).toEqual(["black_to_rich"]);
   });
 
-  it("marks the black button as unconfirmed with a note when the K100 check failed or was skipped", async () => {
-    expect(UNCONFIRMED_NOTE).toBe("Проверка K100 недоступна — кнопка показана без подтверждения наличия плашки");
-    expect(unconfirmedFixes({ prepress: { black_solid: { status: "failed" } } })).toEqual(["black_to_rich"]);
-    expect(unconfirmedFixes({ prepress: { black_solid: { status: "skipped" } } })).toEqual(["black_to_rich"]);
-    expect(unconfirmedFixes({ prepress: { black_solid: { status: "ok", detected: true } } })).toEqual([]);
-    expect(unconfirmedFixes({ prepress: { black_solid: { status: "ok", fix_available: true } } })).toEqual([]);
+  it("does not recommend the black button when the K100 check failed, but still renders it enabled", async () => {
     const failed = card({ pdf_path: "/p.pdf", prepress: { black_solid: { status: "failed", error: "x" } } });
     const confirmed = card({ pdf_path: "/p.pdf", prepress: { black_solid: { status: "ok", detected: true, message: "Плашка 100% K: 50% площади, стр. 1." } } });
     await nextTick();
     const button = failed.querySelector(".callas-fix-black_to_rich");
-    expect(button?.classList.contains("unconfirmed")).toBe(true);
-    expect(button?.title).toContain(UNCONFIRMED_NOTE);
-    expect(failed.querySelector("[data-note='fix_unconfirmed']")?.textContent).toBe(UNCONFIRMED_NOTE);
+    expect(button?.disabled).toBe(false);
+    expect(button?.classList.contains("recommended")).toBe(false);
+    expect(button?.title.startsWith(NOT_DETECTED_NOTE)).toBe(true);
+    expect(failed.querySelector("[data-note='fix_unconfirmed']")).toBeNull();
     const normal = confirmed.querySelector(".callas-fix-black_to_rich");
-    expect(normal?.classList.contains("unconfirmed")).toBe(false);
-    expect(normal?.title).not.toContain(UNCONFIRMED_NOTE);
-    expect(confirmed.querySelector("[data-note='fix_unconfirmed']")).toBeNull();
+    expect(normal?.classList.contains("recommended")).toBe(true);
+    expect(normal?.title).not.toContain(NOT_DETECTED_NOTE);
+  });
+
+  it("renders all three fix buttons with an svg icon and enabled", async () => {
+    expect(availableFixes({})).toEqual(ALL_FIXES);
+    const host = card({ pdf_path: "/p.pdf" });
+    await nextTick();
+    for (const key of ALL_FIXES) {
+      const button = host.querySelector(`.callas-fix-${key}`);
+      expect(button, key).not.toBeNull();
+      expect(button.querySelector("svg"), key).not.toBeNull();
+      expect(button.disabled, key).toBe(false);
+      expect(button.classList.contains("recommended"), key).toBe(false);
+    }
+    const noPdf = card({});
+    await nextTick();
+    expect(noPdf.querySelector(".callas-extra-fix")).toBeNull();
   });
 
   it("ignores failed checks for notices and the other buttons", () => {
     const order = { prepress: { fonts: { status: "failed", error: "x" }, high_ppi: { status: "failed" }, black_solid: { status: "failed" } } };
     expect(prepressNotices(order)).toEqual([]);
-    expect(availableFixes(order)).toEqual(["black_to_rich"]);
+    expect(recommendedFixes(order)).toEqual([]);
+    expect(availableFixes(order)).toEqual(ALL_FIXES);
     expect(fontLabel({ name: "N", type: "Type3", embedded: null, invisible_only: true })).toBe("N (Type3, невидимый)");
   });
 });
