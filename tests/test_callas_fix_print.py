@@ -92,6 +92,7 @@ class PrintAfterFixTests(CallasFixApiTests):
         pdf.unlink()
         order = self.order(run_id)
         self.assertEqual([b["code"] for b in order["print_blockers"]], ["pdf_missing"])
+        self.assertEqual(order["print_mode"], "blocked")
         self.assertEqual(order["print_blockers"][0]["kind"], "file")
         self.assertIn(pdf.name, order["print_blockers"][0]["message"])
         prepared = self.client.post("/api/orders/prepare-print", json={"run_id": run_id, "order_ids": ["1001"]})

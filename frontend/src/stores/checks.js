@@ -8,6 +8,7 @@ const list = (data) => Array.isArray(data) ? data : (data?.items || data?.orders
 const running = (status) => ["queued", "running", "waiting_confirmation", "cancelling"].includes(status);
 const terminalStatuses = ["accepted_for_print", "returned_for_rework"];
 const printableStatuses = ["passed", "completed"];
+const sendableStatuses = ["passed", "warning", "completed"];
 let searchDebounceTimer;
 let ordersRequestSequence = 0;
 let orderEventRevision = 0;
@@ -22,19 +23,31 @@ export const matchesStatusFilter = (order, filter) => {
   return status === filter;
 };
 
-export const printBlockMessage = (order) => (order?.print_blockers || []).map((item) => item.message).join(" ");
-export const isOrderPrintable = (order) => {
-  if ((order?.print_blockers || []).length) return false;
-  if (!printableStatuses.includes(order?.status)) return false;
+export const printBlockMessage = (order) => (order?.print_blockers || []).filter((item) => item.kind !== "confirm").map((item) => item.message).join(" ");
+// Свежесть PDF: PitStop завершён для текущей ревизии и хэша файла. Вердикт не важен:
+// он уже отражён в статусе заказа (зелёный / жёлтый / красный).
+const pitstopFinishedForCurrentPdf = (order) => {
   const pitstop = order?.pitstop;
   if (!pitstop) return !order?.pitstop_required && (!order?.pitstop_status || order.pitstop_status === "not_checked");
-  const executionStatus = String(pitstop.execution_status || "").toLowerCase();
-  const verdict = String(pitstop.verdict || "").toLowerCase();
-  if (executionStatus !== "completed" || !["passed", "ok", "success"].includes(verdict)) return false;
+  if (String(pitstop.execution_status || "").toLowerCase() !== "completed") return false;
   if (order.current_pdf_revision != null && pitstop.checked_revision !== order.current_pdf_revision) return false;
   if (order.current_pdf_sha256 && pitstop.input_sha256 && pitstop.input_sha256 !== order.current_pdf_sha256) return false;
   return true;
 };
+// Зелёный и жёлтый заказ уходят в печать без дополнительных вопросов.
+export const isOrderPrintable = (order) => {
+  if ((order?.print_blockers || []).length) return false;
+  if (!sendableStatuses.includes(order?.status)) return false;
+  return pitstopFinishedForCurrentPdf(order);
+};
+// Красный заказ с готовым итоговым PDF: печать только после явного подтверждения оператора.
+export const isOrderForcePrintable = (order) => {
+  if (order?.status !== "error" || order?.print_mode !== "forced") return false;
+  const blockers = order.print_blockers || [];
+  if (!blockers.length || blockers.some((item) => item.kind !== "confirm")) return false;
+  return pitstopFinishedForCurrentPdf(order);
+};
+export const isOrderSendable = (order) => isOrderPrintable(order) || isOrderForcePrintable(order);
 const decorateOrder = (order, runId) => {
   if (!order) return order;
   const orderId = String(order.order_id ?? order.id ?? "");
@@ -80,8 +93,10 @@ export const useChecksStore = defineStore("checks", {
       });
     },
     selectedOrders: (state) => state.selected.map((id) => state.selectedOrderSnapshots[id] || state.orders.find((order) => orderIdentity(order) === String(id) || String(order.order_id ?? order.id) === String(id))).filter(Boolean),
-    printBlockReason() { return this.selectedOrders.map(printBlockMessage).filter(Boolean).join(" ") || "В печать можно отправить только прошедшие заказы"; },
-    canPrint() { return this.selectedOrders.length > 0 && this.selectedOrders.every(isOrderPrintable); },
+    printBlockReason() { return this.selectedOrders.filter((order) => !isOrderSendable(order)).map(printBlockMessage).filter(Boolean).join(" ") || "В печать можно отправить только зелёные и жёлтые заказы, а заказы с ошибками — при наличии готового PDF и с подтверждением"; },
+    canPrint() { return this.selectedOrders.length > 0 && this.selectedOrders.every(isOrderSendable); },
+    // Среди выбранных есть красные заказы: перед отправкой нужен диалог подтверждения.
+    printNeedsConfirmation() { return this.selectedOrders.some(isOrderForcePrintable); },
   },
   actions: {
     setFilter(value) {
@@ -321,10 +336,14 @@ export const useChecksStore = defineStore("checks", {
       await api.correction(this.activeRun.id, order.aggregate_id ?? order.order_id ?? order.id, { decision });
       await this.resync();
     },
-    async act(action, comment, conflictStrategy = "fail") {
+    async act(action, comment, conflictStrategy = "fail", confirmFailed = false) {
       const selectedOrders = this.selectedOrders;
       if (action === "force-print" || (action === "print" && !this.canPrint)) {
         throw new Error((this.selectedOrders.some((order) => (order.print_blockers || []).length) && this.printBlockReason) || "В печать можно отправить только заказы, прошедшие все обязательные проверки.");
+      }
+      const forcedSelected = action === "print" && this.printNeedsConfirmation;
+      if (forcedSelected && !confirmFailed) {
+        throw new Error("Заказ с ошибками: отправка в печать требует подтверждения оператора.");
       }
       const order_ids = selectedOrders.map((order) => order.aggregate_id ?? order.order_id ?? order.id);
       const run_id = this.activeRun?.id;
@@ -334,7 +353,7 @@ export const useChecksStore = defineStore("checks", {
           order_ids,
           run_id,
           conflict_strategy: conflictStrategy,
-          confirm_failed_processing: false,
+          confirm_failed_processing: forcedSelected,
         })]
         : await Promise.all(selectedOrders.map((order) => {
           const identity = orderIdentity(order);
@@ -369,6 +388,7 @@ export const useChecksStore = defineStore("checks", {
           action,
           comment,
           orderId: resultIdentity(conflict),
+          confirmFailed: forcedSelected,
           conflict: conflict.conflict,
         };
         return result;
@@ -414,7 +434,7 @@ export const useChecksStore = defineStore("checks", {
       return action === "print" ? "accepted_for_print" : "returned_for_rework";
     },
     _dropSelectionWhenPrintBecomesBlocked(id, previous, updated) {
-      if (isOrderPrintable(previous) && !isOrderPrintable(updated)) {
+      if (isOrderSendable(previous) && !isOrderSendable(updated)) {
         this.selected = this.selected.filter((selectedId) => String(selectedId) !== String(id));
         delete this.selectedOrderSnapshots[id];
       }

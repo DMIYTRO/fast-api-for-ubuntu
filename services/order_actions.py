@@ -16,6 +16,7 @@ _LABELS = {
     "order.correction_confirmed": "Коррекция размера подтверждена",
     "order.correction_rejected": "Коррекция размера отклонена",
     "order.file_transition": "Перемещение файлов",
+    "order.forced_print": "Отправлено в печать с ошибками по подтверждению оператора",
     "order.file_transition_rolled_back": "Перемещение отменено",
     "order.callas_fix.save_failed": "Исправление PDF не сохранено",
     "order.callas_fix.started": "Исправление Callas запущено",
@@ -40,7 +41,7 @@ def order_actions(events: Iterable[RunEvent], order: dict[str, Any], *, legacy_u
         if event.type not in _LABELS and not event.type.startswith("pitstop."):
             continue
         snapshot = data.get("order") or {}
-        details = {key: data[key] for key in ("plan", "decision", "file_id", "error") if data.get(key) is not None}
+        details = {key: data[key] for key in ("plan", "decision", "file_id", "error", "forced") if data.get(key) is not None}
         if event.type == "order.completed":
             details["operations"] = [
                 {"file": item.get("name"), **operation}

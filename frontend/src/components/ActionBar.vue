@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref } from "vue";
-const props = defineProps({ count: Number, selectedIds: Array, comments: Object, canPrint: Boolean, blockReason: String, busy: Boolean, reasons: Array });
+const props = defineProps({ count: Number, selectedIds: Array, comments: Object, canPrint: Boolean, needsPrintConfirmation: Boolean, blockReason: String, busy: Boolean, reasons: Array });
 const emit = defineEmits(["clear", "action"]);
 const mode = ref("");
 const comment = ref("");
@@ -12,7 +12,8 @@ const filteredReasons = computed(() => (props.reasons || []).filter((item) =>
 const preparedCount = computed(() => (props.selectedIds || []).filter((id) => props.comments?.[id]).length);
 const allHavePreparedComments = computed(() => preparedCount.value === props.count);
 function prepare(action) {
-  if (action === "print") emit("action", action, "");
+  if (action === "print" && props.needsPrintConfirmation) mode.value = "force-print";
+  else if (action === "print") emit("action", action, "");
   else mode.value = "reject";
 }
 function submit() {
@@ -20,6 +21,10 @@ function submit() {
   const value = [reasonText, comment.value].filter(Boolean).join(". ");
   emit("action", "reject", value);
   mode.value = ""; comment.value = ""; selectedReasons.value = [];
+}
+function confirmForcedPrint() {
+  mode.value = "";
+  emit("action", "print", "", true);
 }
 </script>
 <template>
@@ -30,6 +35,7 @@ function submit() {
     <button class="button danger" @click="prepare('reject')">Вернуть на доработку</button>
     <button class="button success" :disabled="!canPrint || busy" :title="!canPrint ? (blockReason || 'В печать можно отправить только прошедшие заказы') : ''" @click="prepare('print')">Провести в печать</button>
   </section>
+  <div v-if="mode === 'force-print'" class="confirm-backdrop"><section class="confirm-card" role="dialog" aria-modal="true"><h3>Заказ с ошибками</h3><p>Заказ с ошибками. Отправить в печать под вашу ответственность?</p><p class="muted">Будет отправлен готовый итоговый PDF текущей версии. Решение будет записано в журнал заказа.</p><div><button class="button secondary" :disabled="busy" @click="mode = ''">Отмена</button><button class="button danger" :disabled="busy" @click="confirmForcedPrint">Отправить под мою ответственность</button></div></section></div>
   <div v-if="mode === 'reject'" class="confirm-backdrop"><form class="confirm-card" @submit.prevent="submit"><h3>Вернуть на доработку</h3><p>Для каждого заказа будет создан отдельный запрос в Sborka с его номером, комментарием и именем сформированного превью.</p>
     <p v-if="preparedCount" class="prepared-comments">Индивидуальные причины заполнены для {{ preparedCount }} из {{ count }} заказов.</p>
     <input v-if="reasons?.length" v-model.trim="reasonSearch" type="search" placeholder="Поиск причины">

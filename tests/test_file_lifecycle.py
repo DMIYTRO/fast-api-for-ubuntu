@@ -132,13 +132,40 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def test_operator_cannot_move_non_green_pdf_to_print(tmp_path):
+def test_yellow_pdf_goes_to_print_and_red_only_when_confirmed(tmp_path):
     import pytest
     pdf = tmp_path / "PDF" / "Rework" / "job.pdf"
     pdf.parent.mkdir(parents=True)
     pdf.write_bytes(b"rework")
-    for status in ("warning", "error"):
-        with pytest.raises(FileLifecycleError, match="зелёный"):
-            FileLifecycle(tmp_path).accept_for_print({"status": status, "pdf_path": str(pdf)})
-        assert pdf.is_file()
-        assert not (tmp_path / "PDF" / "Print" / "job.pdf").exists()
+    source = tmp_path / "job-face.jpg"
+    source.write_bytes(b"src")
+    preview = tmp_path / "Previews" / "job.png"
+    preview.parent.mkdir()
+    preview.write_bytes(b"png")
+    order = {
+        "status": "error", "pdf_path": str(pdf),
+        "files": [{"path": str(source)}], "preview_paths": [str(preview)],
+    }
+    with pytest.raises(FileLifecycleError, match="подтверждения"):
+        FileLifecycle(tmp_path).accept_for_print(order)
+    assert pdf.is_file() and not (tmp_path / "PDF" / "Print" / "job.pdf").exists()
+    FileLifecycle(tmp_path).accept_for_print(order, allow_failed=True)
+    assert (tmp_path / "PDF" / "Print" / "job.pdf").is_file()
+
+
+def test_yellow_pdf_is_accepted_for_print(tmp_path):
+    pdf = tmp_path / "PDF" / "Rework" / "job.pdf"
+    pdf.parent.mkdir(parents=True)
+    pdf.write_bytes(b"rework")
+    source = tmp_path / "job-face.jpg"
+    source.write_bytes(b"src")
+    preview = tmp_path / "Previews" / "job.png"
+    preview.parent.mkdir()
+    preview.write_bytes(b"png")
+    FileLifecycle(tmp_path).accept_for_print(
+        {
+            "status": "warning", "pdf_path": str(pdf),
+            "files": [{"path": str(source)}], "preview_paths": [str(preview)],
+        }
+    )
+    assert (tmp_path / "PDF" / "Print" / "job.pdf").is_file()
