@@ -4,7 +4,9 @@
 и Lab уходят в DeviceCMYK (PSO Coated v3, OutputIntent не встраивается), ICC-CMYK снимается
 без пересчёта. Перед конвертацией ищем ICC/Lab/калиброванный цвет стандартным профилем
 «List objects using ICC or Lab or calibrated color»: после перевода профиль снят, и
-карточка заказа показывает значок «ICC off» (``icc_removed``).
+карточка заказа показывает значок «ICC off» (``icc_removed``). Значок правдивый: профиль считается
+снятым, только если он был до конвертации, а в результате исчез (повторный анализ результата и
+наличие OutputIntent в каталоге PDF до и после).
 
 Конвертация нужна только PDF, где найден RGB. Исходный файл заменяется результатом
 лишь после проверки: страниц столько же, RGB не осталось. При любом сбое PDF
@@ -76,6 +78,16 @@ def _page_count(path: Path) -> int:
         return document.page_count
 
 
+def has_output_intent(path: Path | str) -> bool:
+    """Есть ли в каталоге PDF выходной профиль (OutputIntents); нечитаемый PDF считается без него."""
+    try:
+        with pymupdf.open(str(path)) as document:
+            kind, value = document.xref_get_key(document.pdf_catalog(), "OutputIntents")
+    except Exception:  # noqa: BLE001
+        return False
+    return kind != "null" and value.strip() not in ("", "[]", "null")
+
+
 def _detect_icc(converter: Any, snapshot: Path, label: str, record: dict[str, Any]) -> None:
     """ICC до конвертации; сбой определения не мешает самой конвертации."""
     detector = getattr(converter, "detect_icc", None)
@@ -89,6 +101,27 @@ def _detect_icc(converter: Any, snapshot: Path, label: str, record: dict[str, An
         return
     record["icc_pages"] = pages
     record["icc_present"] = bool(pages)
+
+
+def _verify_icc_removed(converter: Any, result: Path, label: str, record: dict[str, Any]) -> None:
+    """Повторный анализ результата: ICC считается снятым, только если на страницах он исчез.
+
+    Если повторный анализ не удался, остаётся допущение профиля конвертации (результат
+    DeviceCMYK, ICC-CMYK снимается без пересчёта); об этом говорит ``icc_verified: False``.
+    """
+    pages_before = set(record.get("icc_pages") or [])
+    if not pages_before:
+        return
+    try:
+        remaining = set(converter.detect_icc(result, f"{label}-after"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("callas.rgb_to_cmyk.icc_verify_failed label=%s error=%s", label, exc)
+        record["icc_verified"] = False
+        record["icc_removed"] = True
+        return
+    record["icc_verified"] = True
+    record["icc_remaining_pages"] = sorted(remaining)
+    record["icc_removed"] = bool(pages_before - remaining)
 
 
 def convert_rgb_to_cmyk(
@@ -120,6 +153,7 @@ def convert_rgb_to_cmyk(
             snapshot = Path(snapshot_dir) / source.name
             shutil.copyfile(source, snapshot)
             _detect_icc(converter, snapshot, label, record)
+            record["output_intent_before"] = has_output_intent(snapshot)
             summary = converter(snapshot, temporary, label)
         if not temporary.is_file() or temporary.stat().st_size == 0:
             raise RuntimeError("callas вернул пустой PDF")
@@ -131,10 +165,16 @@ def convert_rgb_to_cmyk(
                 "после конвертации RGB остался на страницах: "
                 + ", ".join(str(number) for number in remaining)
             )
+        record["icc_removed"] = False
+        if record.get("icc_present") and hasattr(converter, "detect_icc"):
+            _verify_icc_removed(converter, temporary, label, record)
+        # Выходной профиль (OutputIntent) был и пропал из результата: тоже «профиль снят».
+        record["output_intent_removed"] = bool(
+            record.pop("output_intent_before", False) and not has_output_intent(temporary)
+        )
+        record["icc_removed"] = bool(record["icc_removed"] or record["output_intent_removed"])
         os.replace(temporary, source)
         record["status"] = STATUS_CONVERTED
-        # ICC был в документе и после конвертации снят (результат DeviceCMYK).
-        record["icc_removed"] = bool(record.get("icc_present"))
         if isinstance(summary, dict):
             record["fixups_applied"] = summary.get("fixups_applied")
     except Exception as exc:  # noqa: BLE001 — сбой не роняет заказ

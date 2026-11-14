@@ -589,6 +589,7 @@ def _callas_fix_service(settings: Settings):
         client,
         high_ppi_limit=settings.high_ppi_limit,
         black_solid_threshold=settings.black_solid_area_threshold,
+        black_solid_fix_threshold=settings.black_solid_fix_area_threshold,
     )
     return CallasFixService(client, post_checks=build_post_checks(analyzer))
 
@@ -654,6 +655,7 @@ def _callas_prepress_checker(settings: Settings, client=None):
         client or CallasClient.from_settings(settings),
         high_ppi_limit=settings.high_ppi_limit,
         black_solid_threshold=settings.black_solid_area_threshold,
+        black_solid_fix_threshold=settings.black_solid_fix_area_threshold,
     )
 
 

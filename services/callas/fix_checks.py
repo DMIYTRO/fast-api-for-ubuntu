@@ -54,7 +54,7 @@ def build_post_checks(analyzer: Any) -> dict[str, PostCheck]:
             messages.append(
                 f"Чистый K100 (площадь): было {before['share'] * 100:.0f}%, стало {after['share'] * 100:.0f}%."
             )
-            if after["detected"]:
+            if after.get("fix_available", after["detected"]):
                 level = "warning"
                 messages.append("Плашка 100% K осталась: проверьте результат вручную.")
         else:

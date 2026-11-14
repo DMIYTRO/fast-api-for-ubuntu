@@ -85,11 +85,13 @@ if __name__ == "__main__":
 class PrepressSettingsTests(unittest.TestCase):
     def test_defaults(self):
         with patch.dict(os.environ, {}, clear=False):
-            for name in ("IMAGE_MAGIC_BLACK_SOLID_AREA_THRESHOLD", "IMAGE_MAGIC_HIGH_PPI_LIMIT",
+            for name in ("IMAGE_MAGIC_BLACK_SOLID_AREA_THRESHOLD", "IMAGE_MAGIC_BLACK_SOLID_FIX_AREA_THRESHOLD",
+                         "IMAGE_MAGIC_HIGH_PPI_LIMIT",
                          "IMAGE_MAGIC_CALLAS_PREPRESS_ENABLED", "IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_PROFILE"):
                 os.environ.pop(name, None)
             settings = Settings.from_env()
         self.assertEqual(settings.black_solid_area_threshold, 0.25)
+        self.assertEqual(settings.black_solid_fix_area_threshold, 0.01)
         self.assertEqual(settings.high_ppi_limit, 500.0)
         self.assertTrue(settings.callas_prepress_enabled)
         self.assertEqual(

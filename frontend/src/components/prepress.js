@@ -20,11 +20,21 @@ export const CLIPPING_CODE = "action:2079";
 
 const ok = (block) => block && block.status === "ok";
 
+// Значок «ICC off»: бэкенд ставит icc_removed только если ICC/выходной профиль был и из результата
+// исчез. Неудавшаяся конвертация оставляет PDF как был, поэтому для неё значка нет.
 export function iccOff(order) {
   const info = order?.color_conversion;
-  if (!info || info.status !== "converted" || !info.icc_removed) return null;
-  const pages = (info.icc_pages || []).join(", ");
-  return `ICC-профиль снят, цвет переведён в DeviceCMYK${pages ? ` (стр. ${pages})` : ""}. Исходный ICC/Lab больше не действует: проверьте цвета по превью.`;
+  if (!info || info.status === "failed" || info.icc_removed !== true) return null;
+  const iccPages = info.icc_pages || [];
+  const remaining = new Set(info.icc_remaining_pages || []);
+  const removedPages = iccPages.filter((page) => !remaining.has(page)).join(", ");
+  const parts = [];
+  if (removedPages || !info.output_intent_removed) {
+    parts.push(`ICC-профиль снят, цвет переведён в DeviceCMYK${removedPages ? ` (стр. ${removedPages})` : ""}`);
+  }
+  if (info.output_intent_removed) parts.push("выходной профиль (OutputIntent) удалён");
+  if (remaining.size) parts.push(`ICC остался на стр. ${[...remaining].join(", ")}`);
+  return `${parts.join("; ")}. Исходный ICC/Lab больше не действует: проверьте цвета по превью.`;
 }
 
 export function fontsInfo(order) {
@@ -60,7 +70,8 @@ export function prepressNotices(order) {
   if (ok(ppi) && ppi.one_bit_message) notices.push({ key: "one_bit_ppi", level: "info", text: ppi.one_bit_message });
   const black = prepress.black_solid;
   if (ok(black) && black.message) {
-    notices.push({ key: black.detected ? "black_solid" : "black_manual", level: black.detected ? "warning" : "info", text: black.message });
+    const key = black.detected ? "black_solid" : black.fix_available ? "black_solid_minor" : "black_manual";
+    notices.push({ key, level: black.detected ? "warning" : "info", text: black.message });
   }
   const clip = clippingGroup(order);
   if (clip) notices.push({ key: "clipping", level: "warning", text: `${clip.message}. Источник: Enfocus PitStop. Снятие обтравки может проявить скрытое содержимое.` });
@@ -71,12 +82,21 @@ export function prepressNotices(order) {
   return notices;
 }
 
+// Кнопка «в составной чёрный»: есть чистый K100 (плашка или малая доля площади). Если детектор не отработал
+// (службе callas не включены цветоделения, сбой, проверка выключена), оператору всё равно даём запустить
+// профиль: он сам сообщит, что K100 не найден (fixups_applied == 0), а лишнего не изменит.
+export function blackFixAvailable(black) {
+  if (!black || typeof black !== "object") return false;
+  if (ok(black)) return Boolean(black.detected || black.fix_available);
+  return black.status === "failed" || black.status === "skipped";
+}
+
 export function availableFixes(order) {
   const fixes = [];
   const fonts = fontsInfo(order);
   if (fonts && fonts.count > fonts.notEmbedded) fixes.push("fonts_to_outlines");
   const black = order?.prepress?.black_solid;
-  if (ok(black) && black.detected) fixes.push("black_to_rich");
+  if (blackFixAvailable(black)) fixes.push("black_to_rich");
   if (clippingGroup(order)) fixes.push("remove_clipping");
   return fixes;
 }

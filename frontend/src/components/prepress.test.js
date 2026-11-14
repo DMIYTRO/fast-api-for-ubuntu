@@ -4,7 +4,7 @@ import OrderCard from "./OrderCard.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import FixComparison from "./FixComparison.vue";
 import { api } from "../services/api.js";
-import { availableFixes, fontLabel, prepressNotices } from "./prepress.js";
+import { availableFixes, blackFixAvailable, fontLabel, iccOff, prepressNotices } from "./prepress.js";
 
 const mounted = [];
 function mountComponent(component, props) {
@@ -48,6 +48,25 @@ describe("ICC off badge", () => {
     await nextTick();
     expect(plain.querySelector(".icc-off-indicator")).toBeNull();
     expect(failed.querySelector(".icc-off-indicator")).toBeNull();
+  });
+
+  it("shows the badge whenever the backend says the profile was removed, even without a converted status", () => {
+    expect(iccOff({ color_conversion: { icc_removed: true, icc_pages: [2] } })).toContain("стр. 2");
+    expect(iccOff({ color_conversion: { status: "failed", icc_removed: true } })).toBeNull();
+    expect(iccOff({ color_conversion: { status: "converted", icc_removed: false } })).toBeNull();
+    expect(iccOff({})).toBeNull();
+  });
+
+  it("reports a removed output profile (OutputIntent) without ICC objects", () => {
+    const text = iccOff({ color_conversion: { status: "converted", icc_removed: true, icc_pages: [], output_intent_removed: true } });
+    expect(text).toContain("выходной профиль (OutputIntent) удалён");
+    expect(text).not.toContain("ICC-профиль снят");
+  });
+
+  it("stays truthful about pages where ICC remained", () => {
+    const text = iccOff({ color_conversion: { status: "converted", icc_removed: true, icc_pages: [1, 2], icc_remaining_pages: [2] } });
+    expect(text).toContain("(стр. 1)");
+    expect(text).toContain("ICC остался на стр. 2");
   });
 });
 
@@ -120,10 +139,29 @@ describe("grouped prepress notices and buttons", () => {
     expect(host.querySelector("[data-note='black_manual']")?.textContent).toContain("скорректируйте вручную");
   });
 
-  it("ignores failed checks", () => {
+  it("offers the black button for a small pure K100 area below the solid threshold", async () => {
+    const black = { status: "ok", detected: false, fix_available: true, fix_pages: [1], message: "Есть чистый K100: 3.0% площади, стр. 1. Можно перевести в составной чёрный (C60 M40 Y40 K100)." };
+    const host = card({ pdf_path: "/p.pdf", prepress: { black_solid: black } });
+    await nextTick();
+    expect(host.querySelector(".callas-fix-black_to_rich")?.textContent).toBe("Перевести плашку в составной чёрный");
+    const note = host.querySelector("[data-note='black_solid_minor']");
+    expect(note?.textContent).toContain("Есть чистый K100");
+    expect(prepressNotices({ prepress: { black_solid: black } })[0].level).toBe("info");
+  });
+
+  it("still offers the black button when the K100 detector did not run, but not when it found nothing", () => {
+    expect(blackFixAvailable({ status: "failed", error: "separations отключены" })).toBe(true);
+    expect(blackFixAvailable({ status: "skipped" })).toBe(true);
+    expect(blackFixAvailable({ status: "ok", detected: false, fix_available: false })).toBe(false);
+    expect(blackFixAvailable(undefined)).toBe(false);
+    expect(availableFixes({ prepress: { black_solid: { status: "failed" } } })).toEqual(["black_to_rich"]);
+    expect(availableFixes({ prepress: { black_solid: { status: "ok", detected: false, manual_check: true } } })).toEqual([]);
+  });
+
+  it("ignores failed checks for notices and the other buttons", () => {
     const order = { prepress: { fonts: { status: "failed", error: "x" }, high_ppi: { status: "failed" }, black_solid: { status: "failed" } } };
     expect(prepressNotices(order)).toEqual([]);
-    expect(availableFixes(order)).toEqual([]);
+    expect(availableFixes(order)).toEqual(["black_to_rich"]);
     expect(fontLabel({ name: "N", type: "Type3", embedded: null, invisible_only: true })).toBe("N (Type3, невидимый)");
   });
 });
