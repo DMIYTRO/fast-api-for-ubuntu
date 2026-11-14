@@ -198,7 +198,7 @@ describe("grouped prepress notices and buttons", () => {
     expect(normal?.title).not.toContain(NOT_DETECTED_NOTE);
   });
 
-  it("renders all three fix buttons with an svg icon and enabled", async () => {
+  it("renders all fix buttons with an svg icon and enabled", async () => {
     expect(availableFixes({})).toEqual(ALL_FIXES);
     const host = card({ pdf_path: "/p.pdf" });
     await nextTick();
@@ -212,6 +212,23 @@ describe("grouped prepress notices and buttons", () => {
     const noPdf = card({});
     await nextTick();
     expect(noPdf.querySelector(".callas-extra-fix")).toBeNull();
+  });
+
+  it("shows the downsample button always and recommends it only when high-ppi rasters exist", async () => {
+    const withPpi = card({ pdf_path: "/p.pdf", prepress: { high_ppi: { status: "ok", count: 2, pages: [1], max_ppi: 900, message: "m" } } });
+    const clean = card({ pdf_path: "/p.pdf", prepress: { high_ppi: { status: "ok", count: 0, pages: [] } } });
+    await nextTick();
+    const hot = withPpi.querySelector(".callas-fix-downsample_images");
+    expect(hot?.textContent).toContain("Уменьшить разрешение до 300 ppi");
+    expect(hot.classList.contains("recommended")).toBe(true);
+    expect(hot.querySelector("svg")).not.toBeNull();
+    expect(hot.title).toContain("уменьшит до 300 ppi все изображения выше 300 ppi; штриховые 1-бит проверьте по превью");
+    const cold = clean.querySelector(".callas-fix-downsample_images");
+    expect(cold).not.toBeNull();
+    expect(cold.disabled).toBe(false);
+    expect(cold.classList.contains("recommended")).toBe(false);
+    expect(recommendedFixes({ prepress: { high_ppi: { status: "ok", count: 1 } } })).toEqual(["downsample_images"]);
+    expect(recommendedFixes({ prepress: { high_ppi: { status: "ok", count: 0 } } })).toEqual([]);
   });
 
   it("ignores failed checks for notices and the other buttons", () => {

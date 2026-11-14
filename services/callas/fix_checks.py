@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from services.callas.prepress import NOT_EMBEDDED_MESSAGE, OUTLINED_MESSAGE
+from services.callas.prepress import NOT_EMBEDDED_MESSAGE, OUTLINED_MESSAGE, pages_text
 
 PostCheck = Callable[[Path, Path, dict[str, Any]], dict[str, Any]]
 
@@ -82,4 +82,33 @@ def build_post_checks(analyzer: Any) -> dict[str, PostCheck]:
             changed_percent=changed,
         )
 
-    return {"fonts_to_outlines": fonts, "black_to_rich": black, "remove_clipping": clipping}
+    def downsample(source: Path, fixed: Path, summary: dict[str, Any]) -> dict[str, Any]:
+        before = analyzer.check_high_ppi(source, "fixcheck-before")
+        after = analyzer.check_high_ppi(fixed, "fixcheck-after")
+        if after.get("status") != "ok":
+            return _result(
+                "downsample_images", "warning",
+                [f"Повторная проверка разрешения не выполнена: {after.get('error')}"],
+            )
+        limit = int(analyzer.high_ppi_limit)
+        left = after["count"]
+        messages = []
+        if before.get("status") == "ok":
+            messages.append(f"Растров выше {limit} ppi: было {before['count']}, стало {left}.")
+        else:
+            messages.append(f"Растров выше {limit} ppi после исправления: {left}.")
+        level = "ok"
+        if left:
+            level = "warning"
+            messages.append(
+                f"Растры выше {limit} ppi остались: стр. {pages_text(after['pages'])} "
+                f"(до {after['max_ppi']:g} ppi)."
+            )
+        messages.append(f"Изменено {_changed(summary):g}% площади в сравнении с оригиналом.")
+        messages.append("Проверьте штриховые 1-бит и мелкий текст по превью «до / после».")
+        return _result("downsample_images", level, messages, remaining=left)
+
+    return {
+        "fonts_to_outlines": fonts, "black_to_rich": black, "remove_clipping": clipping,
+        "downsample_images": downsample,
+    }

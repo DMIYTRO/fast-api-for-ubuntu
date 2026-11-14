@@ -89,6 +89,8 @@ DEFAULT_BLACK_SOLID_AREA_THRESHOLD = 0.25
 # Нижний порог доступности кнопки «в составной чёрный»: доля площади страницы с чистым K100.
 DEFAULT_BLACK_SOLID_FIX_AREA_THRESHOLD = 0.01
 DEFAULT_HIGH_PPI_LIMIT = 500.0
+# Стандартный fixup callas: уменьшает до 300 ppi всё, что выше 300 ppi (переменных не принимает).
+DEFAULT_DOWNSAMPLE_PROFILE = "PDF fixups/Downsample image resolution to specified value"
 
 
 def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
@@ -162,6 +164,7 @@ class Settings:
     black_solid_area_threshold: float = DEFAULT_BLACK_SOLID_AREA_THRESHOLD
     black_solid_fix_area_threshold: float = DEFAULT_BLACK_SOLID_FIX_AREA_THRESHOLD
     high_ppi_limit: float = DEFAULT_HIGH_PPI_LIMIT
+    callas_downsample_profile: str = DEFAULT_DOWNSAMPLE_PROFILE
     callas_request_timeout_seconds: float = 30.0
     callas_job_timeout_seconds: float = 600.0
     callas_poll_interval_seconds: float = 1.0
@@ -356,6 +359,10 @@ class Settings:
                 "IMAGE_MAGIC_BLACK_SOLID_FIX_AREA_THRESHOLD",
                 DEFAULT_BLACK_SOLID_FIX_AREA_THRESHOLD, minimum=0.0, maximum=1.0,
             ),
+            callas_downsample_profile=os.environ.get(
+                "IMAGE_MAGIC_CALLAS_DOWNSAMPLE_PROFILE", ""
+            ).strip()
+            or DEFAULT_DOWNSAMPLE_PROFILE,
             high_ppi_limit=_env_float(
                 "IMAGE_MAGIC_HIGH_PPI_LIMIT", DEFAULT_HIGH_PPI_LIMIT, minimum=72.0, maximum=5000.0
             ),
