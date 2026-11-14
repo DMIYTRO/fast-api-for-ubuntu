@@ -45,6 +45,7 @@ class ResampleValidationTests(unittest.TestCase):
         self.assertFalse(check.errors)
 
     def test_large_source_with_small_crop_requires_confirmation(self):
+        self.processor.correction_policy = "ask"
         # 960:560 does not match the required 94:54 layout. Fitting the width
         # proportionally would produce a height of about 54.83 mm.
         check = self.make_check(

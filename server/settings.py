@@ -7,6 +7,8 @@ import os
 import math
 from pathlib import Path
 
+from config.profiles import DEFAULT_AUTO_CORRECT_MAX_MM, DEFAULT_CORRECTION_CONFIRM_MAX_MM
+
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 # Временный пароль для локального тестового сервера. Удалить после тестового этапа.
@@ -35,6 +37,21 @@ def _env_optional_float(name: str) -> float | None:
         return parsed
     except ValueError as exc:
         raise ValueError(f"{name} должен быть числом (процент), получено: {value!r}") from exc
+
+
+def _env_correction_limit(name: str, default: float = DEFAULT_AUTO_CORRECT_MAX_MM) -> float:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = float(value.strip().replace(",", "."))
+        if not math.isfinite(parsed) or parsed < 0:
+            raise ValueError("invalid limit")
+        return parsed
+    except ValueError as exc:
+        raise ValueError(
+            f"{name} должен быть неотрицательным числом (мм), получено: {value!r}"
+        ) from exc
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -106,6 +123,10 @@ class Settings:
     # Переопределение порогов красочности профиля (None — из профиля направления).
     ink_min_percent: float | None = None
     ink_max_percent: float | None = None
+    # Предел автоматической коррекции размера (мм обрезки), IMAGE_MAGIC_AUTO_CORRECT_MAX_MM.
+    auto_correct_max_mm: float = DEFAULT_AUTO_CORRECT_MAX_MM
+    # Жёсткий максимум коррекции с подтверждением оператора (выше — отклонение).
+    correction_confirm_max_mm: float = DEFAULT_CORRECTION_CONFIRM_MAX_MM
     strip_icc_cmyk: bool = False
     # Автоматический перевод RGB → CMYK итогового PDF процесс-планом callas.
     callas_rgb_to_cmyk_enabled: bool = False
@@ -146,6 +167,16 @@ class Settings:
         identity_value = os.environ.get(
             "IMAGE_MAGIC_PITSTOP_IDENTITY_FILE", ""
         ).strip()
+        auto_correct_max_mm = _env_correction_limit("IMAGE_MAGIC_AUTO_CORRECT_MAX_MM")
+        correction_confirm_max_mm = _env_correction_limit(
+            "IMAGE_MAGIC_CORRECTION_CONFIRM_MAX_MM",
+            max(DEFAULT_CORRECTION_CONFIRM_MAX_MM, auto_correct_max_mm),
+        )
+        if correction_confirm_max_mm < auto_correct_max_mm:
+            raise ValueError(
+                "IMAGE_MAGIC_CORRECTION_CONFIRM_MAX_MM не может быть меньше "
+                f"IMAGE_MAGIC_AUTO_CORRECT_MAX_MM ({auto_correct_max_mm:g} мм)"
+            )
         return cls(
             database_url=os.environ.get(
                 "IMAGE_MAGIC_DATABASE_URL", f"sqlite:///{default_db}"
@@ -276,6 +307,8 @@ class Settings:
             ),
             ink_min_percent=_env_optional_float("IMAGE_MAGIC_INK_MIN_PERCENT"),
             ink_max_percent=_env_optional_float("IMAGE_MAGIC_INK_MAX_PERCENT"),
+            auto_correct_max_mm=auto_correct_max_mm,
+            correction_confirm_max_mm=correction_confirm_max_mm,
             strip_icc_cmyk=_env_bool("IMAGE_MAGIC_STRIP_ICC_CMYK", False),
             callas_rgb_to_cmyk_enabled=_env_bool(
                 "IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_ENABLED", False
