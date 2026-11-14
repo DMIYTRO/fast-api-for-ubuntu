@@ -9,6 +9,8 @@ from typing import Mapping
 
 #: Предел автоматической коррекции размера по умолчанию, мм обрезки.
 DEFAULT_AUTO_CORRECT_MAX_MM = 4.0
+#: Жёсткий максимум коррекции с подтверждением оператора, мм обрезки.
+DEFAULT_CORRECTION_CONFIRM_MAX_MM = 10.0
 
 
 @dataclass(frozen=True)
@@ -27,10 +29,12 @@ class PrePressProfile:
     metadata_tolerance_mm: float = 0.1
     # Предел автоматической коррекции: максимальная обрезка (мм) при
     # пропорциональном масштабировании «с покрытием» и центральной обрезке.
-    # Всё, что требует большей обрезки, отклоняется. Значение переопределяется
-    # через ``with_correction_limit`` (IMAGE_MAGIC_AUTO_CORRECT_MAX_MM).
+    # Обрезка между ``auto_crop_mm`` и ``confirm_crop_mm`` требует подтверждения
+    # оператора; выше ``confirm_crop_mm`` — отклонение. Значения переопределяются
+    # через ``with_correction_limit`` (IMAGE_MAGIC_AUTO_CORRECT_MAX_MM и
+    # IMAGE_MAGIC_CORRECTION_CONFIRM_MAX_MM).
     auto_crop_mm: float = DEFAULT_AUTO_CORRECT_MAX_MM
-    confirm_crop_mm: float = DEFAULT_AUTO_CORRECT_MAX_MM
+    confirm_crop_mm: float = DEFAULT_CORRECTION_CONFIRM_MAX_MM
     # Пороги красочности (callas inkcoverage): минимум и максимум
     # ``total_sum_percent`` страницы — суммы СРЕДНИХ покрытий красок по рамке,
     # не TAC. Ниже минимума — «Недолив», выше максимума — «Перелив».
@@ -52,10 +56,13 @@ class PrePressProfile:
     cut_lines: Mapping[str, str] | None = None
     spots: tuple[str, ...] = field(default_factory=tuple)
 
-    def with_correction_limit(self, limit_mm: float) -> "PrePressProfile":
-        """Профиль с заданным пределом коррекции; выше предела — отклонение."""
+    def with_correction_limit(
+        self, limit_mm: float, confirm_max_mm: float | None = None
+    ) -> "PrePressProfile":
+        """Профиль с пределом автокоррекции и максимумом коррекции с подтверждением."""
         limit = max(0.0, float(limit_mm))
-        return replace(self, auto_crop_mm=limit, confirm_crop_mm=limit)
+        cap = self.confirm_crop_mm if confirm_max_mm is None else float(confirm_max_mm)
+        return replace(self, auto_crop_mm=limit, confirm_crop_mm=max(limit, cap))
 
     @property
     def size_extra_mm(self) -> float:

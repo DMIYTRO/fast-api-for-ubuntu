@@ -388,3 +388,8 @@ def test_readable_raster_with_local_findings_builds_diagnostic_with_real_tools(t
     assert result.pdf_path.parent.name == "Rework"
     assert source.read_bytes() == before
     assert "не настроена" in result.pitstop_skipped_reason
+
+
+def test_adapter_does_not_auto_approve_pending_corrections():
+    # Автоматический режим: коррекции выше предела подтверждает оператор.
+    assert BatchProcessorAdapter.auto_approves_pending is False

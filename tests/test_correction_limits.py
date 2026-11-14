@@ -41,33 +41,44 @@ def _validate(actual: tuple[float, float], policy: str = "auto", profile=DEFAULT
 # --- политика и профиль -------------------------------------------------
 
 
-def test_default_limit_is_four_mm_for_every_profile():
+def test_default_limits_are_four_and_ten_mm_for_every_profile():
     for profile in PROFILES.values():
         assert profile.auto_crop_mm == 4.0
-        assert profile.confirm_crop_mm >= profile.auto_crop_mm
+        assert profile.confirm_crop_mm == 10.0
 
 
-def test_crop_up_to_limit_is_auto_corrected_and_above_is_rejected():
-    inside = analyze_resample((94.0, 57.5), TARGET, DPI)
-    outside = analyze_resample((94.0, 58.5), TARGET, DPI)
+def test_crop_up_to_limit_auto_then_confirmation_up_to_cap_then_reject():
+    auto = analyze_resample((94.0, 57.5), TARGET, DPI)
+    ask = analyze_resample((94.0, 59.0), TARGET, DPI)
+    at_cap = analyze_resample((94.0, 64.0), TARGET, DPI)
+    over_cap = analyze_resample((94.0, 64.5), TARGET, DPI)
 
-    assert inside.decision == ResampleDecision.AUTO_CORRECT
-    assert inside.crop_mm[1] == pytest.approx(3.5)
-    assert outside.decision == ResampleDecision.REJECT
-    assert "предел коррекции 4.0 мм" in outside.reason
+    assert auto.decision == ResampleDecision.AUTO_CORRECT
+    assert auto.crop_mm[1] == pytest.approx(3.5)
+    assert ask.decision == ResampleDecision.ASK_CONFIRMATION
+    assert "требуется подтверждение оператора" in ask.reason
+    assert at_cap.decision == ResampleDecision.ASK_CONFIRMATION
+    assert over_cap.decision == ResampleDecision.REJECT
+    assert "максимум коррекции 10.0 мм" in over_cap.reason
+
+
+def test_min_dpi_rule_still_rejects_correction_inside_confirmation_band():
+    # обрезка 5 мм требует подтверждения, но увеличение до 250 DPI не хватает
+    plan = analyze_resample((90.0, 59.0), TARGET, (250.0, 250.0))
+    assert plan.decision == ResampleDecision.REJECT
+    assert "DPI" in plan.reason
 
 
 def test_with_correction_limit_sets_both_thresholds():
-    profile = get_profile("digital").with_correction_limit(1.5)
+    profile = get_profile("digital").with_correction_limit(1.5, 3.0)
 
     assert profile.auto_crop_mm == 1.5
-    assert profile.confirm_crop_mm == 1.5
+    assert profile.confirm_crop_mm == 3.0
     assert get_profile("digital").auto_crop_mm == 4.0  # исходный профиль не изменён
-    plan = analyze_resample(
-        (94.0, 56.0), TARGET, DPI,
-        auto_crop_mm=profile.auto_crop_mm, confirm_crop_mm=profile.confirm_crop_mm,
-    )
-    assert plan.decision == ResampleDecision.REJECT
+    # потолок не может быть ниже предела автокоррекции
+    assert get_profile("digital").with_correction_limit(6.0, 5.0).confirm_crop_mm == 6.0
+    # без явного потолка остаётся значение профиля
+    assert get_profile("digital").with_correction_limit(2.0).confirm_crop_mm == 10.0
 
 
 def test_correction_never_stretches_axes_independently():
@@ -82,9 +93,42 @@ def test_correction_never_stretches_axes_independently():
 # --- настройки ----------------------------------------------------------
 
 
-def test_settings_default_limit_is_four_mm():
-    with patch.dict(os.environ, {"IMAGE_MAGIC_AUTO_CORRECT_MAX_MM": ""}):
-        assert Settings.from_env().auto_correct_max_mm == 4.0
+def test_settings_default_limits_are_four_and_ten_mm():
+    with patch.dict(
+        os.environ,
+        {"IMAGE_MAGIC_AUTO_CORRECT_MAX_MM": "", "IMAGE_MAGIC_CORRECTION_CONFIRM_MAX_MM": ""},
+    ):
+        settings = Settings.from_env()
+    assert settings.auto_correct_max_mm == 4.0
+    assert settings.correction_confirm_max_mm == 10.0
+
+
+def test_settings_read_confirm_cap_from_environment():
+    with patch.dict(os.environ, {"IMAGE_MAGIC_CORRECTION_CONFIRM_MAX_MM": "7,5"}):
+        assert Settings.from_env().correction_confirm_max_mm == 7.5
+
+
+def test_settings_default_cap_follows_a_larger_auto_limit():
+    with patch.dict(
+        os.environ,
+        {"IMAGE_MAGIC_AUTO_CORRECT_MAX_MM": "12", "IMAGE_MAGIC_CORRECTION_CONFIRM_MAX_MM": ""},
+    ):
+        assert Settings.from_env().correction_confirm_max_mm == 12.0
+
+
+def test_settings_reject_cap_below_auto_limit():
+    with patch.dict(
+        os.environ,
+        {"IMAGE_MAGIC_AUTO_CORRECT_MAX_MM": "5", "IMAGE_MAGIC_CORRECTION_CONFIRM_MAX_MM": "3"},
+    ):
+        with pytest.raises(ValueError, match="IMAGE_MAGIC_CORRECTION_CONFIRM_MAX_MM"):
+            Settings.from_env()
+
+
+def test_settings_reject_invalid_cap():
+    with patch.dict(os.environ, {"IMAGE_MAGIC_CORRECTION_CONFIRM_MAX_MM": "abc"}):
+        with pytest.raises(ValueError, match="IMAGE_MAGIC_CORRECTION_CONFIRM_MAX_MM"):
+            Settings.from_env()
 
 
 def test_settings_read_limit_from_environment():
@@ -130,17 +174,28 @@ def test_ask_mode_confirmation_then_applies_correction():
     assert check.needs_resample is True
 
 
-def test_ask_mode_still_accepts_metadata_noise_and_rejects_above_limit():
+def test_ask_mode_still_accepts_metadata_noise_and_rejects_above_cap():
     assert _validate((94.0, 54.05), "ask").resample_decision == "accept"
-    rejected = _validate((94.0, 59.0), "ask")
+    rejected = _validate((94.0, 65.0), "ask")
     assert rejected.resample_decision == "reject"
-    assert any("предел коррекции" in error for error in rejected.errors)
+    assert any("максимум коррекции 10.0 мм" in error for error in rejected.errors)
 
 
-def test_custom_profile_limit_is_used_by_processor():
-    profile = get_profile("digital").with_correction_limit(1.0)
+def test_auto_mode_asks_operator_between_limit_and_cap():
+    check = _validate((94.0, 59.0), "auto")  # обрезка 5 мм: больше 4, не больше 10
+
+    assert check.resample_decision == "ask_confirmation"
+    assert check.needs_resample is False
+    assert not check.passed
+    assert any("требуется подтверждение" in warning for warning in check.warnings)
+    assert _validate((94.0, 65.0), "auto").resample_decision == "reject"
+
+
+def test_custom_profile_limits_are_used_by_processor():
+    profile = get_profile("digital").with_correction_limit(1.0, 3.0)
 
     assert _validate((94.0, 57.5), "auto", profile).resample_decision == "reject"
+    assert _validate((94.0, 56.5), "auto", profile).resample_decision == "ask_confirmation"
     assert _validate((94.0, 54.8), "auto", profile).resample_decision == "auto_correct"
 
 
@@ -165,11 +220,12 @@ def test_adapter_passes_policy_and_limit_to_processor(tmp_path: Path):
         ProcessingOptions(str(tmp_path), "digital", correction_policy="ask"),
         processor_factory=_CapturingProcessor,
         correction_limit_mm=2.5,
+        correction_confirm_max_mm=7.0,
     )
 
     assert adapter.processor.kwargs["correction_policy"] == "ask"
     assert adapter.processor.kwargs["profile"].auto_crop_mm == 2.5
-    assert adapter.processor.kwargs["profile"].confirm_crop_mm == 2.5
+    assert adapter.processor.kwargs["profile"].confirm_crop_mm == 7.0
 
 
 def test_adapter_approve_corrections_forces_auto_policy(tmp_path: Path):

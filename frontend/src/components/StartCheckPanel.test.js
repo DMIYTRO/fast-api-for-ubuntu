@@ -32,15 +32,16 @@ describe("StartCheckPanel correction policy", () => {
   });
 
   it("mentions the configured limit in the auto label", () => {
-    mount({ config: { default_input_path: "/in", auto_correct_max_mm: 2.5 } });
+    mount({ config: { default_input_path: "/in", auto_correct_max_mm: 2.5, correction_confirm_max_mm: 7 } });
     const auto = radios().find((r) => r.value === "auto");
     expect(labelOf(auto)).toContain("Автоматически принимать малые коррекции");
-    expect(labelOf(auto)).toContain("до 2,5 мм");
+    expect(labelOf(auto)).toContain("до 2,5 мм обрезки");
+    expect(labelOf(auto)).toContain("до 7 мм — с подтверждением");
   });
 
   it("falls back to 4 mm when the server does not report a limit", () => {
     mount();
-    expect(labelOf(radios().find((r) => r.value === "auto"))).toContain("до 4 мм");
+    expect(labelOf(radios().find((r) => r.value === "auto"))).toContain("до 4 мм обрезки; до 10 мм");
   });
 
   it("choosing auto sends approve_corrections and policy auto", async () => {
