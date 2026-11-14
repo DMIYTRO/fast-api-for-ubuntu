@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, useId, watch } from "vue";
 import { api } from "../services/api.js";
 import FixComparison from "./FixComparison.vue";
-import { FIX_BUTTONS } from "./prepress.js";
+import { FIX_BUTTONS, UNCONFIRMED_NOTE } from "./prepress.js";
 
 const POLL_MS = 1500;
 const UNAVAILABLE = [404, 405, 501];
@@ -19,8 +19,15 @@ const props = defineProps({
   fileLabel: { type: String, default: "" },
   // Ключи дополнительных планов, применимых к заказу (шрифты, плашка K100, обтравка).
   fixes: { type: Array, default: () => [] },
+  // Подмножество fixes, показанное без подтверждения проверкой (второстепенный вид + пояснение).
+  unconfirmed: { type: Array, default: () => [] },
 });
-const extraButtons = computed(() => props.fixes.filter((key) => FIX_BUTTONS[key]).map((key) => ({ key, ...FIX_BUTTONS[key] })));
+const extraButtons = computed(() => props.fixes.filter((key) => FIX_BUTTONS[key]).map((key) => {
+  const unconfirmed = props.unconfirmed.includes(key);
+  const base = FIX_BUTTONS[key];
+  return { key, ...base, unconfirmed, title: unconfirmed ? `${UNCONFIRMED_NOTE}. ${base.title}` : base.title };
+}));
+const unconfirmedShown = computed(() => extraButtons.value.some((item) => item.unconfirmed));
 
 // «applied» — принятое исправление стало новой ревизией PDF: карточка заказа (статус, замечания,
 // кнопки исправлений, превью) устарела и должна перечитаться.
@@ -192,13 +199,14 @@ onBeforeUnmount(() => {
         :key="item.key"
         type="button"
         class="callas-size-fix callas-extra-fix"
-        :class="`callas-fix-${item.key}`"
+        :class="[`callas-fix-${item.key}`, { unconfirmed: item.unconfirmed }]"
         :title="item.title"
         :aria-label="item.label"
         :disabled="busy"
         @click="start(item.key)"
       >{{ item.label }}</button>
     </div>
+    <p v-if="canPickPlan && unconfirmedShown" class="callas-fix-note muted" data-note="fix_unconfirmed">{{ UNCONFIRMED_NOTE }}</p>
     <p v-if="error" class="form-error" role="alert">{{ error }}</p>
   </div>
 </template>

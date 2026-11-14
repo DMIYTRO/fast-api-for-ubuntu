@@ -85,10 +85,18 @@ export function prepressNotices(order) {
 // Кнопка «в составной чёрный»: есть чистый K100 (плашка или малая доля площади). Если детектор не отработал
 // (службе callas не включены цветоделения, сбой, проверка выключена), оператору всё равно даём запустить
 // профиль: он сам сообщит, что K100 не найден (fixups_applied == 0), а лишнего не изменит.
+export const UNCONFIRMED_NOTE = "Проверка K100 недоступна — кнопка показана без подтверждения наличия плашки";
+
 export function blackFixAvailable(black) {
   if (!black || typeof black !== "object") return false;
   if (ok(black)) return Boolean(black.detected || black.fix_available);
   return black.status === "failed" || black.status === "skipped";
+}
+
+// Кнопки, показанные без подтверждения проверкой: сейчас только «в составной чёрный» при недоступном детекторе K100.
+export function unconfirmedFixes(order) {
+  const black = order?.prepress?.black_solid;
+  return blackFixAvailable(black) && !ok(black) ? ["black_to_rich"] : [];
 }
 
 export function availableFixes(order) {

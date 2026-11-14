@@ -4,7 +4,7 @@ import OrderCard from "./OrderCard.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import FixComparison from "./FixComparison.vue";
 import { api } from "../services/api.js";
-import { availableFixes, blackFixAvailable, fontLabel, iccOff, prepressNotices } from "./prepress.js";
+import { UNCONFIRMED_NOTE, availableFixes, blackFixAvailable, fontLabel, iccOff, prepressNotices, unconfirmedFixes } from "./prepress.js";
 
 const mounted = [];
 function mountComponent(component, props) {
@@ -156,6 +156,25 @@ describe("grouped prepress notices and buttons", () => {
     expect(blackFixAvailable(undefined)).toBe(false);
     expect(availableFixes({ prepress: { black_solid: { status: "failed" } } })).toEqual(["black_to_rich"]);
     expect(availableFixes({ prepress: { black_solid: { status: "ok", detected: false, manual_check: true } } })).toEqual([]);
+  });
+
+  it("marks the black button as unconfirmed with a note when the K100 check failed or was skipped", async () => {
+    expect(UNCONFIRMED_NOTE).toBe("Проверка K100 недоступна — кнопка показана без подтверждения наличия плашки");
+    expect(unconfirmedFixes({ prepress: { black_solid: { status: "failed" } } })).toEqual(["black_to_rich"]);
+    expect(unconfirmedFixes({ prepress: { black_solid: { status: "skipped" } } })).toEqual(["black_to_rich"]);
+    expect(unconfirmedFixes({ prepress: { black_solid: { status: "ok", detected: true } } })).toEqual([]);
+    expect(unconfirmedFixes({ prepress: { black_solid: { status: "ok", fix_available: true } } })).toEqual([]);
+    const failed = card({ pdf_path: "/p.pdf", prepress: { black_solid: { status: "failed", error: "x" } } });
+    const confirmed = card({ pdf_path: "/p.pdf", prepress: { black_solid: { status: "ok", detected: true, message: "Плашка 100% K: 50% площади, стр. 1." } } });
+    await nextTick();
+    const button = failed.querySelector(".callas-fix-black_to_rich");
+    expect(button?.classList.contains("unconfirmed")).toBe(true);
+    expect(button?.title).toContain(UNCONFIRMED_NOTE);
+    expect(failed.querySelector("[data-note='fix_unconfirmed']")?.textContent).toBe(UNCONFIRMED_NOTE);
+    const normal = confirmed.querySelector(".callas-fix-black_to_rich");
+    expect(normal?.classList.contains("unconfirmed")).toBe(false);
+    expect(normal?.title).not.toContain(UNCONFIRMED_NOTE);
+    expect(confirmed.querySelector("[data-note='fix_unconfirmed']")).toBeNull();
   });
 
   it("ignores failed checks for notices and the other buttons", () => {

@@ -10,7 +10,7 @@ import OrderActions from "./OrderActions.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import { orderIssueGroups } from "./issueGroups.js";
 import InkCoverage from "./InkCoverage.vue";
-import { availableFixes, fontLabel, fontsInfo, iccOff, prepressNotices } from "./prepress.js";
+import { availableFixes, fontLabel, fontsInfo, iccOff, prepressNotices, unconfirmedFixes } from "./prepress.js";
 import { inkCoverageFlagLabel, inkCoverageMainFlag, inkCoverageTitle } from "./inkCoverage.js";
 
 const props = defineProps({ order: Object, runId: String, selected: Boolean, reasons: Array, paidDesign: { type: Boolean, default: true }, designCost: { type: String, default: "0" } });
@@ -64,6 +64,7 @@ const fonts = computed(() => fontsInfo(props.order));
 const fontsList = computed(() => (fonts.value?.fonts || []).map(fontLabel).join("; "));
 const prepressNotes = computed(() => prepressNotices(props.order));
 const fixButtons = computed(() => availableFixes(props.order));
+const unconfirmedButtons = computed(() => unconfirmedFixes(props.order));
 const localIssueGroups = computed(() => orderIssueGroups({ ...props.order, files: files.value }).filter((group) => group.source !== "pitstop"));
 const groupedErrors = computed(() => localIssueGroups.value.filter((group) => group.severity === "error"));
 const groupedWarnings = computed(() => localIssueGroups.value.filter((group) => group.severity === "warning"));
@@ -313,7 +314,7 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
         <div v-if="successful && !groupedErrors.length && !groupedWarnings.length" class="issue-list success-note"><strong>Заказ соответствует требованиям допечатной подготовки.</strong></div>
         <PitStopReport v-if="order.pitstop" :pitstop="order.pitstop" section-title="Проверка PDF из первоначальной обработки" />
         <PitStopReport v-if="order.action_result?.pitstop" :pitstop="order.action_result.pitstop" section-title="Повторная проверка печатного PDF из просмотренных TIFF" />
-        <CallasFixControl v-if="order.pdf_path || order.pdf_url || order.callas_fix?.comparison" :run-id="runId" :order-id="actionId" :initial="order.callas_fix" :can-start="Boolean(order.pdf_path || order.pdf_url)" :fixes="fixButtons" @applied="emit('fix-applied')" />
+        <CallasFixControl v-if="order.pdf_path || order.pdf_url || order.callas_fix?.comparison" :run-id="runId" :order-id="actionId" :initial="order.callas_fix" :can-start="Boolean(order.pdf_path || order.pdf_url)" :fixes="fixButtons" :unconfirmed="unconfirmedButtons" @applied="emit('fix-applied')" />
         <CallasFixControl
           v-for="file in sourceFixFiles"
           :key="`fix-${file.callas_fix_file_id}`"
