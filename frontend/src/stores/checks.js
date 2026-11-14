@@ -32,7 +32,7 @@ export const isOrderPrintable = (order) => {
   const verdict = String(pitstop.verdict || "").toLowerCase();
   if (executionStatus !== "completed" || !["passed", "ok", "success"].includes(verdict)) return false;
   if (order.current_pdf_revision != null && pitstop.checked_revision !== order.current_pdf_revision) return false;
-  if (order.current_pdf_sha256 && pitstop.input_sha256 !== order.current_pdf_sha256) return false;
+  if (order.current_pdf_sha256 && pitstop.input_sha256 && pitstop.input_sha256 !== order.current_pdf_sha256) return false;
   return true;
 };
 const decorateOrder = (order, runId) => {

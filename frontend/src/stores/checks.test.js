@@ -293,6 +293,9 @@ describe("checks store", () => {
     for (const patch of [{ verdict: "warning" }, { checked_revision: 1 }, { input_sha256: "old" }]) {
       expect(isOrderPrintable({ ...order, pitstop: { ...order.pitstop, ...patch } })).toBe(false);
     }
+    // Старые записи без хэша в ответе PitStop не должны навсегда блокировать печать зелёного заказа.
+    const { input_sha256: _omitted, ...legacyPitstop } = order.pitstop;
+    expect(isOrderPrintable({ ...order, pitstop: legacyPitstop })).toBe(true);
     expect(isOrderPrintable({ status: "passed", pitstop_required: true })).toBe(false);
     expect(isOrderPrintable({ status: "completed", pitstop_status: "technical_error" })).toBe(false);
     expect(isOrderPrintable({ status: "completed", pitstop_status: "not_checked" })).toBe(true);
