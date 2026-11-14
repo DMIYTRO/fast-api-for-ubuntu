@@ -204,3 +204,18 @@ def test_exit_code_decides_when_report_has_no_fixup_counters(env):
     env.profiles[FONTS] = lambda pdf, mode: {"exit_code": 8, "status": "errors", "xml": "<r/>"}
     state = env.run("fonts_to_outlines")
     assert state["status"] == "failed" and state["error"].startswith("Шрифты не встроены")
+
+
+def test_black_plan_profile_matches_the_deployed_fixup_file():
+    """Имя профиля плана = «Image Magic/» + файл .kfpx из callas_profiles/ (копия шары soft/callas_checks_fixups)."""
+    profile = CALLAS_PLANS["black_to_rich"].profile
+    assert profile == "Image Magic/Pure CMYK black to rich black (C60 M40 Y40 K100)"
+    folder, name = profile.split("/", 1)
+    assert folder == "Image Magic"
+    assert (Path(__file__).resolve().parent.parent / "callas_profiles" / f"{name}.kfpx").is_file()
+
+
+def test_black_post_check_warns_when_small_pure_k100_remains(tmp_path):
+    env = Env(tmp_path, k100_before=0.05, k100_after=0.03)
+    check = env.run("black_to_rich")["summary"]["post_check"]
+    assert check["level"] == "warning" and "осталась" in " ".join(check["messages"])

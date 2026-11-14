@@ -66,6 +66,8 @@ def _env_bool(name: str, default: bool) -> bool:
 # по-прежнему можно задать через IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_PROFILE.
 DEFAULT_RGB_TO_CMYK_PROFILE = "Image Magic/NEW_Convert color to 4c for digital printing"
 DEFAULT_BLACK_SOLID_AREA_THRESHOLD = 0.25
+# Нижний порог доступности кнопки «в составной чёрный»: доля площади страницы с чистым K100.
+DEFAULT_BLACK_SOLID_FIX_AREA_THRESHOLD = 0.01
 DEFAULT_HIGH_PPI_LIMIT = 500.0
 
 
@@ -135,6 +137,7 @@ class Settings:
     # растры выше предела ppi, крупная плашка 100% K (цветоделения).
     callas_prepress_enabled: bool = True
     black_solid_area_threshold: float = DEFAULT_BLACK_SOLID_AREA_THRESHOLD
+    black_solid_fix_area_threshold: float = DEFAULT_BLACK_SOLID_FIX_AREA_THRESHOLD
     high_ppi_limit: float = DEFAULT_HIGH_PPI_LIMIT
     callas_request_timeout_seconds: float = 30.0
     callas_job_timeout_seconds: float = 600.0
@@ -321,6 +324,10 @@ class Settings:
             black_solid_area_threshold=_env_float(
                 "IMAGE_MAGIC_BLACK_SOLID_AREA_THRESHOLD",
                 DEFAULT_BLACK_SOLID_AREA_THRESHOLD, minimum=0.0, maximum=1.0,
+            ),
+            black_solid_fix_area_threshold=_env_float(
+                "IMAGE_MAGIC_BLACK_SOLID_FIX_AREA_THRESHOLD",
+                DEFAULT_BLACK_SOLID_FIX_AREA_THRESHOLD, minimum=0.0, maximum=1.0,
             ),
             high_ppi_limit=_env_float(
                 "IMAGE_MAGIC_HIGH_PPI_LIMIT", DEFAULT_HIGH_PPI_LIMIT, minimum=72.0, maximum=5000.0

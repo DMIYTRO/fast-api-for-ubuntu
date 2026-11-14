@@ -45,10 +45,13 @@ class PrepressAnalyzer:
         *,
         high_ppi_limit: float = 500.0,
         black_solid_threshold: float = 0.25,
+        black_solid_fix_threshold: float = 0.01,
     ) -> None:
         self.client = client
         self.high_ppi_limit = high_ppi_limit
         self.black_solid_threshold = black_solid_threshold
+        # Кнопка «в составной чёрный» доступна уже при небольшой доле чистого K100 (не выше порога плашки).
+        self.black_solid_fix_threshold = min(black_solid_fix_threshold, black_solid_threshold)
 
     # -------------------------------------------------------------- fonts
     def check_fonts(self, pdf: Path | str, label: str, previous: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -103,7 +106,10 @@ class PrepressAnalyzer:
         if self.black_solid_threshold <= 0:
             return {"status": "skipped"}
         try:
-            result = detect_black_solid(self.client, pdf, self.black_solid_threshold, f"k100-{label}")
+            result = detect_black_solid(
+                self.client, pdf, self.black_solid_threshold, f"k100-{label}",
+                fix_threshold=self.black_solid_fix_threshold,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("prepress.black_solid_failed label=%s error=%s", label, exc)
             return _failed(exc)
@@ -111,6 +117,11 @@ class PrepressAnalyzer:
         if result["detected"]:
             message = (
                 f"Плашка 100% K: {result['share'] * 100:.0f}% площади, стр. {pages_text(result['pages'])}. "
+                "Можно перевести в составной чёрный (C60 M40 Y40 K100)."
+            )
+        elif result["fix_available"]:
+            message = (
+                f"Есть чистый K100: {result['fix_share'] * 100:.1f}% площади, стр. {pages_text(result['fix_pages'])}. "
                 "Можно перевести в составной чёрный (C60 M40 Y40 K100)."
             )
         elif result["manual_check"]:

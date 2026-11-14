@@ -64,12 +64,18 @@ class IccClient(FakeCallasProcessClient):
     pass
 
 
-def icc_converter(tmp_path, icc_pages_list):
+def icc_converter(tmp_path, icc_pages_list, after_pages=()):
+    """ICC-анализ вызывается дважды: до конвертации (``icc_pages_list``) и по результату (``after_pages``)."""
+    analyses = []
+
+    def analyze(pdf, mode):
+        analyses.append(pdf)
+        return {"xml": icc_report_xml(icc_pages_list if len(analyses) == 1 else after_pages)}
+
     def convert(pdf, mode):
         return {"xml": icc_report_xml(icc_pages_list), "summary": {"fixups_applied": 1}, "fixed": make_pdf(tmp_path / "cmyk.pdf", (0, 0, 0, 1))}
 
-    client = IccClient(tmp_path / "jobs", {ICC_PROFILE: lambda pdf, mode: {"xml": icc_report_xml(icc_pages_list)},
-                                           "Image Magic/NEW": convert})
+    client = IccClient(tmp_path / "jobs", {ICC_PROFILE: analyze, "Image Magic/NEW": convert})
     return client, CallasRgbToCmykConverter(client, "Image Magic/NEW")
 
 
@@ -81,6 +87,70 @@ def test_icc_off_is_recorded_when_icc_was_present(tmp_path):
     assert record["icc_present"] is True and record["icc_removed"] is True and record["icc_pages"] == [1]
     assert client.calls[0] == (ICC_PROFILE, "analyze")  # ICC ищем ДО конвертации
     assert client.calls[1] == ("Image Magic/NEW", "fix")
+    assert client.calls[2] == (ICC_PROFILE, "analyze")  # и в результате: значок только если ICC исчез
+    assert record["icc_verified"] is True and record["icc_remaining_pages"] == []
+
+
+def test_icc_off_is_not_claimed_when_icc_is_still_in_the_result(tmp_path):
+    _client, converter = icc_converter(tmp_path, [1], after_pages=[1])
+    record = convert_rgb_to_cmyk(make_pdf(tmp_path / "a.pdf", (1, 0, 0)), converter, "a")
+    assert record["status"] == "converted" and record["icc_present"] is True
+    assert record["icc_removed"] is False and record["icc_remaining_pages"] == [1]
+
+
+def test_icc_off_counts_pages_where_icc_disappeared(tmp_path):
+    _client, converter = icc_converter(tmp_path, [1, 2], after_pages=[2])
+    record = convert_rgb_to_cmyk(make_pdf(tmp_path / "a.pdf", (1, 0, 0)), converter, "a")
+    assert record["icc_removed"] is True and record["icc_pages"] == [1, 2] and record["icc_remaining_pages"] == [2]
+
+
+def test_icc_off_when_result_check_fails_falls_back_to_profile_behaviour(tmp_path):
+    calls = {"n": 0}
+
+    def analyze(pdf, mode):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("callas недоступен")
+        return {"xml": icc_report_xml([1])}
+
+    cmyk = make_pdf(tmp_path / "cmyk.pdf", (0, 0, 0, 1))
+    client = IccClient(tmp_path / "jobs", {ICC_PROFILE: analyze, "Image Magic/NEW": lambda pdf, mode: {"fixed": cmyk}})
+    record = convert_rgb_to_cmyk(
+        make_pdf(tmp_path / "a.pdf", (1, 0, 0)), CallasRgbToCmykConverter(client, "Image Magic/NEW"), "a"
+    )
+    assert record["status"] == "converted" and record["icc_removed"] is True and record["icc_verified"] is False
+
+
+def _with_output_intent(path):
+    import pymupdf
+
+    with pymupdf.open(str(path)) as document:
+        document.xref_set_key(
+            document.pdf_catalog(), "OutputIntents",
+            "[<< /Type /OutputIntent /S /GTS_PDFX /OutputConditionIdentifier (ISO Coated) >>]",
+        )
+        document.saveIncr()
+    return path
+
+
+def test_output_intent_removal_shows_icc_off_even_without_icc_objects(tmp_path):
+    from services.callas.color_conversion import has_output_intent
+
+    _client, converter = icc_converter(tmp_path, [])
+    pdf = _with_output_intent(make_pdf(tmp_path / "a.pdf", (1, 0, 0)))
+    assert has_output_intent(pdf) is True
+    record = convert_rgb_to_cmyk(pdf, converter, "a")
+    assert record["status"] == "converted" and record["icc_present"] is False
+    assert record["output_intent_removed"] is True and record["icc_removed"] is True
+    assert has_output_intent(pdf) is False
+
+
+def test_output_intent_kept_by_conversion_is_not_reported_as_removed(tmp_path):
+    cmyk = _with_output_intent(make_pdf(tmp_path / "cmyk.pdf", (0, 0, 0, 1)))
+    client = IccClient(tmp_path / "jobs", {ICC_PROFILE: {"xml": icc_report_xml([])}, "Image Magic/NEW": lambda pdf, mode: {"fixed": cmyk}})
+    pdf = _with_output_intent(make_pdf(tmp_path / "a.pdf", (1, 0, 0)))
+    record = convert_rgb_to_cmyk(pdf, CallasRgbToCmykConverter(client, "Image Magic/NEW"), "a")
+    assert record["output_intent_removed"] is False and record["icc_removed"] is False
 
 
 def test_no_icc_off_for_plain_rgb(tmp_path):
@@ -170,10 +240,33 @@ def test_black_solid_threshold(tmp_path, share, detected):
     _c, analyzer = analyzer_with(tmp_path, k100=[{"k100": share}])
     result = analyzer(pdf_of(tmp_path), "o")["black_solid"]
     assert result["detected"] is detected
+    assert result["fix_available"] is True  # плашка и меньшая доля K100: кнопка доступна
     if detected:
         assert result["message"].startswith("Плашка 100% K:") and "стр. 1" in result["message"]
     else:
-        assert result["message"] is None
+        assert result["message"].startswith("Есть чистый K100:") and "составной чёрный" in result["message"]
+
+
+@pytest.mark.parametrize("share,available", [(0.10, True), (0.02, True), (0.01, True), (0.005, False), (0.0, False)])
+def test_black_fix_is_available_for_small_pure_k100_areas(tmp_path, share, available):
+    """Кнопка «в составной чёрный» не ждёт 25% площади: хватает малой доли чистого K100 (порог 1%)."""
+    _c, analyzer = analyzer_with(tmp_path, k100=[{"k100": share}])
+    result = analyzer(pdf_of(tmp_path), "o")["black_solid"]
+    assert result["status"] == "ok" and result["detected"] is False
+    assert result["fix_available"] is available
+    assert result["fix_pages"] == ([1] if available else [])
+    assert (result["message"] is not None) is available
+
+
+def test_black_fix_threshold_is_configurable_and_never_above_solid_threshold(tmp_path):
+    client = FakeCallasProcessClient(
+        tmp_path / "jobs", {}, separations_factory=lambda pdf, out: make_separations(out, [{"k100": 0.10}]),
+    )
+    strict = PrepressAnalyzer(client, black_solid_threshold=0.25, black_solid_fix_threshold=0.2)
+    assert strict.check_black_solid(pdf_of(tmp_path), "o")["fix_available"] is False
+    capped = PrepressAnalyzer(client, black_solid_threshold=0.05, black_solid_fix_threshold=0.5)
+    assert capped.black_solid_fix_threshold == 0.05
+    assert capped.check_black_solid(pdf_of(tmp_path), "o")["detected"] is True
 
 
 def test_black_solid_threshold_is_configurable(tmp_path):
@@ -184,7 +277,7 @@ def test_black_solid_threshold_is_configurable(tmp_path):
 def test_rich_or_raster_black_field_asks_for_manual_check(tmp_path):
     _c, analyzer = analyzer_with(tmp_path, k100=[{"k100": 0.0, "rich": 0.6}])
     result = analyzer(pdf_of(tmp_path), "o")["black_solid"]
-    assert result["detected"] is False and result["manual_check"] is True
+    assert result["detected"] is False and result["manual_check"] is True and result["fix_available"] is False
     assert "скорректируйте вручную" in result["message"]
 
 
