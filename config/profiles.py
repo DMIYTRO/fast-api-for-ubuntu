@@ -11,6 +11,10 @@ from typing import Mapping
 DEFAULT_AUTO_CORRECT_MAX_MM = 4.0
 #: Жёсткий максимум коррекции с подтверждением оператора, мм обрезки.
 DEFAULT_CORRECTION_CONFIRM_MAX_MM = 10.0
+#: Разрешение растра, выше которого файл с подходящим размером уменьшается до целевого DPI.
+DEFAULT_MAX_DPI = 500.0
+#: Целевое разрешение профилей по умолчанию.
+DEFAULT_TARGET_DPI = 300.0
 
 
 @dataclass(frozen=True)
@@ -35,6 +39,11 @@ class PrePressProfile:
     # IMAGE_MAGIC_CORRECTION_CONFIRM_MAX_MM).
     auto_crop_mm: float = DEFAULT_AUTO_CORRECT_MAX_MM
     confirm_crop_mm: float = DEFAULT_CORRECTION_CONFIRM_MAX_MM
+    # Растры с подходящим размером, но разрешением выше ``max_dpi``, уменьшаются
+    # до ``target_dpi`` (без обрезки и без смены размера). Переопределяется через
+    # ``with_downsample`` (IMAGE_MAGIC_MAX_DPI и IMAGE_MAGIC_DOWNSAMPLE_HIGH_DPI_ENABLED).
+    max_dpi: float = DEFAULT_MAX_DPI
+    downsample_high_dpi: bool = True
     # Пороги красочности (callas inkcoverage): минимум и максимум
     # ``total_sum_percent`` страницы — суммы СРЕДНИХ покрытий красок по рамке,
     # не TAC. Ниже минимума — «Недолив», выше максимума — «Перелив».
@@ -63,6 +72,18 @@ class PrePressProfile:
         limit = max(0.0, float(limit_mm))
         cap = self.confirm_crop_mm if confirm_max_mm is None else float(confirm_max_mm)
         return replace(self, auto_crop_mm=limit, confirm_crop_mm=max(limit, cap))
+
+    def with_downsample(
+        self, max_dpi: float | None = None, enabled: bool | None = None
+    ) -> "PrePressProfile":
+        """Профиль с порогом DPI для автоматического уменьшения растров."""
+        return replace(
+            self,
+            max_dpi=self.max_dpi if max_dpi is None else max(float(max_dpi), self.target_dpi),
+            downsample_high_dpi=(
+                self.downsample_high_dpi if enabled is None else bool(enabled)
+            ),
+        )
 
     @property
     def size_extra_mm(self) -> float:

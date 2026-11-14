@@ -16,6 +16,7 @@ const dpi = (file) => {
     <dl>
       <div><dt>Размер</dt><dd>{{ number(file.width_mm ?? file.actual_width_mm) }} × {{ number(file.height_mm ?? file.actual_height_mm) }} мм</dd></div>
       <div><dt>DPI</dt><dd>{{ dpi(file) }}</dd></div>
+      <div v-if="file.downsampled_from_dpi"><dt>Уменьшено с</dt><dd>{{ number(file.downsampled_from_dpi) }} DPI</dd></div>
       <div><dt>Цвет</dt><dd>{{ value(file.colorspace || file.color_space) }}</dd></div>
       <div><dt>Формат</dt><dd>{{ value(file.format) }}</dd></div>
     </dl>

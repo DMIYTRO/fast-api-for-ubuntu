@@ -765,6 +765,8 @@ def _pitstop_adapter_factory(settings: Settings):
             ink_coverage_checker=ink_checker,
             correction_limit_mm=settings.auto_correct_max_mm,
             correction_confirm_max_mm=settings.correction_confirm_max_mm,
+            max_dpi=settings.max_dpi,
+            downsample_high_dpi=settings.downsample_high_dpi_enabled,
             order_info_fetcher=(
                 build_order_info_fetcher(
                     settings.sborka_api_dir,
@@ -797,6 +799,8 @@ def _default_adapter_factory(settings: Settings):
         ink_coverage_checker=ink_checker,
         correction_limit_mm=settings.auto_correct_max_mm,
         correction_confirm_max_mm=settings.correction_confirm_max_mm,
+        max_dpi=settings.max_dpi,
+        downsample_high_dpi=settings.downsample_high_dpi_enabled,
     )
 
 

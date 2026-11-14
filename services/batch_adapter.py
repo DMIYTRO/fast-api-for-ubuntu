@@ -84,6 +84,8 @@ class BatchProcessorAdapter:
         ink_coverage_checker: Callable[[Path, str], dict[str, Any]] | None = None,
         correction_limit_mm: float | None = None,
         correction_confirm_max_mm: float | None = None,
+        max_dpi: float | None = None,
+        downsample_high_dpi: bool | None = None,
     ) -> None:
         self.options = options
         self.input_dir = Path(options.input_path)
@@ -107,6 +109,8 @@ class BatchProcessorAdapter:
                 profile.auto_crop_mm if correction_limit_mm is None else correction_limit_mm,
                 correction_confirm_max_mm,
             )
+        if max_dpi is not None or downsample_high_dpi is not None:
+            profile = profile.with_downsample(max_dpi, downsample_high_dpi)
         # «Запрашивать решение» и «Не применять» не должны молча менять размер:
         # коррекция уходит на решение оператора. «Автоматически» применяет её
         # сама в пределах профиля (IMAGE_MAGIC_AUTO_CORRECT_MAX_MM).
