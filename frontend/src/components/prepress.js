@@ -82,29 +82,27 @@ export function prepressNotices(order) {
   return notices;
 }
 
-// Кнопка «в составной чёрный»: есть чистый K100 (плашка или малая доля площади). Если детектор не отработал
-// (службе callas не включены цветоделения, сбой, проверка выключена), оператору всё равно даём запустить
-// профиль: он сам сообщит, что K100 не найден (fixups_applied == 0), а лишнего не изменит.
-export const UNCONFIRMED_NOTE = "Проверка K100 недоступна — кнопка показана без подтверждения наличия плашки";
+// Кнопки исправлений Callas показываются всегда (при наличии PDF) и всегда активны.
+// Проверка только подсвечивает «рекомендованные» — те, где она нашла что исправлять.
+// Если исправлять нечего, профиль сам сообщит об этом (fixups_applied == 0) и ничего не изменит.
+export const ALL_FIXES = ["fonts_to_outlines", "black_to_rich", "remove_clipping"];
+export const NOT_DETECTED_NOTE = "Проверка не нашла, что исправлять: профиль можно запустить, лишнего он не изменит";
 
 export function blackFixAvailable(black) {
   if (!black || typeof black !== "object") return false;
   if (ok(black)) return Boolean(black.detected || black.fix_available);
-  return black.status === "failed" || black.status === "skipped";
+  return false;
 }
 
-// Кнопки, показанные без подтверждения проверкой: сейчас только «в составной чёрный» при недоступном детекторе K100.
-export function unconfirmedFixes(order) {
-  const black = order?.prepress?.black_solid;
-  return blackFixAvailable(black) && !ok(black) ? ["black_to_rich"] : [];
-}
-
-export function availableFixes(order) {
+export function recommendedFixes(order) {
   const fixes = [];
   const fonts = fontsInfo(order);
   if (fonts && fonts.count > fonts.notEmbedded) fixes.push("fonts_to_outlines");
-  const black = order?.prepress?.black_solid;
-  if (blackFixAvailable(black)) fixes.push("black_to_rich");
+  if (blackFixAvailable(order?.prepress?.black_solid)) fixes.push("black_to_rich");
   if (clippingGroup(order)) fixes.push("remove_clipping");
   return fixes;
+}
+
+export function availableFixes() {
+  return [...ALL_FIXES];
 }
