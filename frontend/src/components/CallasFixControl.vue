@@ -212,6 +212,9 @@ onBeforeUnmount(() => {
           <template v-else-if="item.key === 'remove_clipping'">
             <rect x="3" y="3" width="14" height="14" rx="1.5" stroke-dasharray="2.5 2" /><path d="M5 15 15 5" />
           </template>
+          <template v-else-if="item.key === 'downsample_images'">
+            <rect x="3" y="3" width="14" height="14" rx="1.5" /><path d="M3 10h14M10 3v14" /><path d="M11.5 8.5 15 5M12.5 5H15v2.5" />
+          </template>
         </svg>
         <span>{{ item.label }}</span>
         <i v-if="item.recommended" class="fix-recommended-dot" aria-label="рекомендовано проверкой" title="Проверка нашла, что исправлять"></i>

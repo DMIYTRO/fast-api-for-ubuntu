@@ -14,6 +14,10 @@ export const FIX_BUTTONS = {
     label: "Удалить обтравку",
     title: "Callas: Fixup «RemoveClipPathes» удалит все обтравки, в том числе служебную обтравку по странице (замечание «Clipping objects found» создаёт Enfocus PitStop, ActionID 2079). Снятие масок может проявить скрытое содержимое: сравните «до» и «после».",
   },
+  downsample_images: {
+    label: "Уменьшить разрешение до 300 ppi",
+    title: "Callas: Fixup «Downsample image resolution to specified value»: уменьшит до 300 ppi все изображения выше 300 ppi; штриховые 1-бит проверьте по превью. Исходный PDF сохраняется, результат нужно принять или отклонить.",
+  },
 };
 
 export const CLIPPING_CODE = "action:2079";
@@ -85,7 +89,7 @@ export function prepressNotices(order) {
 // Кнопки исправлений Callas показываются всегда (при наличии PDF) и всегда активны.
 // Проверка только подсвечивает «рекомендованные» — те, где она нашла что исправлять.
 // Если исправлять нечего, профиль сам сообщит об этом (fixups_applied == 0) и ничего не изменит.
-export const ALL_FIXES = ["fonts_to_outlines", "black_to_rich", "remove_clipping"];
+export const ALL_FIXES = ["fonts_to_outlines", "black_to_rich", "remove_clipping", "downsample_images"];
 export const NOT_DETECTED_NOTE = "Проверка не нашла, что исправлять: профиль можно запустить, лишнего он не изменит";
 
 export function blackFixAvailable(black) {
@@ -100,6 +104,8 @@ export function recommendedFixes(order) {
   if (fonts && fonts.count > fonts.notEmbedded) fixes.push("fonts_to_outlines");
   if (blackFixAvailable(order?.prepress?.black_solid)) fixes.push("black_to_rich");
   if (clippingGroup(order)) fixes.push("remove_clipping");
+  const ppi = order?.prepress?.high_ppi;
+  if (ok(ppi) && ppi.count > 0) fixes.push("downsample_images");
   return fixes;
 }
 

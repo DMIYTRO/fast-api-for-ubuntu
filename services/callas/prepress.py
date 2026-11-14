@@ -89,7 +89,7 @@ class PrepressAnalyzer:
             message = (
                 f"Растры выше {limit} ppi: {count} {plural_ru(count, 'объект', 'объекта', 'объектов')}, "
                 f"стр. {pages_text(report['pages'])} (до {report['max_ppi']:g} ppi). "
-                "Автоматического снижения разрешения нет: проверьте макет."
+                "Можно уменьшить до 300 ppi кнопкой «Уменьшить разрешение до 300 ppi» (результат нужно проверить по превью)."
             )
         bits = report["one_bit"]
         bit_message = None

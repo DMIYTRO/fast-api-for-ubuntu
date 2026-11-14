@@ -32,9 +32,10 @@
 | Составной чёрный | перед запуском проверка, что RGB уже нет (иначе отказ 409 `rgb_not_converted`); после фикса сравнение с оригиналом (`changed_percent`), повтор детектора, предупреждение про мелкий текст и штрихкоды (профиль меняет все K100). Чёрное поле, которое не является чистым K100 (составной/растровый чёрный), даёт предупреждение «скорректируйте вручную» | карточка |
 | Обтравка | «Clipping objects found» создаёт Enfocus PitStop (ActionID 2079); `issue_groups` собирает её в одну группу с числом и страницами (`fix_plan=remove_clipping`); кнопка «Удалить обтравку» (план `remove_clipping`), подсказка про Fixup `RemoveClipPathes`; профиль срабатывает почти всегда (служебный клип), поэтому после фикса сравнение копии с оригиналом (`core/fix_compare.py`, страница 1) и подтверждение оператора; предупреждение про скрытое содержимое | карточка |
 | Растры выше 500 ppi | стандартный профиль «List color and grayscale images not within 250 to 450 ppi» (XML), фильтр `max(v_ppi,h_ppi) > 500 + 0.5`; одно сгруппированное предупреждение «Растры выше 500 ppi: N объектов, стр. …»; однобитные (`bits_per_color_component=1` или маска) отдельной пометкой, не блокируют; снижения разрешения нет | карточка |
+| Снижение разрешения | кнопка «Уменьшить разрешение до 300 ppi» (план `downsample_images`), всегда видна, подсвечена при `prepress.high_ppi.count>0`; стандартный профиль callas `PDF fixups/Downsample image resolution to specified value` запускается БЕЗ переменных (имя меняется через `IMAGE_MAGIC_CALLAS_DOWNSAMPLE_PROFILE`); поведение: все изображения выше 300 ppi уменьшаются до 300 ppi (порог 500 ppi профиль не знает, 1-бит штриховые тоже пересэмплируются, их проверяют по превью); успех определяется по коду выхода (5-7), т.к. XML-отчёт содержит утверждение XMP «`__null != docxmp.get()`» и `fixups_applied=0`; после фикса повтор проверки ppi, сравнение «до / после» и подтверждение оператора, затем обычная ревизия PDF и PitStop | карточка |
 
 Новые настройки: `IMAGE_MAGIC_CALLAS_PREPRESS_ENABLED` (по умолчанию `true`),
-`IMAGE_MAGIC_BLACK_SOLID_AREA_THRESHOLD` (`0.25`), `IMAGE_MAGIC_HIGH_PPI_LIMIT` (`500`).
+`IMAGE_MAGIC_BLACK_SOLID_AREA_THRESHOLD` (`0.25`), `IMAGE_MAGIC_HIGH_PPI_LIMIT` (`500`), `IMAGE_MAGIC_CALLAS_DOWNSAMPLE_PROFILE` (`PDF fixups/Downsample image resolution to specified value`).
 Для плашки K100 на службе callas должен быть включён тип задания `separations`
 (`CALLAS_ENABLED_TYPES`; на тесте 192.168.88.109 включён). Проверка сбоя не роняет заказ: блок
 получает `status: failed` и текст ошибки. Ограничения: сравнение «до/после» строится по первой
@@ -49,6 +50,7 @@
 | `Pure CMYK black to rich black (C60 M40 Y40 K100).kfpx` | `Image Magic/Pure CMYK black to rich black (C60 M40 Y40 K100)` | чистый K100 в составной чёрный C60 M40 Y40 K100 | fix, кнопка |
 | `Convert fonts to outlines.kfpx` | `Image Magic/Convert fonts to outlines` | шрифты в кривые | fix, кнопка |
 | `Remove all clipping paths.kfpx` | `Image Magic/Remove all clipping paths` | удаление всех обтравок | fix, кнопка |
+| (встроенный) `PDF fixups/Downsample image resolution to specified value` | то же имя на сервере callas (профиль не из `callas_profiles/`) | уменьшение разрешения изображений до 300 ppi, переменные не передаются | fix, кнопка |
 | `Black to rich black.kfpx` | `Image Magic/Black to rich black` | любой «только чёрный» объект в C40 M40 Y40 K100 (не использовать, см. ниже) | fix |
 | `List potential overprint problems.kfpx` | `Image Magic/List potential overprint problems` | 32 проверки наложения (overprint/knockout) | analyze |
 | `chek and fix bleed to js script.kfpx`, `new_size_correction.kfpx` | `Image Magic/chek and fix bleed to js script`, `Image Magic/new_size_correction` | коррекция размера/вылетов (JS), дубликаты рабочего `size_correction` | fix |

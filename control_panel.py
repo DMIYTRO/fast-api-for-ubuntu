@@ -580,6 +580,7 @@ def _callas_fix_service(settings: Settings):
     """Сервис исправления Callas или ``None``, если он выключен или не настроен."""
     if not (settings.callas_process_enabled and settings.callas_url):
         return None
+    from config.callas_plans import CALLAS_PLANS, with_profile_overrides
     from services.callas import CallasClient
     from services.callas_fix import CallasFixService
 
@@ -593,7 +594,10 @@ def _callas_fix_service(settings: Settings):
         black_solid_threshold=settings.black_solid_area_threshold,
         black_solid_fix_threshold=settings.black_solid_fix_area_threshold,
     )
-    return CallasFixService(client, post_checks=build_post_checks(analyzer))
+    plans = with_profile_overrides(
+        CALLAS_PLANS, {"downsample_images": settings.callas_downsample_profile}
+    )
+    return CallasFixService(client, plans, post_checks=build_post_checks(analyzer))
 
 
 def _configure_callas_pdf_renderer(settings: Settings) -> None:

@@ -141,6 +141,7 @@ magick -version
 | `IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_ENABLED` / `_PROFILE` | автоперевод RGB → CMYK (по умолчанию выключен; профиль по умолчанию `Image Magic/NEW_Convert color to 4c for digital printing`) |
 | `IMAGE_MAGIC_CALLAS_PREPRESS_ENABLED` | автоматические допечатные проверки callas: шрифты, растры выше предела ppi, плашка 100% K (по умолчанию включено при заданном `IMAGE_MAGIC_CALLAS_URL`) |
 | `IMAGE_MAGIC_BLACK_SOLID_AREA_THRESHOLD` | доля площади чистого K100, с которой показывается «Плашка 100% K» и кнопка составного чёрного (по умолчанию `0.25`, `0` выключает проверку) |
+| `IMAGE_MAGIC_CALLAS_DOWNSAMPLE_PROFILE` | профиль callas кнопки «Уменьшить разрешение до 300 ppi» (по умолчанию `PDF fixups/Downsample image resolution to specified value`, без переменных: всё выше 300 ppi уменьшается до 300 ppi) |
 | `IMAGE_MAGIC_HIGH_PPI_LIMIT` | предел разрешения растров, ppi (по умолчанию `500`) |
 | `IMAGE_MAGIC_CALLAS_REQUEST_TIMEOUT_SECONDS`, `_JOB_TIMEOUT_SECONDS`, `_POLL_INTERVAL_SECONDS`, `_MAX_CONCURRENT_JOBS`, `_MAX_RETRIES` | таймауты, опрос, параллельность и повторы |
 
