@@ -82,6 +82,7 @@ class BatchProcessorAdapter:
         order_info_fetcher: Callable[[Sequence[str]], list[dict[str, Any]]] | None = None,
         order_info_timeout_seconds: float = 30.0,
         ink_coverage_checker: Callable[[Path, str], dict[str, Any]] | None = None,
+        correction_limit_mm: float | None = None,
     ) -> None:
         self.options = options
         self.input_dir = Path(options.input_path)
@@ -99,10 +100,20 @@ class BatchProcessorAdapter:
         self._order_info_by_id: dict[str, dict[str, Any]] | None = None
         self._order_info_failed = False
         self._order_info_lock = threading.Lock()
+        profile = get_profile(options.direction)
+        if correction_limit_mm is not None:
+            profile = profile.with_correction_limit(correction_limit_mm)
+        # «Запрашивать решение» и «Не применять» не должны молча менять размер:
+        # коррекция уходит на решение оператора. «Автоматически» применяет её
+        # сама в пределах профиля (IMAGE_MAGIC_AUTO_CORRECT_MAX_MM).
+        correction_policy = (
+            "auto" if options.approve_corrections else options.correction_policy
+        )
         self.processor = processor_factory(
             self.input_dir,
             self.pdf_dir,
-            profile=get_profile(options.direction),
+            profile=profile,
+            correction_policy=correction_policy,
         )
         # Sborka is queried once, in the background, as soon as the processor
         # knows all order ids (before the slow artwork inspection).

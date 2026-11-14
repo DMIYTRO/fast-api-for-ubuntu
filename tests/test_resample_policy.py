@@ -13,9 +13,16 @@ class ResamplePolicyTests(unittest.TestCase):
         self.assertEqual(plan.decision, ResampleDecision.AUTO_CORRECT)
         self.assertAlmostEqual(plan.crop_mm[1], 0.3)
 
-    def test_medium_crop_requires_confirmation(self):
-        plan = analyze_resample((960.0, 560.0), (94.0, 54.0), (300.0, 300.0))
+    def test_medium_crop_requires_confirmation_with_explicit_thresholds(self):
+        plan = analyze_resample(
+            (960.0, 560.0), (94.0, 54.0), (300.0, 300.0),
+            auto_crop_mm=0.5, confirm_crop_mm=2.0,
+        )
         self.assertEqual(plan.decision, ResampleDecision.ASK_CONFIRMATION)
+
+    def test_default_limit_auto_corrects_up_to_four_mm(self):
+        plan = analyze_resample((960.0, 560.0), (94.0, 54.0), (300.0, 300.0))
+        self.assertEqual(plan.decision, ResampleDecision.AUTO_CORRECT)
 
     def test_bad_orientation_and_proportions_are_rejected(self):
         plan = analyze_resample((202.0, 214.0), (214.0, 152.0), (300.0, 300.0))

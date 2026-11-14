@@ -759,6 +759,7 @@ def _pitstop_adapter_factory(settings: Settings):
             processor_factory=processor_factory,
             pitstop_service=service,
             ink_coverage_checker=ink_checker,
+            correction_limit_mm=settings.auto_correct_max_mm,
             order_info_fetcher=(
                 build_order_info_fetcher(
                     settings.sborka_api_dir,
@@ -789,6 +790,7 @@ def _default_adapter_factory(settings: Settings):
         processor_factory=processor_factory,
         order_info_fetcher=fetcher,
         ink_coverage_checker=ink_checker,
+        correction_limit_mm=settings.auto_correct_max_mm,
     )
 
 
@@ -982,6 +984,7 @@ def create_app(
                 {"id": key, "name": value.name} for key, value in PROFILES.items()
             ],
             "return_reasons": load_return_reasons(),
+            "auto_correct_max_mm": settings.auto_correct_max_mm,
         }
 
     @application.get("/api/folders", dependencies=[Depends(protected)])

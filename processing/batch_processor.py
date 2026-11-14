@@ -1,6 +1,6 @@
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import logging
 import os
@@ -97,7 +97,11 @@ class BatchProcessor:
         pdf_merger: "Callable[[Sequence[Path], Path, str], None] | None" = None,
         pdf_color_converter: "Callable[[Path, Path, str], object] | None" = None,
         pdf_prepress_checker: "Callable[..., dict[str, object]] | None" = None,
+        correction_policy: str = "auto",
     ):
+        # "auto" — малые коррекции применяются сами (CLI, тесты); "ask" и "reject" —
+        # любая коррекция размера требует решения оператора (подтверждение или отказ).
+        self.correction_policy = correction_policy
         # Допечатные проверки итогового PDF (шрифты, ppi, плашка K100); None — не проверяем.
         self.pdf_prepress_checker = pdf_prepress_checker
         # Перевод RGB → CMYK итогового PDF через callas; None — не конвертируем.
@@ -305,10 +309,23 @@ class BatchProcessor:
             if not self._dimensions_match(actual, expected) and not self._dimensions_match(
                 actual, (expected[1], expected[0])
             ):
+                # PDF не масштабируется и не обрезается автоматически (в отличие от
+                # растровых файлов): подсказываем оператору, что делать.
                 check.errors.append(
                     f"PDF страница {page.page_number} имеет размер "
                     f"{actual[0]:.1f}x{actual[1]:.1f} мм; ожидается "
-                    f"{expected[0]:.1f}x{expected[1]:.1f} мм"
+                    f"{expected[0]:.1f}x{expected[1]:.1f} мм. Автоматическая коррекция "
+                    "размера для PDF не выполняется: исправьте размер макета "
+                    "(на карточке заказа доступен план Callas «Коррекция размера макета») "
+                    "или пришлите PDF нужного размера"
+                )
+            elif self._pdf_page_deviation(actual, expected) > self.profile.metadata_tolerance_mm:
+                check.warnings.append(
+                    f"PDF страница {page.page_number} имеет размер "
+                    f"{actual[0]:.1f}x{actual[1]:.1f} мм, ожидается "
+                    f"{expected[0]:.1f}x{expected[1]:.1f} мм: отклонение в пределах допуска "
+                    f"{self.tolerance_mm:.1f} мм принято без коррекции "
+                    "(для PDF коррекция размера не выполняется)"
                 )
             if page.rotation not in {0, 90, 180, 270}:
                 check.errors.append(
@@ -340,6 +357,16 @@ class BatchProcessor:
                     check.errors.append(
                         f"PDF страница {page.page_number}: неизвестная цветовая модель"
                     )
+
+    @staticmethod
+    def _pdf_page_deviation(
+        actual: tuple[float, float], expected: tuple[float, float]
+    ) -> float:
+        """Наименьшее отклонение размера страницы PDF в любой из двух ориентаций."""
+        return min(
+            max(abs(a - e) for a, e in zip(actual, target))
+            for target in (expected, (expected[1], expected[0]))
+        )
 
     @staticmethod
     def _pdf_pages(item: FileCheck) -> tuple[object, ...]:
@@ -379,6 +406,19 @@ class BatchProcessor:
         check.resample_crop_mm = plan.crop_mm
         check.resample_effective_dpi = plan.effective_dpi
         check.rotation_degrees = plan.rotation_degrees
+
+        if (
+            self.correction_policy in {"ask", "reject"}
+            and plan.decision == ResampleDecision.AUTO_CORRECT
+        ):
+            # Режим не «автоматический»: даже малую коррекцию не применяем молча.
+            plan = replace(
+                plan,
+                decision=ResampleDecision.ASK_CONFIRMATION,
+                reason="пропорциональная коррекция требует подтверждения пользователя",
+            )
+            check.resample_decision = plan.decision.value
+            check.resample_reason = plan.reason
 
         crop_text = f"обрезка {plan.crop_mm[0]:.2f}x{plan.crop_mm[1]:.2f} мм"
         rotation_text = f", поворот на {plan.rotation_degrees}°" if plan.rotation_degrees else ""

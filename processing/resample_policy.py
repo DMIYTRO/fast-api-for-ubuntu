@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from enum import Enum
 
+from config.profiles import DEFAULT_AUTO_CORRECT_MAX_MM
+
 
 class ResampleDecision(str, Enum):
     ACCEPT = "accept"
@@ -26,8 +28,8 @@ def analyze_resample(
     dpi: tuple[float, float],
     min_dpi: float = 250.0,
     metadata_tolerance_mm: float = 0.1,
-    auto_crop_mm: float = 0.5,
-    confirm_crop_mm: float = 2.0,
+    auto_crop_mm: float = DEFAULT_AUTO_CORRECT_MAX_MM,
+    confirm_crop_mm: float = DEFAULT_AUTO_CORRECT_MAX_MM,
     allow_rotation: bool = True,
 ) -> ResamplePlan:
     """Choose the least destructive cover/crop plan, optionally rotating by 90 degrees."""
@@ -60,7 +62,11 @@ def analyze_resample(
         reason = "пропорциональная коррекция требует подтверждения пользователя"
     else:
         decision = ResampleDecision.REJECT
-        reason = f"для приведения к размеру потребуется обрезка до {crop_max:.1f} мм"
+        limit = max(auto_crop_mm, confirm_crop_mm)
+        reason = (
+            f"для приведения к размеру потребуется обрезка до {crop_max:.1f} мм; "
+            f"предел коррекции {limit:.1f} мм — пришлите макет нужного размера"
+        )
 
     if rotation and decision == ResampleDecision.ACCEPT:
         decision = ResampleDecision.AUTO_CORRECT

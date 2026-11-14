@@ -240,6 +240,7 @@ class ControlPanelTests(unittest.TestCase):
         self.assertEqual(config.status_code, 200)
         self.assertTrue(config.json()["profiles"])
         self.assertTrue(config.json()["return_reasons"])
+        self.assertEqual(config.json()["auto_correct_max_mm"], 4.0)
 
         logout = self.client.post("/api/auth/logout")
         self.assertEqual(logout.status_code, 204)
