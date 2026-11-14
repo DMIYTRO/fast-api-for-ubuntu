@@ -76,6 +76,7 @@ def file_check_to_dto(
             else None
         ),
         "resample_confirmed": value.resample_confirmed,
+        "downsampled_from_dpi": value.downsampled_from_dpi,
         "rotation_degrees": value.rotation_degrees,
         "orientation_verified": value.orientation_verified,
         "passed": value.passed,

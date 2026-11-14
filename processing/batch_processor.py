@@ -447,6 +447,8 @@ class BatchProcessor:
                 "проверьте ориентацию и совмещение лица и оборота"
             )
 
+        self._plan_high_dpi_downsample(check, plan)
+
         correction_has_enough_dpi = (
             plan.decision in {ResampleDecision.AUTO_CORRECT, ResampleDecision.ASK_CONFIRMATION}
             and min(plan.effective_dpi) >= self.min_dpi
@@ -470,6 +472,27 @@ class BatchProcessor:
             check.errors.append(
                 f"цветность {color_mode[0]}-{color_mode[1]} не поддерживается; разрешены: {allowed}"
             )
+
+    def _plan_high_dpi_downsample(self, check: FileCheck, plan) -> None:
+        """Уменьшить растр с верным размером, но разрешением выше ``profile.max_dpi``.
+
+        Это не обрезка: цель — тот же размер в мм при целевом DPI профиля, поэтому
+        политика коррекции размера не применяется.
+        """
+        if not self.profile.downsample_high_dpi or plan.decision != ResampleDecision.ACCEPT:
+            return
+        if check.path.suffix.lower() == ".pdf":
+            return
+        source_dpi = max(check.dpi_x or 0.0, check.dpi_y or 0.0)
+        if source_dpi <= self.profile.max_dpi + DPI_EPSILON:
+            return
+        check.needs_resample = True
+        check.resample_target_mm = plan.target_mm
+        check.downsampled_from_dpi = source_dpi
+        check.warnings.append(
+            f"разрешение {source_dpi:.0f} DPI уменьшено до "
+            f"{self.profile.target_dpi:.0f} DPI (выше {self.profile.max_dpi:.0f} DPI)"
+        )
 
     def _dimensions_match(self, actual: tuple[float, float], expected: tuple[float, float]) -> bool:
         return all(abs(a - e) <= self.tolerance_mm for a, e in zip(actual, expected))
@@ -874,10 +897,17 @@ class BatchProcessor:
                 and (item.colorspace or "").upper() == "CMYK",
             )
             if item.needs_resample and item.resample_target_mm:
-                item.processing_actions.append({
-                    "kind": "size_correction", "target_mm": list(item.resample_target_mm),
-                    "target_dpi": self.profile.target_dpi, "rotation_degrees": item.rotation_degrees,
-                })
+                if item.downsampled_from_dpi is not None:
+                    item.processing_actions.append({
+                        "kind": "dpi_downsample", "from_dpi": item.downsampled_from_dpi,
+                        "target_dpi": self.profile.target_dpi,
+                        "target_mm": list(item.resample_target_mm),
+                    })
+                else:
+                    item.processing_actions.append({
+                        "kind": "size_correction", "target_mm": list(item.resample_target_mm),
+                        "target_dpi": self.profile.target_dpi, "rotation_degrees": item.rotation_degrees,
+                    })
             if self.strip_icc_cmyk and (item.colorspace or "").upper() == "CMYK":
                 item.processing_actions.append({"kind": "strip_icc"})
             if flattened is not None:

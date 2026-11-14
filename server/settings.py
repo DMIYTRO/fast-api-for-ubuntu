@@ -7,7 +7,12 @@ import os
 import math
 from pathlib import Path
 
-from config.profiles import DEFAULT_AUTO_CORRECT_MAX_MM, DEFAULT_CORRECTION_CONFIRM_MAX_MM
+from config.profiles import (
+    DEFAULT_AUTO_CORRECT_MAX_MM,
+    DEFAULT_CORRECTION_CONFIRM_MAX_MM,
+    DEFAULT_MAX_DPI,
+    DEFAULT_TARGET_DPI,
+)
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -51,6 +56,21 @@ def _env_correction_limit(name: str, default: float = DEFAULT_AUTO_CORRECT_MAX_M
     except ValueError as exc:
         raise ValueError(
             f"{name} должен быть неотрицательным числом (мм), получено: {value!r}"
+        ) from exc
+
+
+def _env_max_dpi(name: str, default: float = DEFAULT_MAX_DPI) -> float:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = float(value.strip().replace(",", "."))
+        if not math.isfinite(parsed) or parsed < DEFAULT_TARGET_DPI:
+            raise ValueError("invalid dpi")
+        return parsed
+    except ValueError as exc:
+        raise ValueError(
+            f"{name} должен быть числом DPI не меньше {DEFAULT_TARGET_DPI:g}, получено: {value!r}"
         ) from exc
 
 
@@ -129,6 +149,9 @@ class Settings:
     auto_correct_max_mm: float = DEFAULT_AUTO_CORRECT_MAX_MM
     # Жёсткий максимум коррекции с подтверждением оператора (выше — отклонение).
     correction_confirm_max_mm: float = DEFAULT_CORRECTION_CONFIRM_MAX_MM
+    # Растры с верным размером и разрешением выше max_dpi уменьшаются до целевого DPI.
+    downsample_high_dpi_enabled: bool = True
+    max_dpi: float = DEFAULT_MAX_DPI
     strip_icc_cmyk: bool = False
     # Автоматический перевод RGB → CMYK итогового PDF процесс-планом callas.
     callas_rgb_to_cmyk_enabled: bool = False
@@ -312,6 +335,10 @@ class Settings:
             ink_max_percent=_env_optional_float("IMAGE_MAGIC_INK_MAX_PERCENT"),
             auto_correct_max_mm=auto_correct_max_mm,
             correction_confirm_max_mm=correction_confirm_max_mm,
+            downsample_high_dpi_enabled=_env_bool(
+                "IMAGE_MAGIC_DOWNSAMPLE_HIGH_DPI_ENABLED", True
+            ),
+            max_dpi=_env_max_dpi("IMAGE_MAGIC_MAX_DPI"),
             strip_icc_cmyk=_env_bool("IMAGE_MAGIC_STRIP_ICC_CMYK", False),
             callas_rgb_to_cmyk_enabled=_env_bool(
                 "IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_ENABLED", False
