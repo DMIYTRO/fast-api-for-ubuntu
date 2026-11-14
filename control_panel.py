@@ -61,7 +61,7 @@ from services.sborka_integration import (
     build_sender,
 )
 from services.callas_fix import comparison_payload as callas_fix_payload, read_state_file as read_callas_fix_state
-from services.print_readiness import print_blockers
+from services.print_readiness import print_blockers, print_mode
 from services.ftp_preview_uploader import build_ftp_preview_uploader
 from services.return_preview import CUSTOM_PREVIEWS_RELATIVE_PATH, custom_return_preview_path
 from core.preview_cache import full_preview_cache_path, preview_media_type, preview_variants
@@ -177,8 +177,10 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
             if fix_state:
                 order["callas_fix"] = {"comparison": callas_fix_payload(fix_state, fix_base)}
             order["print_blockers"] = print_blockers(order, fix_state)
+            order["print_mode"] = print_mode(order["print_blockers"])
         elif input_path:
             order["print_blockers"] = print_blockers(order)
+            order["print_mode"] = print_mode(order["print_blockers"])
             # Итогового PDF нет (например, ошибка размера): исправлять можно исходные PDF.
             input_root = input_path.resolve()
             for index, entry in enumerate(order.get("files") or []):

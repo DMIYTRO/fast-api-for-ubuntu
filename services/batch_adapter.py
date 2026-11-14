@@ -579,6 +579,9 @@ def _pitstop_result_to_dto(
         "verdict": verdict,
         "checked_at": result.checked_at.isoformat(),
         "checked_revision": checked_revision,
+        # Хэш проверенного PDF: UI сверяет его с current_pdf_sha256 заказа, и без
+        # этого поля готовый (зелёный) заказ нельзя отправить в печать.
+        "input_sha256": result.input_sha256,
         "profile": {
             "key": result.profile_id,
             "name": report.profile_name if report is not None else None,

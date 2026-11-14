@@ -51,3 +51,14 @@ def test_automatic_transform_is_recorded_only_after_page_conversion(tmp_path):
     with patch("processing.batch_processor.resample_image"), patch("processing.batch_processor.convert_image_to_pdf"):
         processor._prepare_page_pdfs(refs, tmp_path / "work")
     assert file_check_to_dto(item)["processing_actions"] == [{"kind": "size_correction", "target_mm": [94, 54], "target_dpi": 300, "rotation_degrees": 90}]
+
+
+def test_forced_print_of_a_red_order_is_visible_in_the_feed():
+    order = {"order_id": "1", "aggregate_id": "42:1"}
+    actions = order_actions(
+        [event(1, "order.forced_print", aggregate_id="42:1", status="error", forced=True)],
+        order, legacy_unambiguous=True,
+    )
+    assert actions[0]["kind"] == "order.forced_print"
+    assert "с ошибками" in actions[0]["label"]
+    assert actions[0]["details"]["forced"] is True

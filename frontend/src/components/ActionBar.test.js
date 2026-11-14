@@ -4,12 +4,12 @@ import ActionBar from "./ActionBar.vue";
 
 const cleanup = [];
 afterEach(() => cleanup.splice(0).forEach((fn) => fn()));
-function mount(canPrint) {
+function mount(canPrint, needsPrintConfirmation = false) {
   const host = document.createElement("div");
   document.body.append(host);
   const actions = [];
   const app = createApp(ActionBar, {
-    count: 1, selectedIds: ["100"], canPrint, busy: false,
+    count: 1, selectedIds: ["100"], canPrint, needsPrintConfirmation, busy: false,
     onAction: (...args) => actions.push(args),
   });
   app.mount(host);
@@ -33,5 +33,24 @@ describe("ActionBar print eligibility", () => {
     [...document.querySelectorAll(".action-bar button")]
       .find((button) => button.textContent === "Провести в печать").click();
     expect(actions).toEqual([["print", ""]]);
+  });
+
+  it("asks for explicit confirmation before sending orders with errors", async () => {
+    const actions = mount(true, true);
+    await nextTick();
+    const print = () => [...document.querySelectorAll(".action-bar button")]
+      .find((button) => button.textContent === "Провести в печать");
+    print().click();
+    await nextTick();
+    expect(actions).toEqual([]);
+    expect(document.body.textContent).toContain("Заказ с ошибками. Отправить в печать под вашу ответственность?");
+    [...document.querySelectorAll(".confirm-card button")].find((button) => button.textContent === "Отмена").click();
+    await nextTick();
+    expect(actions).toEqual([]);
+    print().click();
+    await nextTick();
+    [...document.querySelectorAll(".confirm-card button")]
+      .find((button) => button.textContent === "Отправить под мою ответственность").click();
+    expect(actions).toEqual([["print", "", true]]);
   });
 });

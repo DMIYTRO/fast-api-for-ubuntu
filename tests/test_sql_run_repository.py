@@ -202,6 +202,7 @@ class SqlRunRepositoryTests(unittest.TestCase):
                     "verdict": "error",
                     "checked_at": "2026-07-25T10:00:08+00:00",
                     "checked_revision": 2,
+                    "input_sha256": "a" * 64,
                     "profile": {
                         "key": "sborka",
                         "name": "Sborka 2Corel",
