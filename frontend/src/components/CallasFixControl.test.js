@@ -135,6 +135,25 @@ describe("CallasFixControl", () => {
     expect(host.querySelector(".fix-actions")).toBeNull();
   });
 
+  it("tells the order card to refresh after an accepted fix, but not after a rejection", async () => {
+    const decide = vi.spyOn(api, "decideCallasFix")
+      .mockResolvedValueOnce({ comparison: { ...ready.comparison, status: "rejected" } })
+      .mockResolvedValueOnce({ comparison: { ...ready.comparison, status: "accepted" } });
+    const onApplied = vi.fn();
+    const { host } = mount({ initial: ready, onApplied });
+    await nextTick();
+    byText(host, "Отклонить").click();
+    await flush();
+    expect(onApplied).not.toHaveBeenCalled();
+
+    const retry = mount({ initial: ready, onApplied });
+    await nextTick();
+    byText(retry.host, "Принять").click();
+    await flush();
+    expect(decide).toHaveBeenCalledTimes(2);
+    expect(onApplied).toHaveBeenCalledTimes(1);
+  });
+
   it("retries a failed fix with the same plan", async () => {
     const start = vi.spyOn(api, "startCallasFix").mockResolvedValue(proc);
     vi.spyOn(api, "callasFixStatus").mockResolvedValue(proc);

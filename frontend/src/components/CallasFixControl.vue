@@ -22,6 +22,9 @@ const props = defineProps({
 });
 const extraButtons = computed(() => props.fixes.filter((key) => FIX_BUTTONS[key]).map((key) => ({ key, ...FIX_BUTTONS[key] })));
 
+// «applied» — принятое исправление стало новой ревизией PDF: карточка заказа (статус, замечания,
+// кнопки исправлений, превью) устарела и должна перечитаться.
+const emit = defineEmits(["applied"]);
 const uid = useId();
 const comparison = ref(null);
 const plans = ref([]);
@@ -142,6 +145,7 @@ async function decide(decision) {
     const next = extract(payload);
     if (next) apply(payload);
     else comparison.value = { ...comparison.value, status: decision === "accept" ? "accepted" : "rejected" };
+    if (decision === "accept") emit("applied");
   } catch (e) {
     error.value = errorMessage(e, "Не удалось сохранить решение.");
   } finally {

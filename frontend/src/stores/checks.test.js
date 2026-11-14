@@ -70,6 +70,34 @@ describe("checks store", () => {
     expect(store.canPrint).toBe(false);
   });
 
+  it("reloads the run and the orders page after an accepted Callas fix", async () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1", status: "completed" };
+    store.orders = [{ order_id: "101", status: "warning", current_pdf_revision: 2 }];
+    const run = vi.spyOn(api, "run").mockResolvedValue({ id: "run-1", status: "completed", progress: 100 });
+    vi.spyOn(api, "orders").mockResolvedValue({
+      items: [{ order_id: "101", status: "passed", current_pdf_revision: 3 }],
+      page: 1, page_size: 10, total: 1, total_pages: 1,
+      counts: { all: 1, passed: 1, warning: 0, error: 0, waiting_confirmation: 0 },
+    });
+
+    await store.refreshAfterFix();
+
+    expect(run).toHaveBeenCalledWith("run-1", { include_orders: false });
+    expect(store.orders.map((order) => [order.status, order.current_pdf_revision])).toEqual([["passed", 3]]);
+  });
+
+  it("still reloads the orders when the run refresh fails", async () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1" };
+    vi.spyOn(api, "run").mockRejectedValue(new Error("boom"));
+    const orders = vi.spyOn(api, "orders").mockResolvedValue({ items: [], page: 1, total: 0, total_pages: 1, counts: {} });
+
+    await store.refreshAfterFix();
+
+    expect(orders).toHaveBeenCalledTimes(1);
+  });
+
   it("clamps the requested page when the result set shrinks", async () => {
     const store = useChecksStore();
     store.activeRun = { id: "run-1" };

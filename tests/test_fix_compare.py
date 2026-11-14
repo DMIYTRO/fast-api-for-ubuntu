@@ -136,6 +136,56 @@ def test_same_file_has_no_changes(tmp_path):
     assert result.summary["page_size_changed"] is False
 
 
+def _overlay_colors(path):
+    pix = fitz.Pixmap(str(path))
+    colors = set()
+    for y in range(pix.height):
+        for x in range(pix.width):
+            colors.add(tuple(pix.pixel(x, y))[:3])
+    return colors
+
+
+def _filled_pdf(path, fill):
+    doc = fitz.open()
+    page = doc.new_page(width=60 * MM, height=60 * MM)
+    page.draw_rect(fitz.Rect(10 * MM, 10 * MM, 50 * MM, 50 * MM), color=None, fill=fill)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def test_overlay_highlights_a_color_only_change(tmp_path):
+    """Смена цвета при той же яркости (как RGB → CMYK) видна на наложении, а не пропадает."""
+    original = _filled_pdf(tmp_path / "original.pdf", (0.9, 0.3, 0.3))
+    fixed = _filled_pdf(tmp_path / "fixed.pdf", (0.3, 0.9, 0.3))
+
+    result = build_fix_comparison(original, fixed, tmp_path / "out", preview_format="png")
+
+    assert result.summary["overlay_changed_percent"] > 10
+    assert (200, 0, 190) in _overlay_colors(result.overlay_image)
+
+
+def test_overlay_marks_ink_removed_and_added(tmp_path):
+    black = _filled_pdf(tmp_path / "black.pdf", (0, 0, 0))
+    white = _filled_pdf(tmp_path / "white.pdf", (1, 1, 1))
+
+    darker = build_fix_comparison(white, black, tmp_path / "darker", preview_format="png")
+    lighter = build_fix_comparison(black, white, tmp_path / "lighter", preview_format="png")
+
+    assert (20, 90, 220) in _overlay_colors(darker.overlay_image)
+    assert (214, 40, 40) in _overlay_colors(lighter.overlay_image)
+
+
+def test_overlay_is_empty_when_nothing_changed(tmp_path):
+    original = _filled_pdf(tmp_path / "original.pdf", (0.2, 0.4, 0.6))
+
+    result = build_fix_comparison(original, original, tmp_path / "out", preview_format="png")
+
+    assert result.summary["overlay_changed_percent"] == 0
+    colors = _overlay_colors(result.overlay_image)
+    assert not colors & {(200, 0, 190), (20, 90, 220), (214, 40, 40)}
+
+
 def test_creates_three_images_only_in_out_dir(tmp_path):
     (tmp_path / "in").mkdir()
     original = make_pdf(tmp_path / "in" / "original.pdf")

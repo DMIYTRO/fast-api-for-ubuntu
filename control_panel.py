@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path, PureWindowsPath
 from urllib.parse import quote
 import resource
@@ -236,9 +237,13 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
                     f"/api/checks/{run_id}/orders/{order_ref}/layered-tiff-export/{file_id}"
                 )
             if item.get("preview_path") or order.get("preview_paths"):
-                item["preview_url"] = f"/api/files/{file_id}/preview"
-                item["thumbnail_url"] = item["preview_url"] + "?size=thumbnail"
-                item["full_preview_url"] = item["preview_url"] + "?size=full"
+                # Ревизия PDF в URL: после принятого исправления адрес меняется, и карточка
+                # перезагружает превью вместо того, чтобы показывать закэшированное старое.
+                revision = order.get("current_pdf_revision")
+                item["preview_url"] = f"/api/files/{file_id}/preview" + (f"?rev={revision}" if revision else "")
+                separator = "&" if revision else "?"
+                item["thumbnail_url"] = f"{item['preview_url']}{separator}size=thumbnail"
+                item["full_preview_url"] = f"{item['preview_url']}{separator}size=full"
     return values
 
 
@@ -1261,7 +1266,15 @@ def create_app(
                 logger.error("preview.cache_configuration_error error=%s", exc)
                 raise APIError(503, "preview_cache_unavailable", "Кеш превью на внешнем диске не настроен.") from exc
             if not rendition.is_file():
-                raise APIError(404, "preview_not_found", "Детальное превью ещё не создано.")
+                # У ревизий PDF после исправления Callas (Previews/Final/<заказ>/rNNNN/) отдельного
+                # детального превью нет: их превью уже строится в высоком разрешении, показываем его.
+                if not re.fullmatch(r"r\d{4}", thumbnail.parent.name):
+                    raise APIError(404, "preview_not_found", "Детальное превью ещё не создано.")
+                return FileResponse(
+                    thumbnail,
+                    media_type=preview_media_type(thumbnail),
+                    headers={"Cache-Control": "private, no-cache, must-revalidate"},
+                )
             return FileResponse(
                 rendition,
                 media_type=preview_media_type(rendition),
