@@ -1,12 +1,12 @@
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-import hashlib
 import logging
 import os
 from pathlib import Path
 import shutil
 import tempfile
+import threading
 import uuid
 
 import pymupdf
@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Callable, Mapping, Optional, Sequence
 if TYPE_CHECKING:  # services.__init__ imports this module; avoid a cycle
     from services.callas import CallasClient
 
-from core.inspector import count_frames, inspect_file, inspect_tiff_structure
+from core.inspector import inspect_file, inspect_raster
 from core.pdf_inspector import inspect_pdf
 from core.pdf_exporter import convert_image_to_pdf
 from core.preview_cache import preview_extension
@@ -132,6 +132,11 @@ class BatchProcessor:
         self.unparsed: list[FileCheck] = []
         self.unsupported: list[FileCheck] = []
         self.scanned_order_count = 0
+        # Unparsed/unsupported files go to Troubles once per run and target
+        # folder, however many failed orders call copy_failed_to_troubles
+        # (the adapter calls it once per order from pool threads).
+        self._troubles_extras_lock = threading.Lock()
+        self._troubles_extras_claimed: set[Path] = set()
         # Optional hook called with the sorted order ids once filenames are
         # parsed and grouped, before the slow per-order inspection starts.
         self.on_orders_grouped: Callable[[list[str]], None] | None = None
@@ -149,10 +154,16 @@ class BatchProcessor:
     def scan(self) -> list[Path]:
         if not self.input_dir.is_dir():
             raise FileNotFoundError(f"Входная папка не найдена: {self.input_dir}")
-        return sorted(
-            path for path in self.input_dir.iterdir()
-            if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS | REJECTED_EXTENSIONS
-        )
+        wanted = SUPPORTED_EXTENSIONS | REJECTED_EXTENSIONS
+        # os.scandir entries carry the file type from the directory listing, so
+        # is_file() costs no extra stat per entry (matters on a network share);
+        # the cheap suffix test runs first and spares even that for junk files.
+        with os.scandir(self.input_dir) as entries:
+            return sorted(
+                self.input_dir / entry.name
+                for entry in entries
+                if Path(entry.name).suffix.lower() in wanted and entry.is_file()
+            )
 
     def inspect_orders(self) -> list[OrderCheck]:
         """Inspect all orders, preserving the legacy list-returning API."""
@@ -171,6 +182,8 @@ class BatchProcessor:
         self.unparsed = []
         self.unsupported = []
         self.scanned_order_count = 0
+        with self._troubles_extras_lock:
+            self._troubles_extras_claimed = set()
 
         for path in self.scan():
             check = FileCheck(path=path)
@@ -202,8 +215,11 @@ class BatchProcessor:
                     if path.suffix.lower() == ".pdf":
                         self._inspect_pdf_file(check)
                         continue
-                    if path.suffix.lower() in {".tif", ".tiff"}:
-                        structure = inspect_tiff_structure(str(path))
+                    # One cheap inspection per file (see core.inspector):
+                    # TIFF structure, frame count and metadata share launches.
+                    raster = inspect_raster(str(path))
+                    structure = raster.tiff
+                    if structure is not None:
                         check.tiff_page_count = structure.page_count
                         check.has_unflattened_layers = structure.has_unflattened_layers
                         check.tiff_layer_count = structure.layer_count
@@ -223,14 +239,12 @@ class BatchProcessor:
                                 f"TIFF содержит {structure.page_count} страниц; "
                                 "разрешён только одностраничный файл"
                             )
-                    else:
-                        frame_count = count_frames(str(path))
-                        if frame_count != 1:
-                            check.errors.append(
-                                f"файл содержит {frame_count} страниц/изображений; разрешён только одностраничный файл"
-                            )
-                            continue
-                    meta = inspect_file(str(path))
+                    elif raster.frame_count != 1:
+                        check.errors.append(
+                            f"файл содержит {raster.frame_count} страниц/изображений; разрешён только одностраничный файл"
+                        )
+                        continue
+                    meta = raster.metadata
                     check.actual_width_mm = meta.width_mm
                     check.actual_height_mm = meta.height_mm
                     check.width_px = meta.width_px
@@ -700,14 +714,6 @@ class BatchProcessor:
         )
         return output_path, note
 
-    @staticmethod
-    def _file_sha256(path: Path) -> str:
-        digest = hashlib.sha256()
-        with open(path, "rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
-
     def _cleanup_callas_job(self, job_id: str, client=None) -> None:
         client = client if client is not None else self.callas_client
         assert client is not None
@@ -776,9 +782,10 @@ class BatchProcessor:
             raise CallasRenderUnavailableError()
 
         # Уникальный job_id на операцию: см. комментарий в _merge_page_pdfs.
+        # Хеш PDF сюда не входит: из-за случайной части он ничего не определял,
+        # а чтение всего файла стоило секунды на больших PDF.
         job_id = deterministic_job_id(
             f"render-{pdf_path.stem}",
-            self._file_sha256(pdf_path),
             str(int(render_dpi)),
             uuid.uuid4().hex[:12],
         )
@@ -976,7 +983,12 @@ class BatchProcessor:
         orders: list[OrderCheck],
         troubles_dir: Path,
     ) -> list[tuple[Path, Path, str | None]]:
-        """Copy rejected inputs and a readable reason file without changing originals."""
+        """Copy rejected inputs and a readable reason file without changing originals.
+
+        Files of the given failed *orders* are copied on every call.  The
+        unparsed/unsupported files of the run are copied by the first call for
+        a given *troubles_dir* only (thread-safe), not once per failed order.
+        """
         rejected: list[tuple[FileCheck, list[str], str]] = []
         for order in orders:
             if order.passed:
@@ -985,11 +997,16 @@ class BatchProcessor:
             for item in order.files:
                 rejected.append((item, item.errors + order_reasons, order.order_id))
 
-        for item in self.unparsed:
-            rejected.append((item, item.errors, "UNPARSED"))
+        with self._troubles_extras_lock:
+            claim_extras = troubles_dir not in self._troubles_extras_claimed
+            if claim_extras:
+                self._troubles_extras_claimed.add(troubles_dir)
+        if claim_extras:
+            for item in self.unparsed:
+                rejected.append((item, item.errors, "UNPARSED"))
 
-        for item in self.unsupported:
-            rejected.append((item, item.errors, "UNSUPPORTED"))
+            for item in self.unsupported:
+                rejected.append((item, item.errors, "UNSUPPORTED"))
 
         results = []
         for item, reasons, group_name in rejected:

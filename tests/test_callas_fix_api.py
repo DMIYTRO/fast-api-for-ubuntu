@@ -265,12 +265,12 @@ class EnabledTests(CallasFixApiTests):
         original = (self.root / "PDF" / "sample.pdf").read_bytes()
         self.client.post(self.url(run_id), json={"plan": "size_correction"})
         repository = self.client.app.state.coordinator.repository
-        save = repository.save_run_with_event
-        def fail_revision(run, event_type, data):
+        save = repository.save_order_with_event
+        def fail_revision(run, key, event_type, data, **kwargs):
             if event_type == "order.pdf_revision":
                 raise OSError("database unavailable")
-            return save(run, event_type, data)
-        with patch.object(repository, "save_run_with_event", side_effect=fail_revision):
+            return save(run, key, event_type, data, **kwargs)
+        with patch.object(repository, "save_order_with_event", side_effect=fail_revision):
             accepted = self.client.post(self.url(run_id, "/decision"), json={"decision": "accept"})
         self.assertEqual(accepted.status_code, 409, accepted.text)
         comparison = self.client.get(self.url(run_id)).json()["comparison"]

@@ -68,6 +68,10 @@ _CANCELLED_STATUSES = frozenset({"cancelled", "canceled"})
 _MAX_ERROR_TEXT = 500
 _MAX_RETRY_AFTER_SECONDS = 120.0
 _HASH_CHUNK = 1024 * 1024
+_SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+# Рост интервала опроса: 0,2 → 0,26 → 0,34 → 0,44 → … до poll_max_interval_seconds.
+_POLL_GROWTH = 1.3
+_DEFAULT_POLL_MAX_INTERVAL = 2.0
 _PROCESS_MODES = frozenset({"analyze", "fix"})
 _PROCESS_REPORTS = frozenset({"xml", "pdf"})
 _PROCESS_FIXED_NAME = "fixed.pdf"
@@ -93,9 +97,12 @@ class CallasConfig:
     user: str = "image-magic"
     request_timeout_seconds: float = 30.0
     job_timeout_seconds: float = 600.0
-    poll_interval_seconds: float = 1.0
-    poll_max_interval_seconds: float = 5.0
-    max_concurrent_jobs: int = 2
+    # Опрос статуса: быстрые задания (0,5–1 с на сервере) должны завершаться без
+    # лишнего ожидания, поэтому начинаем с короткого интервала и растим его до потолка.
+    poll_interval_seconds: float = 0.2
+    poll_max_interval_seconds: float = 2.0
+    # Слот занят только пока задание выполняется на сервере (см. ``_execute``).
+    max_concurrent_jobs: int = 6
     max_retries: int = 4
     backoff_base_seconds: float = 0.5
     backoff_max_seconds: float = 8.0
@@ -112,6 +119,9 @@ class CallasConfig:
             request_timeout_seconds=settings.callas_request_timeout_seconds,
             job_timeout_seconds=settings.callas_job_timeout_seconds,
             poll_interval_seconds=settings.callas_poll_interval_seconds,
+            poll_max_interval_seconds=getattr(
+                settings, "callas_poll_max_interval_seconds", _DEFAULT_POLL_MAX_INTERVAL
+            ),
             max_concurrent_jobs=settings.callas_max_concurrent_jobs,
             max_retries=settings.callas_max_retries,
         )
@@ -197,8 +207,13 @@ class CallasClient:
         job_id: str,
         cancel: threading.Event | None = None,
         optimize: bool | None = None,
+        input_sha256: Sequence[str | None] | None = None,
     ) -> Path:
-        """Объединяет PDF по порядку; возвращает локальный путь результата в папке задания."""
+        """Объединяет PDF по порядку; возвращает локальный путь результата в папке задания.
+
+        ``input_sha256`` — известные вызывающему SHA-256 входов (по порядку); при
+        копировании в общую папку они сверяются с фактически прочитанным.
+        """
         self._validate_job_id(job_id)
         sources = [Path(item) for item in inputs]
         if not sources:
@@ -214,29 +229,33 @@ class CallasClient:
                 "Имя результата объединения должно быть именем файла .pdf без пути.",
                 job_id=job_id,
             )
+        known = list(input_sha256) if input_sha256 is not None else None
+        if known is not None and len(known) != len(sources):
+            raise CallasConfigError(
+                "Число известных контрольных сумм не совпадает с числом входов.", job_id=job_id
+            )
         ctx = self._new_ctx(job_id, cancel)
-        with self._slot(ctx):
-            staged = self._stage_inputs(job_id, sources)
-            spec: dict[str, Any] = {
-                "type": "merge",
-                "inputs": [
-                    {"path": server_path, "sha256": digest}
-                    for server_path, digest in staged
-                ],
-                "output": str(self._server_job_dir(job_id) / "out" / output_name),
-                "skip_corrupt": False,
-            }
-            if optimize is not None:
-                spec["optimize"] = optimize
-            job = self._execute(ctx, spec, sources)
-            files = self._verify_files(ctx, job)
-            expected = files.get(output_name)
-            if expected is None or len(files) != 1:
-                raise CallasResultError(
-                    f"Callas вернул неожиданный набор файлов для объединения (ожидался {output_name}).",
-                    job_id=job_id,
-                )
-            return expected
+        staged = self._stage_inputs(job_id, sources, known_digests=known)
+        spec: dict[str, Any] = {
+            "type": "merge",
+            "inputs": [
+                {"path": server_path, "sha256": digest}
+                for server_path, digest in staged
+            ],
+            "output": str(self._server_job_dir(job_id) / "out" / output_name),
+            "skip_corrupt": False,
+        }
+        if optimize is not None:
+            spec["optimize"] = optimize
+        job = self._execute(ctx, spec, sources)
+        files = self._verify_files(ctx, job)
+        expected = files.get(output_name)
+        if expected is None or len(files) != 1:
+            raise CallasResultError(
+                f"Callas вернул неожиданный набор файлов для объединения (ожидался {output_name}).",
+                job_id=job_id,
+            )
+        return expected
 
     def render(
         self,
@@ -246,6 +265,7 @@ class CallasClient:
         job_id: str,
         cancel: threading.Event | None = None,
         expected_pages: int | None = None,
+        source_sha256: str | None = None,
     ) -> list[Path]:
         """Рендерит страницы PDF в PNG; возвращает пути, отсортированные по номеру страницы."""
         self._validate_job_id(job_id)
@@ -253,37 +273,36 @@ class CallasClient:
             raise CallasConfigError("DPI рендера должен быть целым числом от 36 до 1200.", job_id=job_id)
         source = Path(input)
         ctx = self._new_ctx(job_id, cancel)
-        with self._slot(ctx):
-            staged = self._stage_inputs(job_id, [source])
-            server_path, digest = staged[0]
-            spec = {
-                "type": "render",
-                "input": {"path": server_path, "sha256": digest},
-                "out_dir": str(self._server_job_dir(job_id) / "out"),
-                "dpi": dpi,
-                "format": "png",
-            }
-            job = self._execute(ctx, spec, [source])
-            files = self._verify_files(ctx, job)
-            pages: list[tuple[int, Path]] = []
-            for name, local in files.items():
-                match = _PAGE_RE.match(name)
-                if match:
-                    pages.append((int(match.group(1)), local))
-            if not pages:
-                raise CallasResultError("Callas не вернул ни одной PNG-страницы.", job_id=job_id)
-            pages.sort(key=lambda item: item[0])
-            numbers = [number for number, _ in pages]
-            if numbers != list(range(1, len(numbers) + 1)):
-                raise CallasResultError(
-                    "Callas вернул страницы с пропусками в нумерации.", job_id=job_id
-                )
-            if expected_pages is not None and len(pages) != expected_pages:
-                raise CallasResultError(
-                    f"Callas вернул {len(pages)} стр., ожидалось {expected_pages}.",
-                    job_id=job_id,
-                )
-            return [path for _, path in pages]
+        staged = self._stage_inputs(job_id, [source], known_digests=[source_sha256])
+        server_path, digest = staged[0]
+        spec = {
+            "type": "render",
+            "input": {"path": server_path, "sha256": digest},
+            "out_dir": str(self._server_job_dir(job_id) / "out"),
+            "dpi": dpi,
+            "format": "png",
+        }
+        job = self._execute(ctx, spec, [source])
+        files = self._verify_files(ctx, job)
+        pages: list[tuple[int, Path]] = []
+        for name, local in files.items():
+            match = _PAGE_RE.match(name)
+            if match:
+                pages.append((int(match.group(1)), local))
+        if not pages:
+            raise CallasResultError("Callas не вернул ни одной PNG-страницы.", job_id=job_id)
+        pages.sort(key=lambda item: item[0])
+        numbers = [number for number, _ in pages]
+        if numbers != list(range(1, len(numbers) + 1)):
+            raise CallasResultError(
+                "Callas вернул страницы с пропусками в нумерации.", job_id=job_id
+            )
+        if expected_pages is not None and len(pages) != expected_pages:
+            raise CallasResultError(
+                f"Callas вернул {len(pages)} стр., ожидалось {expected_pages}.",
+                job_id=job_id,
+            )
+        return [path for _, path in pages]
 
     def process(
         self,
@@ -296,6 +315,7 @@ class CallasClient:
         cancel: threading.Event | None = None,
         job_id: str | None = None,
         keep_name: bool = False,
+        source_sha256: str | None = None,
     ) -> ProcessResult:
         """Запускает процесс-план pdfToolbox: ``analyze`` (только проверка) или ``fix``.
 
@@ -305,7 +325,8 @@ class CallasClient:
         ошибкой; 9 и выше (в том числе 100+) — ошибка выполнения.
         ``job_id`` по умолчанию детерминирован (PDF, профиль, режим, переменные); для
         повторного запуска с теми же параметрами после завершения задания на службе
-        передайте новый ``job_id``.
+        передайте новый ``job_id``. Содержимое файла хешируется для идентификатора
+        только когда ``job_id`` не задан и нет ``source_sha256``.
         """
         if mode not in _PROCESS_MODES:
             raise CallasConfigError("Режим callas должен быть «analyze» или «fix».")
@@ -317,12 +338,14 @@ class CallasClient:
             raise CallasConfigError(f"Входной файл не найден: {source.name}")
         try:
             before = source.stat()
-            source_digest = _sha256_file(source)
         except OSError as exc:
             raise CallasConfigError(
                 f"Не удалось прочитать {source.name}: {exc.strerror or exc}"
             ) from exc
+        known_digest = self._normalize_digest(source_sha256)
         if job_id is None:
+            source_digest = known_digest or self._source_digest(source)
+            known_digest = source_digest
             job_id = deterministic_job_id(
                 f"callas-{mode}",
                 mode,
@@ -333,74 +356,75 @@ class CallasClient:
             )
         self._validate_job_id(job_id)
         ctx = self._new_ctx(job_id, cancel)
-        with self._slot(ctx):
-            staged = self._stage_inputs(job_id, [source], keep_names=keep_name)
-            server_path, digest = staged[0]
-            spec: dict[str, Any] = {
-                "type": "process",
-                "input": {"path": server_path, "sha256": digest},
-                "profile": profile_name,
-                "mode": mode,
-                "report": list(report_kinds),
-                "out_dir": str(self._server_job_dir(job_id) / "out"),
-            }
-            if variable_map:
-                spec["variables"] = variable_map
-            if mode == "fix":
-                spec["output_name"] = _PROCESS_FIXED_NAME
-            try:
-                job = self._execute(ctx, spec, [source])
-            except CallasValidationError as exc:
-                if "profile" in exc.message.lower():
-                    raise CallasValidationError(
-                        f"Callas не принял профиль «{profile_name}»: {exc.message} "
-                        "Проверьте имя профиля в каталоге профилей сервера.",
-                        job_id=job_id,
-                    ) from exc
+        staged = self._stage_inputs(
+            job_id, [source], keep_names=keep_name, known_digests=[known_digest]
+        )
+        server_path, digest = staged[0]
+        spec: dict[str, Any] = {
+            "type": "process",
+            "input": {"path": server_path, "sha256": digest},
+            "profile": profile_name,
+            "mode": mode,
+            "report": list(report_kinds),
+            "out_dir": str(self._server_job_dir(job_id) / "out"),
+        }
+        if variable_map:
+            spec["variables"] = variable_map
+        if mode == "fix":
+            spec["output_name"] = _PROCESS_FIXED_NAME
+        try:
+            job = self._execute(ctx, spec, [source])
+        except CallasValidationError as exc:
+            if "profile" in exc.message.lower():
+                raise CallasValidationError(
+                    f"Callas не принял профиль «{profile_name}»: {exc.message} "
+                    "Проверьте имя профиля в каталоге профилей сервера.",
+                    job_id=job_id,
+                ) from exc
+            raise
+        except CallasJobFailedError as exc:
+            hint = self._unknown_profile_hint(exc, profile_name)
+            if hint is None:
                 raise
-            except CallasJobFailedError as exc:
-                hint = self._unknown_profile_hint(exc, profile_name)
-                if hint is None:
-                    raise
-                raise CallasJobFailedError(
-                    hint,
-                    job_id=job_id,
-                    status=exc.status,
-                    error_class=exc.error_class,
-                    bad_inputs=exc.bad_inputs,
-                ) from exc
-            exit_code = self._process_exit_code(ctx, job)
-            summary = self._process_summary(ctx, job)
-            files = self._verify_files(ctx, job)
-            output_pdf = self._process_output_pdf(ctx, files, mode)
-            report_xml = self._process_report_xml(ctx, files, "xml" in report_kinds)
-            try:
-                after = source.stat()
-            except OSError as exc:
-                raise CallasResultError(
-                    f"Исходный файл {source.name} стал недоступен во время обработки.",
-                    job_id=job_id,
-                ) from exc
-            if (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
-                raise CallasResultError(
-                    f"Исходный файл {source.name} изменился во время обработки callas; "
-                    "результат отклонён.",
-                    job_id=job_id,
-                )
-            if output_pdf is not None and output_pdf.resolve() == source.resolve():
-                raise CallasResultError(
-                    "Callas вернул исходный файл вместо нового; результат отклонён.",
-                    job_id=job_id,
-                )
-            return ProcessResult(
+            raise CallasJobFailedError(
+                hint,
                 job_id=job_id,
-                mode=mode,
-                status=self._process_status(job, summary),
-                exit_code=exit_code,
-                summary=summary,
-                output_pdf=output_pdf,
-                report_xml=report_xml,
+                status=exc.status,
+                error_class=exc.error_class,
+                bad_inputs=exc.bad_inputs,
+            ) from exc
+        exit_code = self._process_exit_code(ctx, job)
+        summary = self._process_summary(ctx, job)
+        files = self._verify_files(ctx, job)
+        output_pdf = self._process_output_pdf(ctx, files, mode)
+        report_xml = self._process_report_xml(ctx, files, "xml" in report_kinds)
+        try:
+            after = source.stat()
+        except OSError as exc:
+            raise CallasResultError(
+                f"Исходный файл {source.name} стал недоступен во время обработки.",
+                job_id=job_id,
+            ) from exc
+        if (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
+            raise CallasResultError(
+                f"Исходный файл {source.name} изменился во время обработки callas; "
+                "результат отклонён.",
+                job_id=job_id,
             )
+        if output_pdf is not None and output_pdf.resolve() == source.resolve():
+            raise CallasResultError(
+                "Callas вернул исходный файл вместо нового; результат отклонён.",
+                job_id=job_id,
+            )
+        return ProcessResult(
+            job_id=job_id,
+            mode=mode,
+            status=self._process_status(job, summary),
+            exit_code=exit_code,
+            summary=summary,
+            output_pdf=output_pdf,
+            report_xml=report_xml,
+        )
 
     def ink_coverage(
         self,
@@ -411,6 +435,7 @@ class CallasClient:
         box: str = "TrimBox",
         job_id: str | None = None,
         cancel: threading.Event | None = None,
+        source_sha256: str | None = None,
     ) -> InkCoverageResult:
         """Красочность (среднее покрытие красками по страницам) заданием ``inkcoverage``.
 
@@ -430,36 +455,31 @@ class CallasClient:
         source = Path(pdf)
         if not source.is_file():
             raise CallasConfigError(f"Входной файл не найден: {source.name}")
+        known_digest = self._normalize_digest(source_sha256)
         if job_id is None:
-            try:
-                digest = _sha256_file(source)
-            except OSError as exc:
-                raise CallasConfigError(
-                    f"Не удалось прочитать {source.name}: {exc.strerror or exc}"
-                ) from exc
+            known_digest = known_digest or self._source_digest(source)
             job_id = deterministic_job_id(
-                "callas-ink", digest, pages or "", str(resolution), box_name
+                "callas-ink", known_digest, pages or "", str(resolution), box_name
             )
         self._validate_job_id(job_id)
         ctx = self._new_ctx(job_id, cancel)
-        with self._slot(ctx):
-            staged = self._stage_inputs(job_id, [source])
-            server_path, digest = staged[0]
-            spec: dict[str, Any] = {
-                "type": "inkcoverage",
-                "input": {"path": server_path, "sha256": digest},
-                "resolution": resolution,
-                "box": box_name,
-            }
-            if pages is not None:
-                spec["pages"] = pages
-            job = self._execute(ctx, spec, [source])
-            block = job.get("ink_coverage")
-            if not isinstance(block, dict):
-                raise CallasProtocolError(
-                    "Callas не вернул блок ink_coverage в ответе задания.", job_id=job_id
-                )
-            return parse_ink_coverage(block, job_id=job_id)
+        staged = self._stage_inputs(job_id, [source], known_digests=[known_digest])
+        server_path, digest = staged[0]
+        spec: dict[str, Any] = {
+            "type": "inkcoverage",
+            "input": {"path": server_path, "sha256": digest},
+            "resolution": resolution,
+            "box": box_name,
+        }
+        if pages is not None:
+            spec["pages"] = pages
+        job = self._execute(ctx, spec, [source])
+        block = job.get("ink_coverage")
+        if not isinstance(block, dict):
+            raise CallasProtocolError(
+                "Callas не вернул блок ink_coverage в ответе задания.", job_id=job_id
+            )
+        return parse_ink_coverage(block, job_id=job_id)
 
     def separations(
         self,
@@ -468,6 +488,7 @@ class CallasClient:
         resolution: int = 50,
         job_id: str,
         cancel: threading.Event | None = None,
+        source_sha256: str | None = None,
     ) -> dict[tuple[int, str], Path]:
         """Цветоделения процессных красок (``--createseparations --part=sep_process``) в PNG.
 
@@ -480,27 +501,28 @@ class CallasClient:
             raise CallasConfigError("Разрешение цветоделений должно быть целым числом от 10 до 300 ppi.", job_id=job_id)
         source = self._existing_source(pdf)
         ctx = self._new_ctx(job_id, cancel)
-        with self._slot(ctx):
-            staged = self._stage_inputs(job_id, [source])
-            server_path, digest = staged[0]
-            spec = {
-                "type": "separations",
-                "input": {"path": server_path, "sha256": digest},
-                "out_dir": str(self._server_job_dir(job_id) / "out"),
-                "parts": ["sep_process"],
-                "imgformat": "PNG",
-                "resolution": resolution,
-            }
-            job = self._execute(ctx, spec, [source])
-            files = self._verify_files(ctx, job)
-            result: dict[tuple[int, str], Path] = {}
-            for name, local in files.items():
-                match = _SEPARATION_RE.match(name)
-                if match:
-                    result[(int(match.group(1)), match.group(2))] = local
-            if not result:
-                raise CallasResultError("Callas не вернул ни одного цветоделения.", job_id=job_id)
-            return result
+        staged = self._stage_inputs(
+            job_id, [source], known_digests=[self._normalize_digest(source_sha256)]
+        )
+        server_path, digest = staged[0]
+        spec = {
+            "type": "separations",
+            "input": {"path": server_path, "sha256": digest},
+            "out_dir": str(self._server_job_dir(job_id) / "out"),
+            "parts": ["sep_process"],
+            "imgformat": "PNG",
+            "resolution": resolution,
+        }
+        job = self._execute(ctx, spec, [source])
+        files = self._verify_files(ctx, job)
+        result: dict[tuple[int, str], Path] = {}
+        for name, local in files.items():
+            match = _SEPARATION_RE.match(name)
+            if match:
+                result[(int(match.group(1)), match.group(2))] = local
+        if not result:
+            raise CallasResultError("Callas не вернул ни одного цветоделения.", job_id=job_id)
+        return result
 
     def info(
         self,
@@ -508,6 +530,7 @@ class CallasClient:
         *,
         job_id: str | None = None,
         cancel: threading.Event | None = None,
+        source_sha256: str | None = None,
     ) -> int:
         """Число страниц PDF заданием ``info`` (pdfToolbox ``--quickpdfinfo``).
 
@@ -515,16 +538,17 @@ class CallasClient:
         страниц в поле ``pages`` (допускаются также ``page_count``/``document_pages``).
         """
         source = self._existing_source(pdf)
+        known_digest = self._normalize_digest(source_sha256)
         if job_id is None:
-            job_id = deterministic_job_id("callas-info", self._source_digest(source))
+            known_digest = known_digest or self._source_digest(source)
+            job_id = deterministic_job_id("callas-info", known_digest)
         self._validate_job_id(job_id)
         ctx = self._new_ctx(job_id, cancel)
-        with self._slot(ctx):
-            staged = self._stage_inputs(job_id, [source])
-            server_path, digest = staged[0]
-            spec = {"type": "info", "input": {"path": server_path, "sha256": digest}}
-            job = self._execute(ctx, spec, [source])
-            return self._page_count(ctx, job)
+        staged = self._stage_inputs(job_id, [source], known_digests=[known_digest])
+        server_path, digest = staged[0]
+        spec = {"type": "info", "input": {"path": server_path, "sha256": digest}}
+        job = self._execute(ctx, spec, [source])
+        return self._page_count(ctx, job)
 
     def split(
         self,
@@ -534,6 +558,7 @@ class CallasClient:
         expect_pages: int | None = None,
         job_id: str | None = None,
         cancel: threading.Event | None = None,
+        source_sha256: str | None = None,
     ) -> dict[str, Path]:
         """Делит PDF на части заданием ``split``: каждая часть — имя ``.pdf`` и список страниц (с 1).
 
@@ -578,36 +603,37 @@ class CallasClient:
         ):
             raise CallasConfigError("Ожидаемое число страниц должно быть целым числом от 1.")
         source = self._existing_source(pdf)
+        known_digest = self._normalize_digest(source_sha256)
         if job_id is None:
+            known_digest = known_digest or self._source_digest(source)
             job_id = deterministic_job_id(
                 "callas-split",
-                self._source_digest(source),
+                known_digest,
                 json.dumps(normalized, sort_keys=True),
                 str(expect_pages or ""),
             )
         self._validate_job_id(job_id)
         ctx = self._new_ctx(job_id, cancel)
-        with self._slot(ctx):
-            staged = self._stage_inputs(job_id, [source])
-            server_path, digest = staged[0]
-            spec: dict[str, Any] = {
-                "type": "split",
-                "input": {"path": server_path, "sha256": digest},
-                "parts": normalized,
-                "out_dir": str(self._server_job_dir(job_id) / "out"),
-            }
-            if expect_pages is not None:
-                spec["expect_pages"] = expect_pages
-            job = self._execute(ctx, spec, [source])
-            files = self._verify_files(ctx, job)
-            if set(files) != seen:
-                raise CallasResultError(
-                    "Callas вернул неожиданный набор частей PDF ("
-                    + ", ".join(sorted(files))
-                    + ").",
-                    job_id=job_id,
-                )
-            return {item["name"]: files[item["name"]] for item in normalized}
+        staged = self._stage_inputs(job_id, [source], known_digests=[known_digest])
+        server_path, digest = staged[0]
+        spec: dict[str, Any] = {
+            "type": "split",
+            "input": {"path": server_path, "sha256": digest},
+            "parts": normalized,
+            "out_dir": str(self._server_job_dir(job_id) / "out"),
+        }
+        if expect_pages is not None:
+            spec["expect_pages"] = expect_pages
+        job = self._execute(ctx, spec, [source])
+        files = self._verify_files(ctx, job)
+        if set(files) != seen:
+            raise CallasResultError(
+                "Callas вернул неожиданный набор частей PDF ("
+                + ", ".join(sorted(files))
+                + ").",
+                job_id=job_id,
+            )
+        return {item["name"]: files[item["name"]] for item in normalized}
 
     def delete(self, job_id: str, *, cancel: threading.Event | None = None) -> None:
         """Удаляет/отменяет задание на стороне службы; 404 не считается ошибкой."""
@@ -631,6 +657,15 @@ class CallasClient:
         if not source.is_file():
             raise CallasConfigError(f"Входной файл не найден: {source.name}")
         return source
+
+    @staticmethod
+    def _normalize_digest(value: str | None) -> str | None:
+        """Известный вызывающему SHA-256 (hex, 64 символа) в нижнем регистре или ``None``."""
+        if value is None:
+            return None
+        if not isinstance(value, str) or not _SHA256_RE.match(value):
+            raise CallasConfigError("Контрольная сумма входа должна быть SHA-256 (64 hex-символа).")
+        return value.lower()
 
     @staticmethod
     def _source_digest(source: Path) -> str:
@@ -705,22 +740,31 @@ class CallasClient:
             logger.warning("callas: не удалось отменить задание %s", ctx.job_id)
 
     class _SlotGuard:
+        """Слот сервера на время выполнения задания; освобождается ровно один раз."""
+
         def __init__(self, owner: "CallasClient", ctx: _Ctx) -> None:
             self._owner = owner
             self._ctx = ctx
+            self._held = False
 
         def __enter__(self) -> None:
             owner, ctx = self._owner, self._ctx
             while not owner._slots.acquire(timeout=0.05):
                 owner._check(ctx)
+            self._held = True
             try:
                 owner._check(ctx)
             except BaseException:
-                owner._slots.release()
+                self._release()
                 raise
 
+        def _release(self) -> None:
+            if self._held:
+                self._held = False
+                self._owner._slots.release()
+
         def __exit__(self, *exc: object) -> None:
-            self._owner._slots.release()
+            self._release()
 
     def _slot(self, ctx: _Ctx) -> "_SlotGuard":
         return self._SlotGuard(self, ctx)
@@ -743,9 +787,17 @@ class CallasClient:
     # -- входы
 
     def _stage_inputs(
-        self, job_id: str, sources: Sequence[Path], *, keep_names: bool = False
+        self,
+        job_id: str,
+        sources: Sequence[Path],
+        *,
+        keep_names: bool = False,
+        known_digests: Sequence[str | None] | None = None,
     ) -> list[tuple[str, str]]:
         """Копирует входы в <share>/.callas/<job_id>/in; возвращает (путь для сервера, sha256).
+
+        Выполняется ВНЕ слота службы (см. ``_execute``). ``known_digests`` — SHA-256,
+        уже известные вызывающему: сверяются с фактически прочитанным при копировании.
 
         По умолчанию вход получает имя ``0001.pdf``. С ``keep_names`` сохраняется имя
         исходного файла (в безопасной записи): процесс-планы, которые читают целевой
@@ -760,6 +812,8 @@ class CallasClient:
                 job_id=job_id,
             ) from exc
         staged: list[tuple[str, str]] = []
+        known = [self._normalize_digest(item) for item in known_digests or ()]
+        known += [None] * (len(sources) - len(known))
         for index, source in enumerate(sources, start=1):
             if not source.is_file():
                 raise CallasConfigError(f"Входной файл не найден: {source.name}", job_id=job_id)
@@ -768,7 +822,7 @@ class CallasClient:
                 _safe_input_name(source.name) if keep_names and len(sources) == 1 else f"{index:04d}{suffix}"
             )
             try:
-                digest = self._copy_verified(source, target)
+                digest = self._copy_verified(source, target, known[index - 1])
             except OSError as exc:
                 raise CallasConfigError(
                     f"Не удалось скопировать {source.name} в общую папку callas: {exc.strerror or exc}",
@@ -778,15 +832,32 @@ class CallasClient:
             staged.append((server_path, digest))
         return staged
 
-    def _copy_verified(self, source: Path, target: Path) -> str:
-        digest = _sha256_file(source)
+    def _copy_verified(
+        self, source: Path, target: Path, expected_sha256: str | None = None
+    ) -> str:
+        """Копирует source в target с проверкой; возвращает SHA-256 переданных байт.
+
+        Источник читается один раз: хеш считается прямо при копировании. Затем копия
+        на общей папке перечитывается и сверяется с этим хешем и размером, поэтому
+        порча или обрезание при передаче по-прежнему обнаруживаются. Если вызывающий
+        передал ``expected_sha256``, он сверяется с прочитанным из источника.
+        """
         size = source.stat().st_size
-        if target.is_file() and target.stat().st_size == size and _sha256_file(target) == digest:
-            return digest
+        if target.is_file() and target.stat().st_size == size:
+            # Повтор того же job_id: переиспользуем вход, только если он совпал с источником.
+            digest = _sha256_file(source)
+            if expected_sha256 is not None and digest != expected_sha256:
+                raise OSError("исходный файл не совпал с ожидаемой контрольной суммой")
+            if _sha256_file(target) == digest:
+                return digest
         part = target.with_name(target.name + ".part")
         try:
-            shutil.copyfile(source, part)
-            if part.stat().st_size != size or _sha256_file(part) != digest:
+            digest, copied = _copy_with_sha256(source, part)
+            if copied != size:
+                raise OSError("исходный файл изменился во время копирования")
+            if expected_sha256 is not None and digest != expected_sha256:
+                raise OSError("исходный файл не совпал с ожидаемой контрольной суммой")
+            if part.stat().st_size != copied or _sha256_file(part) != digest:
                 raise OSError("копия на общей папке не совпала с исходником")
             os.replace(part, target)
         finally:
@@ -800,23 +871,31 @@ class CallasClient:
     # -- HTTP
 
     def _execute(self, ctx: _Ctx, spec: Mapping[str, Any], sources: Sequence[Path]) -> dict[str, Any]:
+        """Отправляет задание и ждёт итогового статуса; слот службы занят только здесь.
+
+        Копирование входов до вызова и проверка результата после него выполняются вне
+        слота: он ограничивает нагрузку на сервер, а не работу клиента. Слот
+        освобождается при любом выходе (успех, ошибка, отмена, таймаут) ровно один раз.
+        """
         job_id = ctx.job_id
-        logger.info("callas: задание %s (%s) отправляется", job_id, spec["type"])
-        self._request(ctx, "PUT", f"/jobs/{job_id}", json_body=spec, adopt_conflict=True)
-        interval = self._cfg.poll_interval_seconds
-        while True:
-            job = self._get_job(ctx)
-            status = str(job.get("status", "")).strip().lower()
-            if status in _DONE_STATUSES:
-                logger.info("callas: задание %s выполнено", job_id)
-                bad = job.get("bad_inputs") or []
-                if bad:
-                    raise self._failed(ctx, job, "done", sources)
-                return job
-            if status in _FAILED_STATUSES or status in _CANCELLED_STATUSES:
-                raise self._failed(ctx, job, status, sources)
-            self._wait(ctx, interval)
-            interval = min(interval * 1.5, self._cfg.poll_max_interval_seconds)
+        interval = max(0.01, self._cfg.poll_interval_seconds)
+        ceiling = max(interval, self._cfg.poll_max_interval_seconds)
+        with self._slot(ctx):
+            logger.info("callas: задание %s (%s) отправляется", job_id, spec["type"])
+            self._request(ctx, "PUT", f"/jobs/{job_id}", json_body=spec, adopt_conflict=True)
+            while True:
+                job = self._get_job(ctx)
+                status = str(job.get("status", "")).strip().lower()
+                if status in _DONE_STATUSES:
+                    logger.info("callas: задание %s выполнено", job_id)
+                    bad = job.get("bad_inputs") or []
+                    if bad:
+                        raise self._failed(ctx, job, "done", sources)
+                    return job
+                if status in _FAILED_STATUSES or status in _CANCELLED_STATUSES:
+                    raise self._failed(ctx, job, status, sources)
+                self._wait(ctx, interval)
+                interval = min(interval * _POLL_GROWTH, ceiling)
 
     def _failed(
         self, ctx: _Ctx, job: Mapping[str, Any], status: str, sources: Sequence[Path]
@@ -1203,6 +1282,24 @@ def _safe_input_name(name: str) -> str:
     stem = re.sub(r"(\d)\s*[хХ×]\s*(\d)", r"\1x\2", stem)
     cleaned = re.sub(r"[^A-Za-z0-9._()\- ]", "_", stem).strip(" .") or "input"
     return f"{cleaned[:150]}.{suffix.lower()}"
+
+
+def _copy_with_sha256(source: Path, target: Path) -> tuple[str, int]:
+    """Копирует файл одним чтением источника; возвращает (SHA-256, число байт) прочитанного."""
+    digest = hashlib.sha256()
+    total = 0
+    buffer = bytearray(_HASH_CHUNK)
+    view = memoryview(buffer)
+    with source.open("rb") as reader, target.open("wb") as writer:
+        while True:
+            read = reader.readinto(buffer)
+            if not read:
+                break
+            chunk = view[:read]
+            digest.update(chunk)
+            writer.write(chunk)
+            total += read
+    return digest.hexdigest(), total
 
 
 def _sha256_file(path: Path) -> str:

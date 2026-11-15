@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections import deque
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from collections import Counter, deque
 from copy import deepcopy
 from datetime import datetime, timezone
+import inspect
 import logging
 import os
 import queue
@@ -22,7 +22,13 @@ from .pdf_routing import completed_status
 from .domain import OrderStatus, RunStatus, validate_operator_transition
 from .dto import order_check_to_dto
 from .issue_groups import attach_issue_groups
-from .repository import RunEvent, RunRepository
+from .repository import (
+    ENVELOPE_DEFER,
+    ENVELOPE_FULL,
+    ENVELOPE_PATCH,
+    RunEvent,
+    RunRepository,
+)
 
 
 TERMINAL_RUN_STATUSES = {
@@ -36,18 +42,31 @@ TERMINAL_ORDER_STATUSES = {
     OrderStatus.ERROR,
     OrderStatus.CANCELLED,
 }
+# Orders mostly wait on external services (PitStop, callas, SMB), so the
+# configured worker count may exceed the CPU count, up to this bound.
+MAX_ORDER_WORKERS = 32
+# Upper bound on worker threads left behind by timed-out orders in one run.
+# Beyond it no replacement workers are started (see _OrderPool.abandon).
+MAX_ABANDONED_ORDER_THREADS = 32
 logger = logging.getLogger("image_magic.worker")
 
 
 def _order_worker_count() -> int:
-    """Return a bounded worker count for independent order processing."""
+    """Return a bounded worker count for independent order processing.
+
+    The default is the CPU count.  An explicit ``IMAGE_MAGIC_ORDER_WORKERS``
+    may go above it (work is I/O bound) but never above
+    ``max(MAX_ORDER_WORKERS, cpu_count)``.
+    """
     available = os.cpu_count() or 1
-    configured = os.environ.get("IMAGE_MAGIC_ORDER_WORKERS", str(available))
+    configured = os.environ.get("IMAGE_MAGIC_ORDER_WORKERS", "").strip()
+    if not configured:
+        return available
     try:
         requested = int(configured)
     except ValueError:
-        requested = available
-    return max(1, min(requested, available))
+        return available
+    return max(1, min(requested, max(MAX_ORDER_WORKERS, available)))
 
 
 def _order_timeout_seconds() -> float:
@@ -55,6 +74,16 @@ def _order_timeout_seconds() -> float:
         return max(1.0, float(os.environ.get("IMAGE_MAGIC_ORDER_TIMEOUT_SECONDS", "900")))
     except ValueError:
         return 900.0
+
+
+def _envelope_checkpoint_seconds() -> float:
+    try:
+        return max(
+            0.0,
+            float(os.environ.get("IMAGE_MAGIC_ENVELOPE_CHECKPOINT_SECONDS", "5")),
+        )
+    except ValueError:
+        return 5.0
 
 
 class RunNotFoundError(KeyError):
@@ -82,11 +111,27 @@ class ProcessorAdapter(Protocol):
 
 
 class _RunContext:
-    def __init__(self, adapter: ProcessorAdapter) -> None:
+    """In-memory state of a run that is queued, active or waiting.
+
+    ``run`` is the live run aggregate and the source of truth while the
+    context exists; it is mutated only under the coordinator lock.  The
+    repository receives every change, but is not re-read on the hot path.
+    ``summary`` is an immutable published copy without orders for lock-free
+    status reads.
+    """
+
+    def __init__(self, adapter: ProcessorAdapter, run: dict[str, Any]) -> None:
         self.adapter = adapter
+        self.run = run
+        self.summary: dict[str, Any] = _summary_copy(run)
         self.orders: dict[str, OrderCheck] = {}
         self.order_keys: dict[int, str] = {}
         self.cancel_requested = threading.Event()
+        self.status_counts: Counter[str] = Counter()
+        # Explicit late-result guard markers (never matched by message text).
+        self.timed_out_keys: set[str] = set()
+        self.finished_keys: set[str] = set()
+        self.last_checkpoint = time.monotonic()
 
     def add_order(self, order: OrderCheck) -> str:
         key = order.order_id
@@ -98,6 +143,135 @@ class _RunContext:
 
     def key_for(self, order: OrderCheck) -> str:
         return self.order_keys[id(order)]
+
+
+class _OrderPool:
+    """Daemon worker pool whose capacity survives stuck (timed-out) orders.
+
+    A Python thread cannot be killed.  When an order exceeds its timeout the
+    coordinator abandons the worker running it: the thread keeps running as a
+    daemon and exits when the call eventually returns, while a replacement
+    worker is started so queued orders keep being processed.  Lifecycle
+    messages are posted to ``events``: ``("started", key, monotonic)`` right
+    before the task runs and ``("done", key, exception_or_None)`` after it.
+    """
+
+    def __init__(
+        self,
+        max_workers: int,
+        *,
+        name: str = "image-magic-order",
+        max_abandoned: int = MAX_ABANDONED_ORDER_THREADS,
+    ) -> None:
+        self.events: queue.Queue[tuple[Any, ...]] = queue.Queue()
+        self._tasks: queue.Queue[tuple[str, Callable[[], None]] | None] = (
+            queue.Queue()
+        )
+        self._lock = threading.Lock()
+        self._running: dict[str, threading.Thread] = {}
+        self._abandoned: set[threading.Thread] = set()
+        self._abandoned_total = 0
+        self._max_abandoned = max_abandoned
+        self._name = name
+        self._spawned = 0
+        self._live = 0
+        self._closed = False
+        with self._lock:
+            for _ in range(max(1, max_workers)):
+                self._spawn_locked()
+
+    @property
+    def live_workers(self) -> int:
+        with self._lock:
+            return self._live
+
+    def _spawn_locked(self) -> None:
+        self._spawned += 1
+        self._live += 1
+        threading.Thread(
+            target=self._work,
+            name=f"{self._name}-{self._spawned}",
+            daemon=True,
+        ).start()
+
+    def submit(self, key: str, task: Callable[[], None]) -> None:
+        self._tasks.put((key, task))
+
+    def _work(self) -> None:
+        me = threading.current_thread()
+        while True:
+            item = self._tasks.get()
+            if item is None:
+                return
+            key, task = item
+            with self._lock:
+                self._running[key] = me
+            self.events.put(("started", key, time.monotonic()))
+            error: BaseException | None = None
+            try:
+                task()
+            except BaseException as exc:  # reported to the coordinator thread
+                error = exc
+            with self._lock:
+                if self._running.get(key) is me:
+                    del self._running[key]
+                abandoned = me in self._abandoned
+                self._abandoned.discard(me)
+            if abandoned:
+                # The order was already finalized as timed out; this worker
+                # was replaced, so it must not take more work.
+                logger.warning(
+                    "order.abandoned_worker_finished order_key=%s thread=%s",
+                    key,
+                    me.name,
+                )
+                return
+            self.events.put(("done", key, error))
+
+    def abandon(self, key: str) -> bool:
+        """Give up on the worker running ``key``; start a replacement.
+
+        Returns False when the task already finished (nothing to abandon) or
+        when the replacement limit is reached.
+        """
+        with self._lock:
+            thread = self._running.pop(key, None)
+            if thread is None:
+                return False
+            self._abandoned.add(thread)
+            self._abandoned_total += 1
+            self._live -= 1
+            if self._closed or self._abandoned_total > self._max_abandoned:
+                return False
+            self._spawn_locked()
+            return True
+
+    def drain(self) -> list[str]:
+        """Remove tasks that have not started yet and return their keys."""
+        keys: list[str] = []
+        while True:
+            try:
+                item = self._tasks.get_nowait()
+            except queue.Empty:
+                return keys
+            if item is not None:
+                keys.append(item[0])
+
+    def shutdown(self) -> list[str]:
+        """Stop idle workers without waiting; abandoned ones exit on return."""
+        dropped = self.drain()
+        with self._lock:
+            self._closed = True
+            live = self._live
+        for _ in range(live):
+            self._tasks.put(None)
+        return dropped
+
+
+def _summary_copy(run: dict[str, Any]) -> dict[str, Any]:
+    summary = {key: deepcopy(value) for key, value in run.items() if key != "orders"}
+    summary["orders"] = {}
+    return summary
 
 
 class AmbiguousOrderError(ValueError):
@@ -132,6 +306,13 @@ class RunCoordinator:
     The worker is owned by application lifespan, not by an HTTP request.
     Confirmation pauses only the affected order; all other orders are handled
     before the run enters ``waiting_confirmation``.
+
+    While a run has a context (queued, active or waiting for a decision) its
+    aggregate lives in memory and is the source of truth for reads.  Each
+    per-order event is persisted with ``save_order_with_event`` (cost
+    independent of the run size); the repository's whole-run compatibility
+    envelope is rewritten at run-level transitions and at most every
+    ``envelope_checkpoint_seconds`` during processing.
     """
 
     def __init__(
@@ -143,11 +324,22 @@ class RunCoordinator:
         ),
         autostart: bool = True,
         order_timeout_seconds: float | None = None,
+        order_workers: int | None = None,
+        envelope_checkpoint_seconds: float | None = None,
     ) -> None:
         self.repository = repository
         self.order_timeout_seconds = (
             _order_timeout_seconds() if order_timeout_seconds is None
             else max(0.01, order_timeout_seconds)
+        )
+        self.order_workers = order_workers
+        self.envelope_checkpoint_seconds = (
+            _envelope_checkpoint_seconds()
+            if envelope_checkpoint_seconds is None
+            else max(0.0, envelope_checkpoint_seconds)
+        )
+        self._partial_saves = callable(
+            getattr(repository, "save_order_with_event", None)
         )
         self._adapter_factory = adapter_factory
         self._contexts: dict[str, _RunContext] = {}
@@ -215,7 +407,7 @@ class RunCoordinator:
         }
         # Constructing the adapter validates profile selection immediately but
         # does not perform heavy work.
-        context = _RunContext(self._adapter_factory(options))
+        context = _RunContext(self._adapter_factory(options), run)
         with self._lock:
             self.repository.create_run(run)
             self._contexts[run_id] = context
@@ -230,13 +422,23 @@ class RunCoordinator:
             )
         return self.get_run(run_id)
 
+    # ------------------------------------------------------------------ reads
+
     def get_run(self, run_id: str) -> dict[str, Any]:
+        with self._lock:
+            context = self._contexts.get(run_id)
+            if context is not None:
+                return deepcopy(context.run)
         value = self.repository.get_run(run_id)
         if value is None:
             raise RunNotFoundError(run_id)
         return value
 
     def get_run_summary(self, run_id: str) -> dict[str, Any]:
+        """Run fields without orders; lock-free for runs held in memory."""
+        context = self._contexts.get(run_id)
+        if context is not None:
+            return deepcopy(context.summary)
         getter = getattr(self.repository, "get_run_summary", None)
         value = getter(run_id) if getter else self.repository.get_run(run_id)
         if value is None:
@@ -244,10 +446,41 @@ class RunCoordinator:
         value.setdefault("orders", {})
         return value
 
+    def active_run_id(self) -> str | None:
+        """Id of the run currently owning the worker; no aggregate load."""
+        return self._active_run_id
+
+    def get_active_run_summary(self) -> dict[str, Any] | None:
+        """Summary (no orders) of the active run; cheap, lock-free."""
+        run_id = self._active_run_id
+        if run_id is None:
+            return None
+        try:
+            return self.get_run_summary(run_id)
+        except RunNotFoundError:
+            return None
+
+    def run_exists(self, run_id: str) -> bool:
+        if run_id in self._contexts:
+            return True
+        checker = getattr(self.repository, "run_exists", None)
+        if callable(checker):
+            return bool(checker(run_id))
+        getter = getattr(self.repository, "get_run_summary", None)
+        value = getter(run_id) if getter else self.repository.get_run(run_id)
+        return value is not None
+
     def list_orders_page(
         self, run_id: str, *, page: int, page_size: int, status: str,
         search: str, active_only: bool = True,
     ) -> dict[str, Any]:
+        with self._lock:
+            context = self._contexts.get(run_id)
+            if context is not None:
+                return _orders_page_from_run(
+                    context.run, page=page, page_size=page_size, status=status,
+                    search=search, active_only=active_only,
+                )
         getter = getattr(self.repository, "list_orders_page", None)
         if getter:
             result = getter(
@@ -257,49 +490,33 @@ class RunCoordinator:
             if result is None:
                 raise RunNotFoundError(run_id)
             return result
-        run = self.get_run(run_id)
-        orders = list((run.get("orders") or {}).values())
-        terminal = {"accepted_for_print", "returned_for_rework"}
-        if active_only:
-            orders = [order for order in orders if order.get("status") not in terminal]
-        query = search.strip().casefold()
-        if query:
-            orders = [order for order in orders if query in " ".join([
-                str(order.get("order_id") or ""), str(order.get("customer_id") or ""),
-                *(str(file.get("filename") or file.get("name") or "") for file in order.get("files") or []),
-            ]).casefold()]
-        grouped: dict[str, int] = {}
-        for order in orders:
-            value = str(order.get("status") or "detected")
-            grouped[value] = grouped.get(value, 0) + 1
-        counts = {
-            "all": sum(grouped.values()),
-            "passed": sum(grouped.get(value, 0) for value in ("passed", "completed")),
-            "warning": grouped.get("warning", 0),
-            "error": sum(grouped.get(value, 0) for value in ("error", "failed", "technical_error")),
-            "waiting_confirmation": grouped.get("waiting_confirmation", 0),
-        }
-        if status == "passed":
-            orders = [order for order in orders if order.get("status") in {"passed", "completed"}]
-        elif status == "error":
-            orders = [order for order in orders if order.get("status") in {"error", "failed", "technical_error"}]
-        elif status != "all":
-            orders = [order for order in orders if order.get("status") == status]
-        # Dict insertion order follows discovery order and keeps pagination
-        # stable as new orders arrive during an active run.
-        total = len(orders)
-        start = (page - 1) * page_size
-        run["orders"] = {str(i): order for i, order in enumerate(orders[start:start + page_size])}
-        return {"run": run, "items": list(run["orders"].values()), "page": page,
-                "page_size": page_size, "total": total,
-                "total_pages": max(1, (total + page_size - 1) // page_size), "counts": counts}
+        return _orders_page_from_run(
+            self.get_run(run_id), page=page, page_size=page_size,
+            status=status, search=search, active_only=active_only,
+        )
 
     def find_file_by_id(self, file_id: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
         """Use the repository's stable file index when available."""
         finder = getattr(self.repository, "find_file_by_id", None)
         if finder:
-            return finder(file_id)
-        for run in self.repository.list_runs():
+            match = finder(file_id)
+            if match is None:
+                return None
+            run_id = str(match[0].get("id") or "")
+            with self._lock:
+                context = self._contexts.get(run_id)
+                if context is None:
+                    return match
+                # The stored extras of an active run may lag the live
+                # aggregate (checkpointed envelope); answer from memory.
+                for key, order in (context.run.get("orders") or {}).items():
+                    for item in order.get("files") or []:
+                        if str(item.get("file_result_id") or "") == str(file_id):
+                            run = _summary_copy(context.run)
+                            run["orders"] = {key: deepcopy(order)}
+                            return run, deepcopy(item)
+            return match
+        for run in self.list_runs():
             for order in (run.get("orders") or {}).values():
                 for item in order.get("files") or []:
                     if str(item.get("file_result_id") or item.get("id") or "") == file_id:
@@ -313,9 +530,20 @@ class RunCoordinator:
         offset: int = 0,
         include_orders: bool = True,
     ) -> list[dict[str, Any]]:
-        return self.repository.list_runs(
+        runs = self.repository.list_runs(
             limit=limit, offset=offset, include_orders=include_orders
         )
+        # Runs held in memory are fresher than their stored counters.
+        for index, run in enumerate(runs):
+            context = self._contexts.get(str(run.get("id")))
+            if context is None:
+                continue
+            if include_orders:
+                with self._lock:
+                    runs[index] = deepcopy(context.run)
+            else:
+                runs[index] = deepcopy(context.summary)
+        return runs
 
     def count_runs(self) -> int:
         return self.repository.count_runs()
@@ -328,15 +556,24 @@ class RunCoordinator:
                 else None
             )
 
-    def events(self, run_id: str, after_id: int = 0) -> list[RunEvent]:
-        self.get_run(run_id)
-        return self.repository.list_events(run_id, after_id)
+    def events(
+        self, run_id: str, after_id: int = 0, limit: int | None = None
+    ) -> list[RunEvent]:
+        if not self.run_exists(run_id):
+            raise RunNotFoundError(run_id)
+        if limit is None:
+            return self.repository.list_events(run_id, after_id)
+        if _accepts_limit(self.repository.list_events):
+            return self.repository.list_events(run_id, after_id, limit=limit)
+        return self.repository.list_events(run_id, after_id)[: max(0, limit)]
+
+    # --------------------------------------------------------------- commands
 
     def cancel(self, run_id: str) -> dict[str, Any]:
         with self._lock:
-            run = self.get_run(run_id)
+            run = self._load_run_locked(run_id)
             if run["status"] in TERMINAL_RUN_STATUSES:
-                return run
+                return deepcopy(run)
             run["cancel_requested"] = True
             self._contexts[run_id].cancel_requested.set()
             if run["status"] == "queued":
@@ -348,13 +585,12 @@ class RunCoordinator:
             elif run["status"] == "waiting_confirmation":
                 # No worker command is running in this state, so cancellation
                 # must be finalized synchronously.
-                for item in run["orders"].values():
-                    if item["status"] not in TERMINAL_ORDER_STATUSES:
-                        item["status"] = "cancelled"
                 self._mark_cancelled_locked(run)
             else:
                 run["stage"] = "cancelling"
-                self._save_and_emit_locked(run, "run.cancelling", {})
+                self._save_and_emit_locked(
+                    run, "run.cancelling", {}, include_orders=False
+                )
             self._changed.notify_all()
             return self.get_run(run_id)
 
@@ -381,7 +617,7 @@ class RunCoordinator:
     ) -> dict[str, Any]:
         """Persist paths/status after a deliberate operator file transition."""
         with self._lock:
-            run = self.get_run(run_id)
+            run = self._load_run_locked(run_id)
             stored_key = _stored_order_key(run, order_id)
             order = run["orders"].get(stored_key) if stored_key else None
             if order is None:
@@ -391,41 +627,46 @@ class RunCoordinator:
                 status,
                 confirm_failed_processing=confirm_failed_processing,
             )
-            for item in order.get("files") or []:
+            updated = deepcopy(order)
+            for item in updated.get("files") or []:
                 old_path = str(item.get("path", ""))
                 if old_path in source_paths:
                     item["path"] = source_paths[old_path]
             if pdf_path:
-                order["pdf_path"] = pdf_path
+                updated["pdf_path"] = pdf_path
             if preview_paths:
-                order["preview_paths"] = preview_paths
+                updated["preview_paths"] = preview_paths
             if pitstop is not None:
-                order["pitstop"] = pitstop
-            if ((current_pdf_revision is not None and current_pdf_revision != order.get("current_pdf_revision"))
-                    or (current_pdf_sha256 is not None and current_pdf_sha256 != order.get("current_pdf_sha256"))):
-                order["ink_coverage"] = {"status": "not_checked", "flags": [], "pages": [], "error": "PDF изменён: требуется повторная проверка красочности."}
+                updated["pitstop"] = pitstop
+            if ((current_pdf_revision is not None and current_pdf_revision != updated.get("current_pdf_revision"))
+                    or (current_pdf_sha256 is not None and current_pdf_sha256 != updated.get("current_pdf_sha256"))):
+                updated["ink_coverage"] = {"status": "not_checked", "flags": [], "pages": [], "error": "PDF изменён: требуется повторная проверка красочности."}
             if current_pdf_revision is not None:
-                order["current_pdf_revision"] = current_pdf_revision
+                updated["current_pdf_revision"] = current_pdf_revision
             if current_pdf_sha256 is not None:
-                order["current_pdf_sha256"] = current_pdf_sha256
+                updated["current_pdf_sha256"] = current_pdf_sha256
             if errors:
-                order["errors"] = [*order.get("errors", []), *errors]
-                order["processing_errors"] = [
-                    *order.get("processing_errors", []), *errors
+                updated["errors"] = [*updated.get("errors", []), *errors]
+                updated["processing_errors"] = [
+                    *updated.get("processing_errors", []), *errors
                 ]
-                order["passed"] = False
-            attach_issue_groups(order)
-            order["status"] = status
-            self._save_and_emit_locked(
+                updated["passed"] = False
+            attach_issue_groups(updated)
+            updated["status"] = status
+            self._commit_order_locked(
                 run,
+                stored_key,
+                updated,
                 "order.file_transition",
-                {
-                    "aggregate_id": order.get("aggregate_id") or stored_key,
-                    "order_id": order.get("order_id") or order_id,
-                    "customer_id": order.get("customer_id"),
+                lambda dto: {
+                    "aggregate_id": dto.get("aggregate_id") or stored_key,
+                    "order_id": dto.get("order_id") or order_id,
+                    "customer_id": dto.get("customer_id"),
                     "status": status,
-                    "order": order,
+                    "order": dto,
                 },
+                update_counts=False,
+                envelope=ENVELOPE_PATCH,
             )
             self._changed.notify_all()
             return self.get_run(run_id)
@@ -456,74 +697,71 @@ class RunCoordinator:
         if status not in {"passed", "warning", "error"}:
             raise ValueError(f"недопустимый статус ревизии PDF: {status}")
         with self._lock:
-            run = self.get_run(run_id)
+            run = self._load_run_locked(run_id)
             stored_key = _stored_order_key(run, order_id)
             order = run["orders"].get(stored_key) if stored_key else None
             if order is None:
                 raise RunNotFoundError(f"{run_id}/{order_id}")
-            previous_order = deepcopy(order)
-            order["pdf_path"] = pdf_path
-            order["pdf_kind"] = "production"
-            order["pitstop"] = pitstop
-            order["pitstop_status"] = _pitstop_status_from_dto(pitstop)
-            order.pop("pitstop_skipped_reason", None)
-            order["current_pdf_revision"] = current_pdf_revision
-            order["current_pdf_sha256"] = current_pdf_sha256
-            order["ink_coverage"] = {
+            updated = deepcopy(order)
+            updated["pdf_path"] = pdf_path
+            updated["pdf_kind"] = "production"
+            updated["pitstop"] = pitstop
+            updated["pitstop_status"] = _pitstop_status_from_dto(pitstop)
+            updated.pop("pitstop_skipped_reason", None)
+            updated["current_pdf_revision"] = current_pdf_revision
+            updated["current_pdf_sha256"] = current_pdf_sha256
+            updated["ink_coverage"] = {
                 "status": "not_checked", "flags": [], "pages": [],
                 "error": "PDF изменён: требуется повторная проверка красочности.",
             }
-            order["preview_paths"] = list(preview_paths or [])
-            order["revision_check"] = {"errors": errors or [], "warnings": warnings or []}
+            updated["preview_paths"] = list(preview_paths or [])
+            updated["revision_check"] = {"errors": errors or [], "warnings": warnings or []}
             if color_conversion is not None:
-                order["color_conversion"] = color_conversion
+                updated["color_conversion"] = color_conversion
             if prepress is not None:
-                order["prepress"] = prepress
-            order["processing_errors"] = list(errors or [])
-            order["status"] = status
-            order["passed"] = status in {"passed", "warning"}
-            attach_issue_groups(order)
-            self._update_counts(run)
-            try:
-                self._save_and_emit_locked(
-                    run,
-                    "order.pdf_revision",
-                    {
-                        "aggregate_id": order.get("aggregate_id") or stored_key,
-                        "order_id": order.get("order_id") or order_id,
-                        "customer_id": order.get("customer_id"),
-                        "status": status,
-                        "order": order,
-                    },
-                )
-            except Exception:
-                order.clear()
-                order.update(previous_order)
-                self._update_counts(run)
-                raise
+                updated["prepress"] = prepress
+            updated["processing_errors"] = list(errors or [])
+            updated["status"] = status
+            updated["passed"] = status in {"passed", "warning"}
+            attach_issue_groups(updated)
+            self._commit_order_locked(
+                run,
+                stored_key,
+                updated,
+                "order.pdf_revision",
+                lambda dto: {
+                    "aggregate_id": dto.get("aggregate_id") or stored_key,
+                    "order_id": dto.get("order_id") or order_id,
+                    "customer_id": dto.get("customer_id"),
+                    "status": status,
+                    "order": dto,
+                },
+                envelope=ENVELOPE_PATCH,
+            )
             self._changed.notify_all()
-            return deepcopy(order)
+            return deepcopy(run["orders"][stored_key])
 
     def restore_order_snapshot(
         self, run_id: str, order_id: str, snapshot: dict[str, Any]
     ) -> dict[str, Any]:
         """Restore an order after a compensated filesystem transition."""
         with self._lock:
-            run = self.get_run(run_id)
+            run = self._load_run_locked(run_id)
             stored_key = _stored_order_key(run, order_id)
             if stored_key is None:
                 raise RunNotFoundError(f"{run_id}/{order_id}")
-            run["orders"][stored_key] = snapshot
-            self._update_counts(run)
-            self._save_and_emit_locked(
+            self._commit_order_locked(
                 run,
+                stored_key,
+                deepcopy(snapshot),
                 "order.file_transition_rolled_back",
-                {
-                    "aggregate_id": snapshot.get("aggregate_id") or stored_key,
-                    "order_id": snapshot.get("order_id") or order_id,
-                    "customer_id": snapshot.get("customer_id"),
-                    "status": snapshot.get("status"),
+                lambda dto: {
+                    "aggregate_id": dto.get("aggregate_id") or stored_key,
+                    "order_id": dto.get("order_id") or order_id,
+                    "customer_id": dto.get("customer_id"),
+                    "status": dto.get("status"),
                 },
+                envelope=ENVELOPE_PATCH,
             )
             self._changed.notify_all()
             return self.get_run(run_id)
@@ -538,7 +776,7 @@ class RunCoordinator:
         statuses = statuses or TERMINAL_RUN_STATUSES
         with self._changed:
             self._changed.wait_for(
-                lambda: self.get_run(run_id)["status"] in statuses,
+                lambda: self._run_status(run_id) in statuses,
                 timeout=timeout,
             )
             return self.get_run(run_id)
@@ -547,7 +785,7 @@ class RunCoordinator:
         self, run_id: str, order_id: str, *, approved: bool
     ) -> dict[str, Any]:
         with self._lock:
-            run = self.get_run(run_id)
+            run = self._load_run_locked(run_id)
             if run["status"] in TERMINAL_RUN_STATUSES:
                 raise InvalidRunStateError("run is already finished")
             context = self._contexts.get(run_id)
@@ -593,30 +831,57 @@ class RunCoordinator:
                 decision_audit.append(audit)
             context.adapter.decide(order, approved)
             decision = "confirmed" if approved else "rejected"
-            run["orders"][stored_key] = order_check_to_dto(
-                order, status=f"correction_{decision}"
-            )
+            previous_status = (run["status"], run["stage"])
             run["status"] = "running"
             run["stage"] = "processing"
-            self._save_and_emit_locked(
-                run,
-                f"order.correction_{decision}",
-                {
-                    "aggregate_id": order.aggregate_id,
-                    "order_id": order.order_id,
-                    "customer_id": order.customer_id,
-                    "decisions": decision_audit,
-                },
-            )
+            try:
+                self._commit_order_locked(
+                    run,
+                    stored_key,
+                    order_check_to_dto(order, status=f"correction_{decision}"),
+                    f"order.correction_{decision}",
+                    lambda _dto: {
+                        "aggregate_id": order.aggregate_id,
+                        "order_id": order.order_id,
+                        "customer_id": order.customer_id,
+                        "decisions": decision_audit,
+                    },
+                    update_counts=False,
+                    envelope=ENVELOPE_PATCH,
+                )
+            except Exception:
+                run["status"], run["stage"] = previous_status
+                raise
             self._pending_resumes.append((run_id, stored_key))
             self._schedule_next_locked()
             self._changed.notify_all()
             return self.get_run(run_id)
 
+    # -------------------------------------------------------------- scheduling
+
+    def _run_status(self, run_id: str) -> str | None:
+        context = self._contexts.get(run_id)
+        if context is not None:
+            return str(context.run.get("status"))
+        try:
+            return str(self.get_run_summary(run_id).get("status"))
+        except RunNotFoundError:
+            return None
+
+    def _load_run_locked(self, run_id: str) -> dict[str, Any]:
+        """Live aggregate for runs in memory, otherwise a stored copy."""
+        context = self._contexts.get(run_id)
+        if context is not None:
+            return context.run
+        value = self.repository.get_run(run_id)
+        if value is None:
+            raise RunNotFoundError(run_id)
+        return value
+
     def _schedule_next_locked(self) -> None:
         if self._active_run_id is not None:
-            active = self.repository.get_run(self._active_run_id)
-            if active is not None and active.get("status") not in TERMINAL_RUN_STATUSES:
+            status = self._run_status(self._active_run_id)
+            if status is not None and status not in TERMINAL_RUN_STATUSES:
                 return
             stale_run_id = self._active_run_id
             self._active_run_id = None
@@ -624,7 +889,7 @@ class RunCoordinator:
             logger.warning(
                 "scheduler.recovered_stale_active run_id=%s status=%s",
                 stale_run_id,
-                active.get("status") if active else "missing",
+                status or "missing",
             )
         if self._pending_resumes:
             run_id, order_id = self._pending_resumes.popleft()
@@ -643,8 +908,8 @@ class RunCoordinator:
             try:
                 if command == "stop":
                     return
-                existing = self.repository.get_run(run_id)
-                if existing is None or existing["status"] in TERMINAL_RUN_STATUSES:
+                status = self._run_status(run_id)
+                if status is None or status in TERMINAL_RUN_STATUSES:
                     continue
                 if command == "start":
                     self._run_initial(run_id)
@@ -663,9 +928,12 @@ class RunCoordinator:
             finally:
                 self._commands.task_done()
 
+    # -------------------------------------------------------------- run phases
+
     def _run_initial(self, run_id: str) -> None:
         with self._lock:
-            run = self.get_run(run_id)
+            context = self._contexts[run_id]
+            run = context.run
             if run["cancel_requested"]:
                 self._mark_cancelled_locked(run)
                 return
@@ -673,10 +941,11 @@ class RunCoordinator:
             run["stage"] = "scanning"
             run["stage_label"] = "Поиск заказов и проверка файлов"
             run["started_at"] = _now()
-            self._save_and_emit_locked(run, "run.started", {})
+            self._save_and_emit_locked(
+                run, "run.started", {}, include_orders=False
+            )
             self._changed.notify_all()
 
-        context = self._contexts[run_id]
         iterator_method = getattr(context.adapter, "iter_inspect_orders", None)
         known_total: int | None = None
         if callable(iterator_method):
@@ -689,166 +958,130 @@ class RunCoordinator:
             orders = iter(batch)
 
         inspected = 0
-        processing_futures: dict[Future[None], OrderCheck] = {}
-        submitted_at: dict[Future[None], float] = {}
-        executor = ThreadPoolExecutor(
-            max_workers=_order_worker_count(),
-            thread_name_prefix="image-magic-order",
+        submitted: dict[str, OrderCheck] = {}
+        pool = _OrderPool(
+            self.order_workers if self.order_workers is not None
+            else _order_worker_count(),
+            name="image-magic-order",
+            max_abandoned=MAX_ABANDONED_ORDER_THREADS,
         )
-        for order in orders:
-            if context.cancel_requested.is_set():
-                self._cancel_remaining(run_id)
-                executor.shutdown(wait=False, cancel_futures=True)
-                return
-            inspected += 1
-            with self._lock:
-                run = self.get_run(run_id)
-                total_hint = (
-                    known_total
-                    if known_total is not None
-                    else int(getattr(context.adapter, "total_orders", 0) or 0)
-                )
-                run["total_orders"] = max(
-                    run["total_orders"], total_hint, inspected
-                )
-                run["stage"] = "processing"
-                run["stage_label"] = f"Обработка заказа {order.order_id}"
-                run["current_order"] = order.order_id
-                run["progress"] = max(run["progress"], 10)
-                aggregate_id = context.add_order(order)
-                detected_dto = order_check_to_dto(order, status="detected")
-                run["orders"][aggregate_id] = detected_dto
-                self._save_and_emit_locked(
-                    run,
-                    "order.detected",
-                    {
-                        "aggregate_id": order.aggregate_id,
-                        "order_id": order.order_id,
-                        "customer_id": order.customer_id,
-                        "order": detected_dto,
-                        "processed": inspected,
-                        "total": run["total_orders"],
-                    },
-                )
-                checked_status = _inspection_status(order)
-                effective_checked_status = (
-                    "processing"
-                    if checked_status in {"passed", "warning"}
-                    and bool(getattr(context.adapter, "pitstop_enabled", False))
-                    else checked_status
-                )
-                run["orders"][aggregate_id] = order_check_to_dto(
-                    order,
-                    status=effective_checked_status,
-                    source_status=checked_status,
-                )
-                self._save_and_emit_locked(
-                    run,
-                    "order.checked",
-                    {
-                        "aggregate_id": order.aggregate_id,
-                        "order_id": order.order_id,
-                        "customer_id": order.customer_id,
-                        "status": effective_checked_status,
-                        "source_status": checked_status,
-                    },
-                )
-                self._changed.notify_all()
-
-            pending_files = context.adapter.pending_files(order)
-            correction_policy = run["options"].get("correction_policy", "ask")
-            # Адаптер, где автоматический режим сам применяет малые коррекции
-            # (BatchProcessorAdapter), оставляет в ожидании только коррекции выше
-            # предела: их подтверждает оператор, а не флаг «автоматически».
-            auto_approve = (
-                run["options"].get("approve_corrections")
-                or correction_policy == "auto"
-            ) and getattr(context.adapter, "auto_approves_pending", True)
-            auto_reject = correction_policy == "reject"
-            if pending_files and (auto_approve or auto_reject):
-                context.adapter.decide(order, auto_approve)
-                self._emit_locked(
-                    run_id,
-                    (
-                        "order.correction_confirmed"
-                        if auto_approve
-                        else "order.correction_rejected"
-                    ),
-                    {
-                        "aggregate_id": order.aggregate_id,
-                        "order_id": order.order_id,
-                        "customer_id": order.customer_id,
-                        "automatic": True,
-                    },
-                )
-            elif pending_files:
+        try:
+            for order in orders:
+                if context.cancel_requested.is_set():
+                    pool.shutdown()
+                    self._cancel_remaining(run_id)
+                    return
+                inspected += 1
                 with self._lock:
-                    run = self.get_run(run_id)
-                    dto = order_check_to_dto(
-                        order, status="waiting_confirmation"
+                    total_hint = (
+                        known_total
+                        if known_total is not None
+                        else int(getattr(context.adapter, "total_orders", 0) or 0)
                     )
-                    run["orders"][aggregate_id] = dto
-                    self._update_counts(run)
-                    self._save_and_emit_locked(
+                    run["total_orders"] = max(
+                        run["total_orders"], total_hint, inspected
+                    )
+                    run["stage"] = "processing"
+                    run["stage_label"] = f"Обработка заказа {order.order_id}"
+                    run["current_order"] = order.order_id
+                    run["progress"] = max(run["progress"], 10)
+                    aggregate_id = context.add_order(order)
+                    self._commit_order_locked(
                         run,
-                        "order.waiting_confirmation",
-                        {
+                        aggregate_id,
+                        order_check_to_dto(order, status="detected"),
+                        "order.detected",
+                        lambda dto: {
                             "aggregate_id": order.aggregate_id,
                             "order_id": order.order_id,
                             "customer_id": order.customer_id,
                             "order": dto,
-                            "processed": run["processed_orders"],
+                            "processed": inspected,
                             "total": run["total_orders"],
-                            "progress": run["progress"],
+                        },
+                        update_counts=False,
+                    )
+                    checked_status = _inspection_status(order)
+                    effective_checked_status = (
+                        "processing"
+                        if checked_status in {"passed", "warning"}
+                        and bool(getattr(context.adapter, "pitstop_enabled", False))
+                        else checked_status
+                    )
+                    self._commit_order_locked(
+                        run,
+                        aggregate_id,
+                        order_check_to_dto(
+                            order,
+                            status=effective_checked_status,
+                            source_status=checked_status,
+                        ),
+                        "order.checked",
+                        lambda _dto: {
+                            "aggregate_id": order.aggregate_id,
+                            "order_id": order.order_id,
+                            "customer_id": order.customer_id,
+                            "status": effective_checked_status,
+                            "source_status": checked_status,
+                        },
+                        update_counts=False,
+                    )
+                    self._changed.notify_all()
+
+                pending_files = context.adapter.pending_files(order)
+                correction_policy = run["options"].get("correction_policy", "ask")
+                # Адаптер, где автоматический режим сам применяет малые коррекции
+                # (BatchProcessorAdapter), оставляет в ожидании только коррекции выше
+                # предела: их подтверждает оператор, а не флаг «автоматически».
+                auto_approve = (
+                    run["options"].get("approve_corrections")
+                    or correction_policy == "auto"
+                ) and getattr(context.adapter, "auto_approves_pending", True)
+                auto_reject = correction_policy == "reject"
+                if pending_files and (auto_approve or auto_reject):
+                    context.adapter.decide(order, auto_approve)
+                    self._emit_locked(
+                        run_id,
+                        (
+                            "order.correction_confirmed"
+                            if auto_approve
+                            else "order.correction_rejected"
+                        ),
+                        {
+                            "aggregate_id": order.aggregate_id,
+                            "order_id": order.order_id,
+                            "customer_id": order.customer_id,
+                            "automatic": True,
                         },
                     )
-                continue
-            future = executor.submit(self._process_one, run_id, order)
-            processing_futures[future] = order
-            submitted_at[future] = time.monotonic()
-
-        finished: set[Future[None]] = set()
-        timed_out = False
-        while len(finished) < len(processing_futures):
-            remaining = [future for future in processing_futures if future not in finished]
-            now = time.monotonic()
-            expired = [
-                future for future in remaining
-                if not future.done()
-                and now - submitted_at[future] >= self.order_timeout_seconds
-            ]
-            for future in expired:
-                finished.add(future)
-                timed_out = True
-                self._mark_order_timeout(run_id, processing_futures[future])
-            remaining = [future for future in processing_futures if future not in finished]
-            if not remaining:
-                break
-            next_deadline = min(
-                submitted_at[future] + self.order_timeout_seconds
-                for future in remaining
-            )
-            done, _ = wait(
-                remaining,
-                timeout=max(0.0, next_deadline - time.monotonic()),
-                return_when=FIRST_COMPLETED,
-            )
-            for future in done:
-                finished.add(future)
-                try:
-                    future.result()
-                except Exception:
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    raise
-        if timed_out:
-            # A Python thread cannot be killed safely; release the run and let
-            # the daemon worker continue while cancelling tasks not yet started.
-            executor.shutdown(wait=False, cancel_futures=True)
-        else:
-            executor.shutdown(wait=True)
+                elif pending_files:
+                    with self._lock:
+                        self._commit_order_locked(
+                            run,
+                            aggregate_id,
+                            order_check_to_dto(order, status="waiting_confirmation"),
+                            "order.waiting_confirmation",
+                            lambda dto: {
+                                "aggregate_id": order.aggregate_id,
+                                "order_id": order.order_id,
+                                "customer_id": order.customer_id,
+                                "order": dto,
+                                "processed": run["processed_orders"],
+                                "total": run["total_orders"],
+                                "progress": run["progress"],
+                            },
+                        )
+                    continue
+                submitted[aggregate_id] = order
+                pool.submit(
+                    aggregate_id,
+                    lambda order=order: self._process_one(run_id, order, context),
+                )
+            self._await_orders(run_id, context, pool, submitted)
+        finally:
+            pool.shutdown()
 
         with self._lock:
-            run = self.get_run(run_id)
             run["total_orders"] = inspected
             if not inspected:
                 run["progress"] = 100
@@ -856,50 +1089,171 @@ class RunCoordinator:
                 run,
                 "scan.progress",
                 {"processed": inspected, "total": inspected, "progress": 100},
+                include_orders=False,
             )
             self._settle_run_locked(run)
+
+    def _await_orders(
+        self,
+        run_id: str,
+        context: _RunContext,
+        pool: _OrderPool,
+        submitted: dict[str, OrderCheck],
+    ) -> None:
+        """Wait for queued orders; time each one from its actual start.
+
+        A queued order never times out for waiting.  A timed-out order is
+        finalized as an error and its worker is abandoned and replaced, so
+        orders that have not started still run on the remaining workers.
+        """
+        outstanding = set(submitted)
+        started: dict[str, float] = {}
+        cancel_handled = False
+        while outstanding:
+            if context.cancel_requested.is_set() and not cancel_handled:
+                cancel_handled = True
+                for key in pool.drain():
+                    outstanding.discard(key)
+            if pool.live_workers <= 0:
+                not_started = [key for key in pool.drain() if key in outstanding]
+                for key in not_started:
+                    outstanding.discard(key)
+                    self._mark_order_not_started(run_id, submitted[key], context)
+            now = time.monotonic()
+            for key in [
+                key for key in outstanding
+                if key in started and now - started[key] >= self.order_timeout_seconds
+            ]:
+                started.pop(key)
+                if self._mark_order_timeout(run_id, submitted[key], context):
+                    outstanding.discard(key)
+                    replaced = pool.abandon(key)
+                    logger.warning(
+                        "order.timeout_worker_abandoned run_id=%s order_key=%s "
+                        "replacement_started=%s",
+                        run_id,
+                        key,
+                        replaced,
+                    )
+                # Otherwise the result was accepted just before the deadline
+                # and its "done" message is on the way.
+            if not outstanding:
+                break
+            deadlines = [
+                started[key] + self.order_timeout_seconds
+                for key in outstanding
+                if key in started
+            ]
+            # Wake at least once a second to react to cancellation.
+            wait_seconds = 1.0
+            if deadlines:
+                wait_seconds = min(wait_seconds, max(0.0, min(deadlines) - time.monotonic()))
+            try:
+                message = pool.events.get(timeout=wait_seconds)
+            except queue.Empty:
+                continue
+            kind, key = message[0], message[1]
+            if kind == "started":
+                if key in outstanding:
+                    started[key] = message[2]
+            elif kind == "done":
+                outstanding.discard(key)
+                started.pop(key, None)
+                error = message[2]
+                if error is not None:
+                    raise error
 
     def _resume_order(self, run_id: str, order_id: str) -> None:
         context = self._contexts[run_id]
         if context.cancel_requested.is_set():
             self._cancel_remaining(run_id)
             return
-        self._process_one(run_id, context.orders[order_id])
+        self._process_one(run_id, context.orders[order_id], context)
         with self._lock:
-            self._settle_run_locked(self.get_run(run_id))
+            if self._contexts.get(run_id) is context:
+                self._settle_run_locked(context.run)
 
-    def _mark_order_timeout(self, run_id: str, order: OrderCheck) -> None:
+    def _mark_order_timeout(
+        self, run_id: str, order: OrderCheck, context: _RunContext
+    ) -> bool:
+        """Finalize a timed-out order; False if its result already won."""
         with self._lock:
-            run = self.get_run(run_id)
-            key = self._contexts[run_id].key_for(order)
+            if self._contexts.get(run_id) is not context:
+                return False
+            key = context.key_for(order)
+            if key in context.finished_keys or key in context.timed_out_keys:
+                return False
+            context.timed_out_keys.add(key)
             dto = order_check_to_dto(order, status="error")
             dto["processing_errors"] = [
                 f"Превышено время обработки заказа ({self.order_timeout_seconds:g} с); результат не принят."
             ]
             attach_issue_groups(dto)
-            run["orders"][key] = dto
+            run = context.run
             run["stage_label"] = "Завершение обработки после превышения времени"
-            self._update_counts(run)
-            self._save_and_emit_locked(
-                run, "order.completed", {
+            self._commit_order_locked(
+                run, key, dto, "order.completed",
+                lambda value: {
                     "aggregate_id": order.aggregate_id,
                     "order_id": order.order_id,
                     "customer_id": order.customer_id,
-                    "status": "error", "order": dto,
+                    "status": "error", "order": value,
                     "processed": run["processed_orders"],
                     "total": run["total_orders"], "progress": run["progress"],
-                }
+                },
+            )
+            self._changed.notify_all()
+            return True
+
+    def _mark_order_not_started(
+        self, run_id: str, order: OrderCheck, context: _RunContext
+    ) -> None:
+        """No worker is left (all stuck in timed-out orders)."""
+        with self._lock:
+            if self._contexts.get(run_id) is not context:
+                return
+            key = context.key_for(order)
+            context.timed_out_keys.add(key)
+            dto = order_check_to_dto(order, status="error")
+            dto["processing_errors"] = [
+                "Заказ не запущен: все обработчики заняты зависшими заказами; "
+                "повторите проверку после перезапуска сервиса."
+            ]
+            attach_issue_groups(dto)
+            run = context.run
+            self._commit_order_locked(
+                run, key, dto, "order.completed",
+                lambda value: {
+                    "aggregate_id": order.aggregate_id,
+                    "order_id": order.order_id,
+                    "customer_id": order.customer_id,
+                    "status": "error", "order": value,
+                    "processed": run["processed_orders"],
+                    "total": run["total_orders"], "progress": run["progress"],
+                },
             )
             self._changed.notify_all()
 
-    def _process_one(self, run_id: str, order: OrderCheck) -> None:
-        context = self._contexts[run_id]
+    def _process_one(
+        self, run_id: str, order: OrderCheck, context: _RunContext | None = None
+    ) -> None:
+        context = context or self._contexts.get(run_id)
+        if context is None:
+            return
         artifacts = context.adapter.process_order(order)
         with self._lock:
-            run = self.get_run(run_id)
-            current = run["orders"].get(context.key_for(order), {})
-            if any("не завершился за" in str(error) for error in current.get("processing_errors", [])):
+            key = context.key_for(order)
+            if self._contexts.get(run_id) is not context or key in context.timed_out_keys:
+                # The order was finalized as timed out (or the run ended):
+                # a late result must not overwrite that state.
+                logger.warning(
+                    "order.late_result_discarded run_id=%s order_key=%s",
+                    run_id,
+                    key,
+                )
                 return
+            context.finished_keys.add(key)
+            run = context.run
             status = _completed_order_status(order, artifacts)
             source_status = _inspection_status(order)
             pitstop = artifacts.pitstop
@@ -921,18 +1275,18 @@ class RunCoordinator:
                 dto["pitstop_skipped_reason"] = artifacts.pitstop_skipped_reason
             if artifacts.pdf_kind:
                 dto["pdf_kind"] = artifacts.pdf_kind
-            run["orders"][context.key_for(order)] = dto
-            self._update_counts(run)
             if pitstop:
                 pitstop_event = (
                     "pitstop.check_completed"
                     if pitstop.get("execution_status") == "completed"
                     else "pitstop.check_failed"
                 )
-                self._save_and_emit_locked(
+                self._commit_order_locked(
                     run,
+                    key,
+                    dto,
                     pitstop_event,
-                    {
+                    lambda value: {
                         "aggregate_id": order.aggregate_id,
                         "order_id": order.order_id,
                         "customer_id": order.customer_id,
@@ -940,18 +1294,20 @@ class RunCoordinator:
                         "source_status": source_status,
                         "pitstop_status": pitstop_status,
                         "check_id": pitstop.get("check_id"),
-                        "order": dto,
+                        "order": value,
                     },
                 )
-            self._save_and_emit_locked(
+            self._commit_order_locked(
                 run,
+                key,
+                dto,
                 "order.completed",
-                {
+                lambda value: {
                     "aggregate_id": order.aggregate_id,
                     "order_id": order.order_id,
                     "customer_id": order.customer_id,
                     "status": status,
-                    "order": dto,
+                    "order": value,
                     "processed": run["processed_orders"],
                     "total": run["total_orders"],
                     "progress": run["progress"],
@@ -987,45 +1343,47 @@ class RunCoordinator:
             self._mark_cancelled_locked(run)
             return
         waiting = run["waiting_orders"]
-        terminal = sum(
-            item["status"] in TERMINAL_ORDER_STATUSES
-            for item in run["orders"].values()
-        )
         if waiting:
             run["status"] = "waiting_confirmation"
             run["stage"] = "waiting_confirmation"
             run["stage_label"] = "Ожидает решения оператора"
             run["progress"] = self._progress(run)
-            self.repository.save_run(run)
+            self._save_run_locked(run, include_orders=False)
             if self._active_run_id == run["id"]:
                 self._active_run_id = None
                 self._schedule_next_locked()
-        elif terminal == run["total_orders"]:
+        elif run["processed_orders"] == run["total_orders"]:
             run["status"] = "completed"
             run["stage"] = "completed"
             run["stage_label"] = "Готово"
             run["progress"] = 100
             run["finished_at"] = _now()
             self._save_and_emit_locked(
-                run, "run.completed", self._summary(run)
+                run, "run.completed", self._summary(run), include_orders=False
             )
             self._release_active_locked(run["id"])
         self._changed.notify_all()
 
     def _cancel_remaining(self, run_id: str) -> None:
         with self._lock:
-            run = self.get_run(run_id)
-            for order_id, item in run["orders"].items():
-                if item["status"] not in TERMINAL_ORDER_STATUSES:
-                    item["status"] = "cancelled"
-            self._mark_cancelled_locked(run)
+            context = self._contexts.get(run_id)
+            if context is None:
+                return
+            self._mark_cancelled_locked(context.run)
 
     def _mark_cancelled_locked(self, run: dict[str, Any]) -> None:
+        for item in (run.get("orders") or {}).values():
+            if item["status"] not in TERMINAL_ORDER_STATUSES:
+                item["status"] = "cancelled"
+        context = self._contexts.get(str(run["id"]))
+        if context is not None and context.run is run:
+            _recount(context)
         run["status"] = "cancelled"
         run["stage"] = "cancelled"
         run["stage_label"] = "Остановлено"
         run["finished_at"] = _now()
         self._update_counts(run)
+        # Many orders may have changed at once: full save.
         self._save_and_emit_locked(run, "run.cancelled", self._summary(run))
         self._release_active_locked(run["id"])
 
@@ -1034,7 +1392,7 @@ class RunCoordinator:
             return
         with self._lock:
             try:
-                run = self.get_run(run_id)
+                run = self._load_run_locked(run_id)
             except RunNotFoundError:
                 return
             if run["status"] in TERMINAL_RUN_STATUSES:
@@ -1061,16 +1419,155 @@ class RunCoordinator:
         self._contexts.pop(run_id, None)
         self._schedule_next_locked()
 
+    # ------------------------------------------------------------- persistence
+
+    def _live_context(self, run: dict[str, Any]) -> _RunContext | None:
+        context = self._contexts.get(str(run.get("id")))
+        return context if context is not None and context.run is run else None
+
     def _update_counts(self, run: dict[str, Any]) -> None:
-        statuses = [item["status"] for item in run["orders"].values()]
+        context = self._live_context(run)
+        if context is not None:
+            counts = context.status_counts
+        else:
+            counts = Counter(item["status"] for item in run["orders"].values())
         run["processed_orders"] = sum(
-            status in TERMINAL_ORDER_STATUSES for status in statuses
+            counts.get(status, 0) for status in TERMINAL_ORDER_STATUSES
         )
-        run["passed_orders"] = statuses.count("passed")
-        run["warning_orders"] = statuses.count("warning")
-        run["failed_orders"] = statuses.count("error")
-        run["waiting_orders"] = statuses.count("waiting_confirmation")
+        run["passed_orders"] = counts.get("passed", 0)
+        run["warning_orders"] = counts.get("warning", 0)
+        run["failed_orders"] = counts.get("error", 0)
+        run["waiting_orders"] = counts.get("waiting_confirmation", 0)
         run["progress"] = self._progress(run)
+
+    def _commit_order_locked(
+        self,
+        run: dict[str, Any],
+        key: str,
+        dto: dict[str, Any],
+        event_type: str,
+        build_data: Callable[[dict[str, Any]], dict[str, Any]],
+        *,
+        update_counts: bool = True,
+        envelope: str | None = None,
+    ) -> RunEvent:
+        """Put one order into the aggregate, update counters, persist + emit.
+
+        On a persistence error the aggregate (order and counters) is restored,
+        so memory never runs ahead of the repository for this order.
+        """
+        orders = run["orders"]
+        had_previous = key in orders
+        previous = orders.get(key)
+        counters = {
+            name: run.get(name)
+            for name in (
+                "processed_orders", "passed_orders", "warning_orders",
+                "failed_orders", "waiting_orders", "progress",
+            )
+        }
+        context = self._live_context(run)
+        orders[key] = dto
+        if context is not None:
+            if had_previous:
+                context.status_counts[str(previous.get("status"))] -= 1
+            context.status_counts[str(dto.get("status"))] += 1
+        if update_counts:
+            self._update_counts(run)
+        try:
+            return self._save_order_and_emit_locked(
+                run, key, event_type, build_data(dto), envelope=envelope
+            )
+        except Exception:
+            if had_previous:
+                orders[key] = previous
+            else:
+                orders.pop(key, None)
+            if context is not None:
+                context.status_counts[str(dto.get("status"))] -= 1
+                if had_previous:
+                    context.status_counts[str(previous.get("status"))] += 1
+            run.update(counters)
+            raise
+
+    def _save_order_and_emit_locked(
+        self,
+        run: dict[str, Any],
+        key: str,
+        event_type: str,
+        data: dict[str, Any],
+        *,
+        envelope: str | None = None,
+    ) -> RunEvent:
+        context = self._live_context(run)
+        if not self._partial_saves:
+            return self._save_and_emit_locked(run, event_type, data)
+        if envelope is not None:
+            pass
+        elif context is None or run.get("status") not in {"running", "cancelling"}:
+            # Operator actions and stored runs: keep the envelope exact now.
+            envelope = ENVELOPE_PATCH
+        elif (
+            time.monotonic() - context.last_checkpoint
+            >= self.envelope_checkpoint_seconds
+        ):
+            envelope = ENVELOPE_FULL
+        else:
+            envelope = ENVELOPE_DEFER
+        event = self.repository.save_order_with_event(
+            run, key, event_type, data, envelope=envelope
+        )
+        if context is not None:
+            if envelope == ENVELOPE_FULL:
+                context.last_checkpoint = time.monotonic()
+            context.summary = _summary_copy(run)
+        self._log_event(event, data)
+        return event
+
+    def _save_run_locked(
+        self, run: dict[str, Any], *, include_orders: bool = True
+    ) -> None:
+        if self._partial_saves:
+            self.repository.save_run(run, include_orders=include_orders)
+        else:
+            self.repository.save_run(run)
+        self._after_run_save(run)
+
+    def _after_run_save(self, run: dict[str, Any]) -> None:
+        context = self._live_context(run)
+        if context is not None:
+            context.last_checkpoint = time.monotonic()
+            context.summary = _summary_copy(run)
+
+    def _emit_locked(
+        self, run_id: str, event_type: str, data: dict[str, Any]
+    ) -> RunEvent:
+        event = self.repository.append_event(run_id, event_type, data)
+        self._log_event(event, data)
+        return event
+
+    def _save_and_emit_locked(
+        self,
+        run: dict[str, Any],
+        event_type: str,
+        data: dict[str, Any],
+        *,
+        include_orders: bool = True,
+    ) -> RunEvent:
+        """Run-level transition: run fields, envelope and event together.
+
+        ``include_orders=False`` skips the order rows; use it only when every
+        order of ``run`` was already persisted per order.
+        """
+        if self._partial_saves:
+            event = self.repository.save_run_with_event(
+                run, event_type, data, include_orders=include_orders
+            )
+        else:
+            event = self.repository.save_run_with_event(run, event_type, data)
+        self._after_run_save(run)
+        self._log_event(event, data)
+        return event
 
     @staticmethod
     def _progress(run: dict[str, Any]) -> int:
@@ -1089,20 +1586,6 @@ class RunCoordinator:
             "warnings": run["warning_orders"],
             "failed": run["failed_orders"],
         }
-
-    def _emit_locked(
-        self, run_id: str, event_type: str, data: dict[str, Any]
-    ) -> RunEvent:
-        event = self.repository.append_event(run_id, event_type, data)
-        self._log_event(event, data)
-        return event
-
-    def _save_and_emit_locked(
-        self, run: dict[str, Any], event_type: str, data: dict[str, Any]
-    ) -> RunEvent:
-        event = self.repository.save_run_with_event(run, event_type, data)
-        self._log_event(event, data)
-        return event
 
     @staticmethod
     def _log_event(event: RunEvent, data: dict[str, Any]) -> None:
@@ -1129,6 +1612,67 @@ class RunCoordinator:
             event.id,
             fields or "-",
         )
+
+
+def _recount(context: _RunContext) -> None:
+    context.status_counts = Counter(
+        str(item.get("status")) for item in (context.run.get("orders") or {}).values()
+    )
+
+
+def _accepts_limit(method: Callable[..., Any]) -> bool:
+    try:
+        return "limit" in inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _orders_page_from_run(
+    run: dict[str, Any], *, page: int, page_size: int, status: str,
+    search: str, active_only: bool = True,
+) -> dict[str, Any]:
+    """In-memory equivalent of ``SqlRunRepository.list_orders_page``.
+
+    Filters the given aggregate and deep-copies only the requested page.
+    """
+    entries = list((run.get("orders") or {}).items())
+    terminal = {"accepted_for_print", "returned_for_rework"}
+    if active_only:
+        entries = [(key, order) for key, order in entries if order.get("status") not in terminal]
+    query = search.strip().casefold()
+    if query:
+        entries = [(key, order) for key, order in entries if query in " ".join([
+            str(order.get("order_id") or ""), str(order.get("customer_id") or ""),
+            *(str(file.get("filename") or file.get("name") or "") for file in order.get("files") or []),
+        ]).casefold()]
+    grouped: dict[str, int] = {}
+    for _key, order in entries:
+        value = str(order.get("status") or "detected")
+        grouped[value] = grouped.get(value, 0) + 1
+    counts = {
+        "all": sum(grouped.values()),
+        "passed": sum(grouped.get(value, 0) for value in ("passed", "completed")),
+        "warning": grouped.get("warning", 0),
+        "error": sum(grouped.get(value, 0) for value in ("error", "failed", "technical_error")),
+        "waiting_confirmation": grouped.get("waiting_confirmation", 0),
+    }
+    if status == "passed":
+        entries = [(key, order) for key, order in entries if order.get("status") in {"passed", "completed"}]
+    elif status == "error":
+        entries = [(key, order) for key, order in entries if order.get("status") in {"error", "failed", "technical_error"}]
+    elif status != "all":
+        entries = [(key, order) for key, order in entries if order.get("status") == status]
+    # Dict insertion order follows discovery order and keeps pagination
+    # stable as new orders arrive during an active run.
+    total = len(entries)
+    start = (page - 1) * page_size
+    page_run = _summary_copy(run)
+    page_run["orders"] = {
+        key: deepcopy(order) for key, order in entries[start:start + page_size]
+    }
+    return {"run": page_run, "items": list(page_run["orders"].values()), "page": page,
+            "page_size": page_size, "total": total,
+            "total_pages": max(1, (total + page_size - 1) // page_size), "counts": counts}
 
 
 def _pitstop_status_from_dto(pitstop: dict[str, Any] | None) -> str:

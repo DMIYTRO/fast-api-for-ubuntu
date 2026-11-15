@@ -1,11 +1,23 @@
 import json
+import os
 from pathlib import Path
 import threading
+import time
 import unittest
+from unittest import mock
 
 from processing.models import FileCheck, OrderCheck, ParsedFilename
 from services.batch_adapter import OrderArtifacts, ProcessingOptions
-from services.coordinator import AmbiguousOrderError, InvalidRunStateError, RunCoordinator, _stored_order_key
+from services import coordinator as coordinator_module
+from services.coordinator import (
+    AmbiguousOrderError,
+    InvalidRunStateError,
+    RunCoordinator,
+    RunNotFoundError,
+    _OrderPool,
+    _order_worker_count,
+    _stored_order_key,
+)
 from services.dto import order_check_to_dto
 from services.repository import InMemoryRunRepository
 
@@ -582,6 +594,276 @@ class RunCoordinatorTests(unittest.TestCase):
         self.assertEqual([event.id for event in replay], [events[-1].id])
         self.assertIn(f"id: {events[0].id}\n", events[0].as_sse())
         self.assertIn(f"event: {events[0].type}\n", events[0].as_sse())
+
+
+class SleepingAdapter(FakeAdapter):
+    """Every order takes a fixed time; selected orders block until released."""
+
+    def __init__(self, orders, *, seconds, hang=(), release=None):
+        super().__init__(orders)
+        self.seconds = seconds
+        self.hang = set(hang)
+        self.release = release or threading.Event()
+        self.hung_threads = {}
+        self.hung_returned = threading.Event()
+
+    def process_order(self, order):
+        if order.order_id in self.hang:
+            self.hung_threads[order.order_id] = threading.current_thread()
+            self.release.wait(timeout=10)
+            result = super().process_order(order)
+            self.hung_returned.set()
+            return result
+        time.sleep(self.seconds)
+        return super().process_order(order)
+
+
+class OrderTimeoutTests(unittest.TestCase):
+    def setUp(self):
+        self.repository = InMemoryRunRepository()
+        self.adapters = {}
+        self.coordinators = []
+
+    def tearDown(self):
+        for adapter in self.adapters.values():
+            if isinstance(adapter, SleepingAdapter):
+                adapter.release.set()
+        for coordinator in self.coordinators:
+            coordinator.shutdown()
+
+    def make_coordinator(self, *, workers, timeout):
+        coordinator = RunCoordinator(
+            self.repository,
+            adapter_factory=lambda options: self.adapters[options.input_path],
+            order_timeout_seconds=timeout,
+            order_workers=workers,
+        )
+        self.coordinators.append(coordinator)
+        return coordinator
+
+    def submit(self, coordinator, name):
+        return coordinator.submit(
+            ProcessingOptions(input_path=name, direction="digital")
+        )["id"]
+
+    def test_queued_orders_never_time_out_for_waiting(self):
+        # 10 orders x 0.05 s on one worker = 0.5 s of queue time, which is
+        # longer than the 0.2 s timeout; each order alone is well within it.
+        orders = [make_order(f"queued-{index}") for index in range(10)]
+        self.adapters["queue"] = SleepingAdapter(orders, seconds=0.05)
+        coordinator = self.make_coordinator(workers=1, timeout=0.2)
+        run_id = self.submit(coordinator, "queue")
+
+        completed = coordinator.wait_for(run_id, {"completed"}, timeout=10)
+
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(
+            {order["status"] for order in completed["orders"].values()}, {"passed"}
+        )
+        self.assertEqual(completed["passed_orders"], 10)
+        self.assertEqual(completed["processed_orders"], 10)
+        self.assertEqual(completed["failed_orders"], 0)
+
+    def test_stuck_order_times_out_alone_and_queued_orders_still_run(self):
+        orders = [make_order(name) for name in ("first", "hung", "second", "third")]
+        adapter = SleepingAdapter(orders, seconds=0.01, hang={"hung"})
+        self.adapters["stuck"] = adapter
+        # One worker: the remaining orders can only run if the stuck worker
+        # is replaced.
+        coordinator = self.make_coordinator(workers=1, timeout=0.2)
+        run_id = self.submit(coordinator, "stuck")
+
+        completed = coordinator.wait_for(run_id, {"completed"}, timeout=10)
+
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["orders"]["hung"]["status"], "error")
+        self.assertRegex(
+            completed["orders"]["hung"]["processing_errors"][0],
+            r"^Превышено время обработки",
+        )
+        for name in ("first", "second", "third"):
+            self.assertEqual(completed["orders"][name]["status"], "passed", name)
+        self.assertEqual(completed["processed_orders"], 4)
+        self.assertEqual(completed["failed_orders"], 1)
+        self.assertEqual(completed["passed_orders"], 3)
+        self.assertNotIn(("process", "hung"), adapter.calls)
+
+    def test_late_result_does_not_overwrite_timeout_error(self):
+        hold_second = threading.Event()
+
+        class Adapter(SleepingAdapter):
+            def process_order(self, order):
+                if order.order_id == "second":
+                    hold_second.wait(timeout=10)
+                return super().process_order(order)
+
+        adapter = Adapter(
+            [make_order("hung"), make_order("second")], seconds=0, hang={"hung"}
+        )
+        self.adapters["late"] = adapter
+        # One worker: "second" waits in the queue (no timeout while queued),
+        # then runs on the replacement worker and holds the run active while
+        # the late result of "hung" arrives.
+        coordinator = self.make_coordinator(workers=1, timeout=1.0)
+        run_id = self.submit(coordinator, "late")
+
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if coordinator.get_run(run_id)["orders"].get("hung", {}).get("status") == "error":
+                break
+            time.sleep(0.02)
+        self.assertEqual(coordinator.get_run(run_id)["status"], "running")
+
+        # The run is still active (second is held) when the late result lands.
+        adapter.release.set()
+        self.assertTrue(adapter.hung_returned.wait(timeout=5))
+        adapter.hung_threads["hung"].join(timeout=5)
+        self.assertFalse(adapter.hung_threads["hung"].is_alive())
+
+        during = coordinator.get_run(run_id)["orders"]["hung"]
+        self.assertEqual(during["status"], "error")
+        self.assertIn("Превышено время обработки", during["processing_errors"][0])
+        hold_second.set()
+        completed = coordinator.wait_for(run_id, {"completed"}, timeout=5)
+        self.assertEqual(completed["orders"]["hung"]["status"], "error")
+        self.assertEqual(completed["orders"]["second"]["status"], "passed")
+        hung_events = [
+            event for event in coordinator.events(run_id)
+            if event.data.get("order_id") == "hung"
+            and event.type in {"order.completed", "pdf.created"}
+        ]
+        self.assertEqual(
+            [(event.type, event.data["status"]) for event in hung_events],
+            [("order.completed", "error")],
+        )
+
+    def test_orders_are_marked_when_no_worker_is_left(self):
+        adapter = SleepingAdapter(
+            [make_order("hung"), make_order("waiting-for-worker")],
+            seconds=0,
+            hang={"hung"},
+        )
+        self.adapters["no-workers"] = adapter
+        with mock.patch.object(coordinator_module, "MAX_ABANDONED_ORDER_THREADS", 0):
+            coordinator = self.make_coordinator(workers=1, timeout=0.2)
+            run_id = self.submit(coordinator, "no-workers")
+            completed = coordinator.wait_for(run_id, {"completed"}, timeout=10)
+
+        self.assertEqual(completed["status"], "completed")
+        self.assertIn(
+            "Превышено время", completed["orders"]["hung"]["processing_errors"][0]
+        )
+        starved = completed["orders"]["waiting-for-worker"]
+        self.assertEqual(starved["status"], "error")
+        self.assertIn("Заказ не запущен", starved["processing_errors"][0])
+
+
+class OrderPoolTests(unittest.TestCase):
+    def test_abandoned_worker_is_replaced(self):
+        release = threading.Event()
+        ran = []
+        pool = _OrderPool(1, name="test-pool")
+        try:
+            pool.submit("stuck", lambda: release.wait(timeout=5))
+            pool.submit("next", lambda: ran.append("next"))
+            kind, key, _started = pool.events.get(timeout=2)
+            self.assertEqual((kind, key), ("started", "stuck"))
+            self.assertTrue(pool.abandon("stuck"))
+            self.assertEqual(pool.events.get(timeout=2)[:2], ("started", "next"))
+            self.assertEqual(pool.events.get(timeout=2), ("done", "next", None))
+            self.assertEqual(ran, ["next"])
+        finally:
+            release.set()
+            pool.shutdown()
+
+
+class OrderWorkerCountTests(unittest.TestCase):
+    def count(self, value, cpus=4):
+        environment = {} if value is None else {"IMAGE_MAGIC_ORDER_WORKERS": value}
+        with mock.patch.dict(os.environ, environment, clear=False), \
+                mock.patch.object(coordinator_module.os, "cpu_count", return_value=cpus):
+            if value is None:
+                os.environ.pop("IMAGE_MAGIC_ORDER_WORKERS", None)
+            return _order_worker_count()
+
+    def test_default_is_cpu_count(self):
+        self.assertEqual(self.count(None, cpus=4), 4)
+        self.assertEqual(self.count("", cpus=6), 6)
+
+    def test_configured_value_may_exceed_cpu_count_up_to_bound(self):
+        self.assertEqual(self.count("16", cpus=4), 16)
+        self.assertEqual(self.count("500", cpus=4), coordinator_module.MAX_ORDER_WORKERS)
+        self.assertEqual(self.count("0", cpus=4), 1)
+        self.assertEqual(self.count("many", cpus=4), 4)
+
+
+class CheapReadTests(unittest.TestCase):
+    def setUp(self):
+        self.repository = InMemoryRunRepository()
+        self.release = threading.Event()
+        self.started = threading.Event()
+        release, started = self.release, self.started
+
+        class Holding(FakeAdapter):
+            def process_order(self, order):
+                started.set()
+                release.wait(timeout=5)
+                return super().process_order(order)
+
+        self.adapter = Holding([make_order("one"), make_order("two")])
+        self.coordinator = RunCoordinator(
+            self.repository, adapter_factory=lambda options: self.adapter
+        )
+
+    def tearDown(self):
+        self.release.set()
+        self.coordinator.shutdown()
+
+    def test_active_run_reads_do_not_touch_the_repository_aggregate(self):
+        run_id = self.coordinator.submit(
+            ProcessingOptions(input_path="hold", direction="digital")
+        )["id"]
+        self.assertTrue(self.started.wait(timeout=2))
+        with mock.patch.object(
+            self.repository, "get_run", side_effect=AssertionError("full load")
+        ):
+            self.assertEqual(self.coordinator.active_run_id(), run_id)
+            self.assertEqual(self.coordinator._active_run_id, run_id)
+            summary = self.coordinator.get_active_run_summary()
+            self.assertEqual(summary["status"], "running")
+            self.assertEqual(summary["orders"], {})
+            self.assertEqual(self.coordinator.get_run_summary(run_id)["id"], run_id)
+            self.assertEqual(
+                set(self.coordinator.get_active_run()["orders"]), {"one", "two"}
+            )
+            self.assertTrue(self.coordinator.events(run_id))
+            page = self.coordinator.list_orders_page(
+                run_id, page=1, page_size=10, status="all", search=""
+            )
+            self.assertEqual(page["total"], 2)
+        self.release.set()
+        self.coordinator.wait_for(run_id, {"completed"}, timeout=2)
+        self.assertIsNone(self.coordinator.active_run_id())
+        self.assertIsNone(self.coordinator.get_active_run_summary())
+
+    def test_events_limit_and_missing_run(self):
+        self.release.set()
+        run_id = self.coordinator.submit(
+            ProcessingOptions(input_path="hold", direction="digital")
+        )["id"]
+        self.coordinator.wait_for(run_id, {"completed"}, timeout=2)
+        with mock.patch.object(
+            self.repository, "get_run", side_effect=AssertionError("full load")
+        ):
+            every = self.coordinator.events(run_id)
+            limited = self.coordinator.events(run_id, after_id=every[0].id, limit=2)
+        self.assertEqual([event.id for event in limited], [every[1].id, every[2].id])
+        self.assertEqual(
+            [event.id for event in self.repository.list_events(run_id, 0, limit=3)],
+            [event.id for event in every[:3]],
+        )
+        with self.assertRaises(RunNotFoundError):
+            self.coordinator.events("missing-run")
 
 
 class DtoTests(unittest.TestCase):

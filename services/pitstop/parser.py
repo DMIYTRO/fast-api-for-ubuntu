@@ -20,6 +20,14 @@ class PitStopReportError(ValueError):
     """The report is absent, malformed, or has an unsupported shape."""
 
 
+class PitStopReportUnreadableError(PitStopReportError):
+    """The report file is missing, unreadable or not valid JSON.
+
+    Distinct from a report with an unsupported shape: an absent or truncated
+    file may be a transient effect of overlapping jobs, a wrong shape is not.
+    """
+
+
 _ISSUE_SECTIONS = {
     "criticalfailures": PitStopSeverity.CRITICAL_FAILURE,
     "errors": PitStopSeverity.ERROR,
@@ -36,7 +44,9 @@ def parse_pitstop_report(path: Path) -> PitStopReport:
         with path.open(encoding="utf-8-sig") as report_file:
             payload = json.load(report_file)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise PitStopReportError(f"не удалось прочитать JSON-отчёт PitStop: {path}") from exc
+        raise PitStopReportUnreadableError(
+            f"не удалось прочитать JSON-отчёт PitStop: {path}"
+        ) from exc
     return parse_pitstop_payload(payload)
 
 

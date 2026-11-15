@@ -2,17 +2,27 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from unittest.mock import call, patch
+from unittest.mock import patch
 
 import pytest
 
-from core.inspector import ImageMetadata, TiffStructure, inspect_tiff_structure
+from core.inspector import (
+    ImageMetadata,
+    RasterInspection,
+    TiffStructure,
+    inspect_tiff_structure,
+)
 from processing.batch_processor import BatchProcessor
 from services.dto import file_check_to_dto
 
 
 def _completed(stdout: str) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(["identify"], 0, stdout, "")
+
+
+def _scene_line(index: int, channels: str, has_layers: str = "") -> str:
+    # %p, %w, %h, %x, %y, %[units], %[colorspace], %[channels], layers, %m, %f
+    return f"{index}\t10\t20\t300\t300\tPixelsPerInch\tCMYK\t{channels}\t{has_layers}\tTIFF\ta.tif\n"
 
 
 @pytest.mark.parametrize(
@@ -28,9 +38,12 @@ def test_tiff_structure_reads_composite_channels_and_ignores_layers_for_page_cou
     channels: str,
     expected_alpha: bool,
 ) -> None:
+    # A file that cannot be parsed cheaply (here: it does not exist) takes the
+    # full-decode path: composite channels with ignore-layers, then a -ping
+    # launch for the layer flags.
     with patch("core.inspector.shutil.which", return_value="/usr/bin/magick"), patch(
         "core.inspector.run_command",
-        side_effect=[_completed(f"0\t{channels}\n"), _completed("")],
+        side_effect=[_completed(_scene_line(0, channels)), _completed(_scene_line(0, channels))],
     ) as run:
         structure = inspect_tiff_structure("artwork.tif")
 
@@ -40,50 +53,34 @@ def test_tiff_structure_reads_composite_channels_and_ignores_layers_for_page_cou
         has_alpha=expected_alpha,
         channels=channels,
     )
-    assert run.call_args_list == [
-        call(
-            [
-                "/usr/bin/magick",
-                "identify",
-                "-define",
-                "tiff:ignore-layers=true",
-                "-format",
-                "%p\t%[channels]\n",
-                "artwork.tif",
-            ],
-            capture_output=True,
-            text=True,
-            errors="replace",
-            check=True,
-        ),
-        call(
-            [
-                "/usr/bin/magick",
-                "identify",
-                "-format",
-                "%p\t%[tiff:has-layers]\n",
-                "artwork.tif",
-            ],
-            capture_output=True,
-            text=True,
-            errors="replace",
-            check=True,
-        ),
+    commands = [c.args[0] for c in run.call_args_list]
+    assert commands[0][:5] == [
+        "/usr/bin/magick", "identify", "-define", "tiff:ignore-layers=true", "-format"
     ]
+    assert "-ping" not in commands[0]  # only the full decode can see alpha
+    assert commands[1][:3] == ["/usr/bin/magick", "identify", "-ping"]
+    assert "tiff:ignore-layers=true" not in commands[1]
+    assert all(
+        c.kwargs == {"capture_output": True, "text": True, "errors": "replace", "check": True}
+        for c in run.call_args_list
+    )
 
 
 def test_tiff_structure_distinguishes_layers_from_real_pages() -> None:
     with patch("core.inspector.shutil.which", return_value="/usr/bin/magick"), patch(
         "core.inspector.run_command",
-        side_effect=[_completed("0\tcmyka  5.0\n"), _completed("0\ttrue\n1\ttrue\n")],
+        side_effect=[
+            _completed(_scene_line(0, "cmyka  5.0")),
+            _completed(_scene_line(0, "cmyka  5.0", "true") + _scene_line(1, "cmyka  5.0", "true")),
+        ],
     ):
         layered = inspect_tiff_structure("layered.tiff")
 
     with patch("core.inspector.shutil.which", return_value="/usr/bin/magick"), patch(
         "core.inspector.run_command",
         side_effect=[
-            _completed("0\tcmyk  4.0\n1\tcmyk  4.0\n"),
-            _completed("0\t\n1\t\n"),
+            _completed(_scene_line(0, "cmyk  4.0") + _scene_line(1, "cmyk  4.0")),
+            _completed(_scene_line(0, "cmyk  4.0") + _scene_line(1, "cmyk  4.0")),
         ],
     ):
         multipage = inspect_tiff_structure("multipage.tiff")
@@ -117,12 +114,12 @@ def _inspect_batch(tmp_path: Path, structure: TiffStructure):
     source.write_bytes(b"deterministic mocked TIFF")
     processor = BatchProcessor(tmp_path, tmp_path / "PDF")
     with patch(
-        "processing.batch_processor.inspect_tiff_structure", return_value=structure
-    ), patch("processing.batch_processor.inspect_file", side_effect=_metadata), patch(
-        "processing.batch_processor.count_frames"
-    ) as legacy_count:
+        "processing.batch_processor.inspect_raster",
+        side_effect=lambda path: RasterInspection(
+            structure.page_count, _metadata(path), structure
+        ),
+    ):
         order = processor.inspect_orders()[0]
-    legacy_count.assert_not_called()
     return order.files[0]
 
 

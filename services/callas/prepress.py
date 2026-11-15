@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -134,9 +135,20 @@ class PrepressAnalyzer:
 
     # -------------------------------------------------------------- all
     def __call__(self, pdf: Path | str, label: str, previous: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Три независимые проверки идут параллельно (у каждой свой job_id и своя копия PDF).
+
+        Результат собирается в прежнем порядке ключей: fonts, high_ppi, black_solid.
+        Сбой одной проверки превращается в её ``{"status": "failed", ...}`` внутри самой
+        проверки и не мешает остальным; непредвиденное исключение пробрасывается после
+        завершения остальных проверок (первым по порядку, как при последовательном вызове).
+        """
         previous = previous or {}
-        return {
-            "fonts": self.check_fonts(pdf, label, previous.get("fonts")),
-            "high_ppi": self.check_high_ppi(pdf, label),
-            "black_solid": self.check_black_solid(pdf, label),
-        }
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="prepress") as pool:
+            fonts = pool.submit(self.check_fonts, pdf, label, previous.get("fonts"))
+            high_ppi = pool.submit(self.check_high_ppi, pdf, label)
+            black_solid = pool.submit(self.check_black_solid, pdf, label)
+            return {
+                "fonts": fonts.result(),
+                "high_ppi": high_ppi.result(),
+                "black_solid": black_solid.result(),
+            }

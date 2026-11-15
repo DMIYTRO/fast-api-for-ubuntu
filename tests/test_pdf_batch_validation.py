@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pymupdf
 
-from core.inspector import ImageMetadata
+from core.inspector import ImageMetadata, RasterInspection
 from processing.batch_processor import BatchProcessor
 from processing.models import FileCheck, ParsedFilename
 
@@ -124,8 +124,9 @@ def test_mixed_face_image_and_back_pdf_passes(tmp_path: Path) -> None:
     back = tmp_path / "job_(90x50)_4-4_(1-102)_back.pdf"
     _make_pdf(back, 1)
 
-    with patch("processing.batch_processor.count_frames", return_value=1), patch(
-        "processing.batch_processor.inspect_file", side_effect=_image_metadata
+    with patch(
+        "processing.batch_processor.inspect_raster",
+        side_effect=lambda path: RasterInspection(1, _image_metadata(path)),
     ):
         order = _processor(tmp_path).inspect_orders()[0]
 
