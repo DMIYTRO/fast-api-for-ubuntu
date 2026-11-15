@@ -19,6 +19,7 @@ class BlockingLifecycle:
     entered = Event()
     release = Event()
     calls: list[str] = []
+    kwargs: list[dict] = []
     calls_guard = Lock()
 
     def __init__(self, _input_dir: Path) -> None:
@@ -29,6 +30,7 @@ class BlockingLifecycle:
         cls.entered.clear()
         cls.release.clear()
         cls.calls = []
+        cls.kwargs = []
 
     @classmethod
     def _transition(cls, action: str) -> FileTransition:
@@ -43,7 +45,10 @@ class BlockingLifecycle:
             [f"/input/{action}/preview.png"],
         )
 
-    def accept_for_print(self, _order):
+    def accept_for_print(self, _order, **kwargs):
+        kwargs.pop("conflict_strategy", None)
+        with self.calls_guard:
+            type(self).kwargs.append(kwargs)
         return self._transition("print")
 
     def return_for_rework(self, _order):
@@ -222,22 +227,122 @@ class OrderWorkflowTests(unittest.TestCase):
         self.assertIn("недопустимый переход", repeated["items"][0]["message"])
         self.assertEqual(BlockingLifecycle.calls, ["print", "reject"])
 
-    def test_error_order_requires_confirmation_before_print(self):
-        self.order["status"] = "error"
-        BlockingLifecycle.release.set()
+    def _make_red_order_with_final_pdf(self):
+        pdf = Path(self.temporary_directory.name) / "order.pdf"
+        pdf.write_bytes(b"%PDF-final")
+        self.order.update(
+            status="error",
+            passed=False,
+            pdf_path=str(pdf),
+            pdf_kind="production",
+            current_pdf_revision=1,
+            errors=["превью не создано"],
+            pitstop={"execution_status": "completed", "verdict": "passed", "checked_revision": 1},
+        )
+        return pdf
 
-        rejected = self.service.prepare(self.command, "print")
-        confirmed = self.service.prepare(
-            OrderActionCommand(
-                ("1001",), run_id="run-1", confirm_failed_processing=True
-            ),
-            "print",
+    def _confirmed(self):
+        return OrderActionCommand(("1001",), run_id="run-1", confirm_failed_processing=True)
+
+    def test_yellow_order_is_printable_even_with_pitstop_error_verdict(self):
+        BlockingLifecycle.release.set()
+        self.order.update(
+            status="warning",
+            current_pdf_revision=1,
+            pitstop={"execution_status": "completed", "verdict": "error", "checked_revision": 1},
         )
 
-        self.assertEqual(rejected["items"][0]["status"], "rejected")
-        self.assertEqual(confirmed["items"][0]["status"], "prepared")
-        self.assertEqual(BlockingLifecycle.calls, ["print"])
+        result = self.service.prepare(self.command, "print")
+
+        self.assertEqual(result["items"][0]["status"], "prepared")
         self.assertEqual(self.coordinator.transitions, ["accepted_for_print"])
+
+    def test_yellow_order_with_unfinished_pitstop_stays_blocked(self):
+        self.order.update(
+            status="warning",
+            current_pdf_revision=1,
+            pitstop={"execution_status": "failed", "verdict": "error", "checked_revision": 1},
+        )
+
+        result = self.service.prepare(self.command, "print")
+
+        self.assertEqual(result["items"][0]["status"], "rejected")
+        self.assertEqual(BlockingLifecycle.calls, [])
+
+    def test_red_order_needs_explicit_confirmation_even_with_final_pdf(self):
+        self._make_red_order_with_final_pdf()
+
+        rejected = self.service.prepare(self.command, "print")["items"][0]
+
+        self.assertEqual(rejected["status"], "rejected")
+        self.assertEqual(rejected["code"], "forced_print_confirmation")
+        self.assertIn("Заказ с ошибками", rejected["message"])
+        self.assertEqual(BlockingLifecycle.calls, [])
+        self.assertEqual(self.coordinator.transitions, [])
+
+    def test_confirmed_red_order_with_final_pdf_is_sent_and_recorded(self):
+        self._make_red_order_with_final_pdf()
+        BlockingLifecycle.release.set()
+        events = []
+
+        class Repository:
+            def append_event(self, run_id, kind, data):
+                events.append((run_id, kind, data))
+
+        self.coordinator.repository = Repository()
+
+        confirmed = self.service.prepare(self._confirmed(), "print")["items"][0]
+
+        self.assertEqual(confirmed["status"], "prepared")
+        self.assertEqual(BlockingLifecycle.calls, ["print"])
+        self.assertEqual(BlockingLifecycle.kwargs, [{"allow_failed": True}])
+        self.assertEqual(self.coordinator.transitions, ["accepted_for_print"])
+        self.assertEqual(len(events), 1)
+        run_id, kind, data = events[0]
+        self.assertEqual((run_id, kind), ("run-1", "order.forced_print"))
+        self.assertTrue(data["forced"])
+        self.assertEqual(data["order_id"], "1001")
+        self.assertEqual(data["pdf_revision"], 1)
+
+    def test_confirmation_does_not_unlock_red_order_without_pdf(self):
+        self.order.update(status="error", passed=False, pdf_path=None)
+        self.order.pop("current_pdf_revision", None)
+
+        rejected = self.service.prepare(self._confirmed(), "print")["items"][0]
+
+        self.assertEqual(rejected["status"], "rejected")
+        self.assertIn("Готового итогового PDF нет", rejected["message"])
+        self.assertEqual(BlockingLifecycle.calls, [])
+
+    def test_confirmation_does_not_unlock_diagnostic_pdf(self):
+        self._make_red_order_with_final_pdf()
+        self.order["pdf_kind"] = "diagnostic"
+
+        rejected = self.service.prepare(self._confirmed(), "print")["items"][0]
+
+        self.assertEqual(rejected["status"], "rejected")
+        self.assertEqual(BlockingLifecycle.calls, [])
+
+    def test_confirmation_does_not_unlock_missing_or_unchecked_pdf(self):
+        pdf = self._make_red_order_with_final_pdf()
+        for patch in (
+            {"pitstop": {"execution_status": "failed", "verdict": "error", "checked_revision": 1}},
+            {"pitstop": {"execution_status": "completed", "verdict": "passed", "checked_revision": 1}, "current_pdf_revision": 2},
+            {"pitstop": None, "pitstop_skipped_reason": "PitStop не запускался"},
+            {"pitstop": None, "pitstop_skipped_reason": None, "current_pdf_revision": None},
+        ):
+            with self.subTest(patch=patch):
+                self._make_red_order_with_final_pdf()
+                self.order.update(patch)
+                rejected = self.service.prepare(self._confirmed(), "print")["items"][0]
+                self.assertEqual(rejected["status"], "rejected", rejected)
+        pdf.unlink()
+        self._make_red_order_with_final_pdf()
+        Path(self.order["pdf_path"]).unlink()
+        rejected = self.service.prepare(self._confirmed(), "print")["items"][0]
+        self.assertEqual(rejected["status"], "rejected")
+        self.assertEqual(BlockingLifecycle.calls, [])
+        self.assertEqual(self.coordinator.transitions, [])
 
     def test_reject_is_rejected_after_rework_without_moving_files(self):
         self.order["status"] = "returned_for_rework"

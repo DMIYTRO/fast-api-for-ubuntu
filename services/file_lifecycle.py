@@ -61,12 +61,24 @@ class FileLifecycle:
             directory.mkdir(parents=True, exist_ok=True)
 
     def accept_for_print(
-        self, order: dict[str, Any], *, conflict_strategy: str = "fail"
+        self,
+        order: dict[str, Any],
+        *,
+        conflict_strategy: str = "fail",
+        allow_failed: bool = False,
     ) -> FileTransition:
-        """Move a complete successful order into the internal print staging."""
-        if order.get("status") not in {None, "passed", "accepted_for_print"}:
+        """Move a checked order into the internal print staging.
+
+        Green and yellow orders are accepted. A red (error) order only with
+        ``allow_failed``, which the workflow sets after explicit operator confirmation.
+        """
+        allowed = {None, "passed", "warning", "accepted_for_print"}
+        if allow_failed:
+            allowed.add("error")
+        if order.get("status") not in allowed:
             raise FileLifecycleError(
-                "В печать допускается только зелёный PDF после всех обязательных проверок. "
+                "В печать допускаются зелёные и жёлтые заказы; заказ с ошибками — только после "
+                "подтверждения оператора и при наличии готового PDF. "
                 "Исправьте замечания и повторите проверку."
             )
         self.initialize()

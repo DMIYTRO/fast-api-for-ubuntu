@@ -1030,10 +1030,13 @@ class RunCoordinator:
 
                 pending_files = context.adapter.pending_files(order)
                 correction_policy = run["options"].get("correction_policy", "ask")
+                # Адаптер, где автоматический режим сам применяет малые коррекции
+                # (BatchProcessorAdapter), оставляет в ожидании только коррекции выше
+                # предела: их подтверждает оператор, а не флаг «автоматически».
                 auto_approve = (
                     run["options"].get("approve_corrections")
                     or correction_policy == "auto"
-                )
+                ) and getattr(context.adapter, "auto_approves_pending", True)
                 auto_reject = correction_policy == "reject"
                 if pending_files and (auto_approve or auto_reject):
                     context.adapter.decide(order, auto_approve)

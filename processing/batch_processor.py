@@ -1,6 +1,6 @@
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 import os
 from pathlib import Path
@@ -97,7 +97,11 @@ class BatchProcessor:
         pdf_merger: "Callable[[Sequence[Path], Path, str], None] | None" = None,
         pdf_color_converter: "Callable[[Path, Path, str], object] | None" = None,
         pdf_prepress_checker: "Callable[..., dict[str, object]] | None" = None,
+        correction_policy: str = "auto",
     ):
+        # "auto" — малые коррекции применяются сами (CLI, тесты); "ask" и "reject" —
+        # любая коррекция размера требует решения оператора (подтверждение или отказ).
+        self.correction_policy = correction_policy
         # Допечатные проверки итогового PDF (шрифты, ppi, плашка K100); None — не проверяем.
         self.pdf_prepress_checker = pdf_prepress_checker
         # Перевод RGB → CMYK итогового PDF через callas; None — не конвертируем.
@@ -319,10 +323,23 @@ class BatchProcessor:
             if not self._dimensions_match(actual, expected) and not self._dimensions_match(
                 actual, (expected[1], expected[0])
             ):
+                # PDF не масштабируется и не обрезается автоматически (в отличие от
+                # растровых файлов): подсказываем оператору, что делать.
                 check.errors.append(
                     f"PDF страница {page.page_number} имеет размер "
                     f"{actual[0]:.1f}x{actual[1]:.1f} мм; ожидается "
-                    f"{expected[0]:.1f}x{expected[1]:.1f} мм"
+                    f"{expected[0]:.1f}x{expected[1]:.1f} мм. Автоматическая коррекция "
+                    "размера для PDF не выполняется: исправьте размер макета "
+                    "(на карточке заказа доступен план Callas «Коррекция размера макета») "
+                    "или пришлите PDF нужного размера"
+                )
+            elif self._pdf_page_deviation(actual, expected) > self.profile.metadata_tolerance_mm:
+                check.warnings.append(
+                    f"PDF страница {page.page_number} имеет размер "
+                    f"{actual[0]:.1f}x{actual[1]:.1f} мм, ожидается "
+                    f"{expected[0]:.1f}x{expected[1]:.1f} мм: отклонение в пределах допуска "
+                    f"{self.tolerance_mm:.1f} мм принято без коррекции "
+                    "(для PDF коррекция размера не выполняется)"
                 )
             if page.rotation not in {0, 90, 180, 270}:
                 check.errors.append(
@@ -354,6 +371,16 @@ class BatchProcessor:
                     check.errors.append(
                         f"PDF страница {page.page_number}: неизвестная цветовая модель"
                     )
+
+    @staticmethod
+    def _pdf_page_deviation(
+        actual: tuple[float, float], expected: tuple[float, float]
+    ) -> float:
+        """Наименьшее отклонение размера страницы PDF в любой из двух ориентаций."""
+        return min(
+            max(abs(a - e) for a, e in zip(actual, target))
+            for target in (expected, (expected[1], expected[0]))
+        )
 
     @staticmethod
     def _pdf_pages(item: FileCheck) -> tuple[object, ...]:
@@ -394,6 +421,19 @@ class BatchProcessor:
         check.resample_effective_dpi = plan.effective_dpi
         check.rotation_degrees = plan.rotation_degrees
 
+        if (
+            self.correction_policy in {"ask", "reject"}
+            and plan.decision == ResampleDecision.AUTO_CORRECT
+        ):
+            # Режим не «автоматический»: даже малую коррекцию не применяем молча.
+            plan = replace(
+                plan,
+                decision=ResampleDecision.ASK_CONFIRMATION,
+                reason="пропорциональная коррекция требует подтверждения пользователя",
+            )
+            check.resample_decision = plan.decision.value
+            check.resample_reason = plan.reason
+
         crop_text = f"обрезка {plan.crop_mm[0]:.2f}x{plan.crop_mm[1]:.2f} мм"
         rotation_text = f", поворот на {plan.rotation_degrees}°" if plan.rotation_degrees else ""
         if plan.decision == ResampleDecision.AUTO_CORRECT:
@@ -421,6 +461,8 @@ class BatchProcessor:
                 "проверьте ориентацию и совмещение лица и оборота"
             )
 
+        self._plan_high_dpi_downsample(check, plan)
+
         correction_has_enough_dpi = (
             plan.decision in {ResampleDecision.AUTO_CORRECT, ResampleDecision.ASK_CONFIRMATION}
             and min(plan.effective_dpi) >= self.min_dpi
@@ -444,6 +486,27 @@ class BatchProcessor:
             check.errors.append(
                 f"цветность {color_mode[0]}-{color_mode[1]} не поддерживается; разрешены: {allowed}"
             )
+
+    def _plan_high_dpi_downsample(self, check: FileCheck, plan) -> None:
+        """Уменьшить растр с верным размером, но разрешением выше ``profile.max_dpi``.
+
+        Это не обрезка: цель — тот же размер в мм при целевом DPI профиля, поэтому
+        политика коррекции размера не применяется.
+        """
+        if not self.profile.downsample_high_dpi or plan.decision != ResampleDecision.ACCEPT:
+            return
+        if check.path.suffix.lower() == ".pdf":
+            return
+        source_dpi = max(check.dpi_x or 0.0, check.dpi_y or 0.0)
+        if source_dpi <= self.profile.max_dpi + DPI_EPSILON:
+            return
+        check.needs_resample = True
+        check.resample_target_mm = plan.target_mm
+        check.downsampled_from_dpi = source_dpi
+        check.warnings.append(
+            f"разрешение {source_dpi:.0f} DPI уменьшено до "
+            f"{self.profile.target_dpi:.0f} DPI (выше {self.profile.max_dpi:.0f} DPI)"
+        )
 
     def _dimensions_match(self, actual: tuple[float, float], expected: tuple[float, float]) -> bool:
         return all(abs(a - e) <= self.tolerance_mm for a, e in zip(actual, expected))
@@ -841,10 +904,17 @@ class BatchProcessor:
                 and (item.colorspace or "").upper() == "CMYK",
             )
             if item.needs_resample and item.resample_target_mm:
-                item.processing_actions.append({
-                    "kind": "size_correction", "target_mm": list(item.resample_target_mm),
-                    "target_dpi": self.profile.target_dpi, "rotation_degrees": item.rotation_degrees,
-                })
+                if item.downsampled_from_dpi is not None:
+                    item.processing_actions.append({
+                        "kind": "dpi_downsample", "from_dpi": item.downsampled_from_dpi,
+                        "target_dpi": self.profile.target_dpi,
+                        "target_mm": list(item.resample_target_mm),
+                    })
+                else:
+                    item.processing_actions.append({
+                        "kind": "size_correction", "target_mm": list(item.resample_target_mm),
+                        "target_dpi": self.profile.target_dpi, "rotation_degrees": item.rotation_degrees,
+                    })
             if self.strip_icc_cmyk and (item.colorspace or "").upper() == "CMYK":
                 item.processing_actions.append({"kind": "strip_icc"})
             if flattened is not None:

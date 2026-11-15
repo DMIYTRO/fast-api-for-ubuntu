@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import { useChecksStore, isOrderPrintable } from "./checks.js";
+import { useChecksStore, isOrderPrintable, isOrderForcePrintable } from "./checks.js";
 import { orderIdentity } from "./orderIdentity.js";
 import { api } from "../services/api.js";
 
@@ -272,17 +272,35 @@ describe("checks store", () => {
     expect(store.canPrint).toBe(false);
   });
 
-  it("blocks warning and error selections without an override", () => {
+  it("allows yellow orders and blocks red ones unless the server marks a final PDF as forced-printable", () => {
     const store = useChecksStore();
+    const forced = {
+      order_id: "400", status: "error", print_mode: "forced", current_pdf_revision: 1,
+      pitstop: { execution_status: "completed", verdict: "passed", checked_revision: 1 },
+      print_blockers: [{ kind: "confirm", code: "forced_print_confirmation", message: "Заказ с ошибками." }],
+    };
     store.orders = [
       { order_id: "100", status: "passed" },
       { order_id: "200", status: "error" },
       { order_id: "300", status: "warning" },
+      forced,
     ];
-    store.selected = store.orders.slice(0, 2).map(orderIdentity);
+    const pick = (...ids) => { store.selected = ids.map((id) => orderIdentity(store.orders.find((order) => order.order_id === id))); };
+    pick("100", "300");
+    expect(store.canPrint).toBe(true);
+    expect(store.printNeedsConfirmation).toBe(false);
+    pick("200");
     expect(store.canPrint).toBe(false);
-    store.selected = [orderIdentity(store.orders[2])];
+    pick("100", "200");
     expect(store.canPrint).toBe(false);
+    pick("100", "400");
+    expect(store.canPrint).toBe(true);
+    expect(store.printNeedsConfirmation).toBe(true);
+    expect(isOrderPrintable(forced)).toBe(false);
+    expect(isOrderForcePrintable(forced)).toBe(true);
+    expect(isOrderForcePrintable({ ...forced, print_mode: "blocked" })).toBe(false);
+    expect(isOrderForcePrintable({ ...forced, pitstop: { ...forced.pitstop, execution_status: "failed" } })).toBe(false);
+    expect(isOrderForcePrintable({ ...forced, current_pdf_revision: 2 })).toBe(false);
   });
 
   it("requires a clean completed PitStop result tied to the current revision", () => {
@@ -290,9 +308,15 @@ describe("checks store", () => {
       execution_status: "completed", verdict: "passed", checked_revision: 2, input_sha256: "new",
     } };
     expect(isOrderPrintable(order)).toBe(true);
-    for (const patch of [{ verdict: "warning" }, { checked_revision: 1 }, { input_sha256: "old" }]) {
+    // Вердикт PitStop не блокирует печать: он уже учтён в цвете заказа.
+    expect(isOrderPrintable({ ...order, pitstop: { ...order.pitstop, verdict: "warning" } })).toBe(true);
+    expect(isOrderPrintable({ ...order, status: "warning", pitstop: { ...order.pitstop, verdict: "error" } })).toBe(true);
+    for (const patch of [{ execution_status: "failed" }, { checked_revision: 1 }, { input_sha256: "old" }]) {
       expect(isOrderPrintable({ ...order, pitstop: { ...order.pitstop, ...patch } })).toBe(false);
     }
+    // Старые записи без хэша в ответе PitStop не должны навсегда блокировать печать зелёного заказа.
+    const { input_sha256: _omitted, ...legacyPitstop } = order.pitstop;
+    expect(isOrderPrintable({ ...order, pitstop: legacyPitstop })).toBe(true);
     expect(isOrderPrintable({ status: "passed", pitstop_required: true })).toBe(false);
     expect(isOrderPrintable({ status: "completed", pitstop_status: "technical_error" })).toBe(false);
     expect(isOrderPrintable({ status: "completed", pitstop_status: "not_checked" })).toBe(true);
@@ -497,19 +521,54 @@ describe("checks store", () => {
     });
   });
 
-  it.each(["warning", "error"])("rejects direct print and legacy override for a %s order", async (status) => {
+  it("prints a yellow order directly", async () => {
     const store = useChecksStore();
     store.activeRun = { id: "run-1" };
-    store.orders = [{ order_id: "100", status }];
+    store.orders = [{ order_id: "100", status: "warning" }];
+    store.selected = store.orders.map(orderIdentity);
+    const print = vi.spyOn(api, "preparePrint").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "orders").mockResolvedValue({ items: [] });
+
+    await store.act("print", "");
+
+    expect(print).toHaveBeenCalledWith(expect.objectContaining({ order_ids: ["100"], confirm_failed_processing: false }));
+  });
+
+  it("rejects direct print of a red order without a ready final PDF and the legacy override", async () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1" };
+    store.orders = [{ order_id: "100", status: "error", print_mode: "blocked", print_blockers: [{ kind: "file", code: "no_final_pdf", message: "Готового итогового PDF нет." }] }];
     store.selected = store.orders.map(orderIdentity);
     const print = vi.spyOn(api, "preparePrint");
     const reject = vi.spyOn(api, "prepareReject");
 
-    await expect(store.act("print", "")).rejects.toThrow("все обязательные проверки");
-    await expect(store.act("force-print", "")).rejects.toThrow("все обязательные проверки");
+    await expect(store.act("print", "", "fail", true)).rejects.toThrow("Готового итогового PDF нет");
+    await expect(store.act("force-print", "")).rejects.toThrow();
 
     expect(print).not.toHaveBeenCalled();
     expect(reject).not.toHaveBeenCalled();
-    expect(store.orders[0].status).toBe(status);
+    expect(store.orders[0].status).toBe("error");
+  });
+
+  it("sends a red order with a final PDF only after the operator confirms", async () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1" };
+    store.orders = [{
+      order_id: "100", status: "error", print_mode: "forced", current_pdf_revision: 1,
+      pitstop: { execution_status: "completed", verdict: "passed", checked_revision: 1 },
+      print_blockers: [{ kind: "confirm", code: "forced_print_confirmation", message: "Заказ с ошибками." }],
+    }];
+    store.selected = store.orders.map(orderIdentity);
+    const print = vi.spyOn(api, "preparePrint").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "orders").mockResolvedValue({ items: [] });
+
+    await expect(store.act("print", "")).rejects.toThrow("подтверждения оператора");
+    expect(print).not.toHaveBeenCalled();
+
+    await store.act("print", "", "fail", true);
+
+    expect(print).toHaveBeenCalledWith({
+      order_ids: ["100"], run_id: "run-1", conflict_strategy: "fail", confirm_failed_processing: true,
+    });
   });
 });

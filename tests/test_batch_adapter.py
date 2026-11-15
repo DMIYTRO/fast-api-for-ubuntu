@@ -114,6 +114,8 @@ def test_valid_order_runs_pdf_then_pitstop_then_production_preview(tmp_path: Pat
     assert artifacts.pitstop["verdict"] == "warning"
     assert artifacts.current_pdf_revision == 1
     assert artifacts.current_pdf_sha256 == "a" * 64
+    # UI сверяет хэш проверенного PDF с текущей ревизией заказа.
+    assert artifacts.pitstop["input_sha256"] == artifacts.current_pdf_sha256
     assert "Final" in str(artifacts.preview_paths[0])
 
 
@@ -388,3 +390,8 @@ def test_readable_raster_with_local_findings_builds_diagnostic_with_real_tools(t
     assert result.pdf_path.parent.name == "Rework"
     assert source.read_bytes() == before
     assert "не настроена" in result.pitstop_skipped_reason
+
+
+def test_adapter_does_not_auto_approve_pending_corrections():
+    # Автоматический режим: коррекции выше предела подтверждает оператор.
+    assert BatchProcessorAdapter.auto_approves_pending is False

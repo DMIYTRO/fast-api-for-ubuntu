@@ -29,7 +29,7 @@ from .coordinator import RunCoordinator
 from .domain import validate_operator_transition
 from .file_lifecycle import FileConflictError, FileLifecycle, FileLifecycleError
 from .callas_fix import read_state_file as read_callas_fix_state
-from .print_readiness import print_blockers
+from .print_readiness import is_forced_print, pitstop_ready, print_blockers
 from .pdf_routing import completed_status, pdf_root_for, route_pdf
 from .pdf_revision_validation import readable_pdf, validate_pdf_revision
 from .return_preview import custom_return_preview_path, prepare_return_preview_name
@@ -265,11 +265,15 @@ class OrderWorkflowService:
         )
 
     @staticmethod
-    def _invoke_lifecycle(method, order: dict[str, Any], conflict_strategy: str):
+    def _invoke_lifecycle(
+        method, order: dict[str, Any], conflict_strategy: str, **extra: Any
+    ):
         try:
-            return method(order, conflict_strategy=conflict_strategy)
+            return method(order, conflict_strategy=conflict_strategy, **extra)
         except TypeError as exc:
-            if "conflict_strategy" not in str(exc):
+            if "conflict_strategy" not in str(exc) and not any(
+                key in str(exc) for key in extra
+            ):
                 raise
             return method(order)
 
@@ -476,42 +480,43 @@ class OrderWorkflowService:
                         }
                     )
                     continue
-                pitstop = order.get("pitstop") or None
-                pitstop_ready = (
-                    pitstop is None
-                    or (
-                        pitstop.get("execution_status") == "completed"
-                        and pitstop.get("verdict") in {"passed", "warning"}
-                        and (
-                            order.get("current_pdf_revision") is None
-                            or pitstop.get("checked_revision")
-                            == order.get("current_pdf_revision")
-                        )
-                    )
+                order_status = order.get("status")
+                fix_state = (
+                    read_callas_fix_state(order["pdf_path"])
+                    if order.get("pdf_path")
+                    else None
+                )
+                # Красный заказ уходит в печать только с явным подтверждением оператора
+                # и только если готов итоговый PDF (см. print_readiness).
+                forced_print = (
+                    action == "print"
+                    and order_status == "error"
+                    and command.confirm_failed_processing
+                    and is_forced_print(order, fix_state)
                 )
                 if (
                     action == "print"
-                    and order.get("status")
+                    and order_status
                     not in {"accepted_for_print", "returned_for_rework"}
                     and not (
                         (
-                            order.get("status") in {"passed", "warning"}
-                            and pitstop_ready
+                            order_status in {"passed", "warning"}
+                            and pitstop_ready(order)
                         )
-                        or (
-                            command.confirm_failed_processing
-                            and order.get("status") == "error"
-                        )
+                        or forced_print
                     )
                 ):
-                    blockers = print_blockers(
-                        order,
-                        read_callas_fix_state(order["pdf_path"]) if order.get("pdf_path") else None,
-                    )
+                    blockers = print_blockers(order, fix_state)
                     add_result(
                         {
                             "order_id": order_id,
                             "status": "rejected",
+                            **(
+                                {"code": "forced_print_confirmation"}
+                                if blockers
+                                and all(item["kind"] == "confirm" for item in blockers)
+                                else {}
+                            ),
                             "message": " ".join(item["message"] for item in blockers)
                             or "Заказ не прошёл проверку.",
                             "blockers": blockers,
@@ -521,7 +526,7 @@ class OrderWorkflowService:
                 if action == "print" and order.get("pdf_path"):
                     approval = [
                         item
-                        for item in print_blockers(order, read_callas_fix_state(order["pdf_path"]))
+                        for item in print_blockers(order, fix_state)
                         if item["kind"] == "approval"
                     ]
                     if approval:
@@ -689,7 +694,7 @@ class OrderWorkflowService:
                                 order, reviewed_pitstop, reviewed_revision, reviewed_sha256 = self.recheck_pdf_revision(run, order, current_pdf)
                                 previous_order = deepcopy(order)
                                 transition_order = order
-                                if order["status"] != "passed":
+                                if order["status"] not in {"passed", "warning"}:
                                     raise FileLifecycleError("PDF изменился и не прошёл повторную проверку.")
                             reviewed_pdf = build_reviewed_layered_print_pdf(
                                 order,
@@ -713,9 +718,9 @@ class OrderWorkflowService:
                                     run, order, reviewed_pdf
                                 )
                                 previous_order = deepcopy(order)
-                                if order["status"] != "passed":
+                                if order["status"] not in {"passed", "warning"}:
                                     raise FileLifecycleError(
-                                        "Исправленный PDF требует доработки и не отправлен в печать."
+                                        "Исправленный PDF содержит ошибки и не отправлен в печать."
                                     )
                                 transition_order = order
 
@@ -728,6 +733,11 @@ class OrderWorkflowService:
                             else lifecycle.return_for_rework,
                             transition_order,
                             command.conflict_strategy,
+                            **(
+                                {"allow_failed": True}
+                                if forced_print and transition_order.get("status") == "error"
+                                else {}
+                            ),
                         )
                     except ReviewedLayeredPdfError as exc:
                         action_record.status = "failed"
@@ -845,6 +855,8 @@ class OrderWorkflowService:
                                 prepress_result, ensure_ascii=False
                             )
                         session.commit()
+                        if forced_print and previous_order.get("status") == "error":
+                            self._record_forced_print(run["id"], previous_order, aggregate_id)
                         add_result(
                             {
                                 "order_id": order_id,
@@ -886,6 +898,42 @@ class OrderWorkflowService:
                     self._release_action(stored.id)
         return {"items": results}
 
+    def _record_forced_print(
+        self, run_id: str, order: dict[str, Any], aggregate_id: str
+    ) -> None:
+        """Журнал и лог: красный заказ отправлен в печать по решению оператора."""
+        logger.warning(
+            "order.forced_print run_id=%s order_id=%s revision=%s sha256=%s",
+            run_id,
+            order.get("order_id"),
+            order.get("current_pdf_revision"),
+            order.get("current_pdf_sha256"),
+        )
+        repository = getattr(self.coordinator, "repository", None)
+        if repository is None:
+            return
+        try:
+            repository.append_event(
+                run_id,
+                "order.forced_print",
+                {
+                    "aggregate_id": aggregate_id,
+                    "order_id": order.get("order_id"),
+                    "customer_id": order.get("customer_id"),
+                    "status": "error",
+                    "forced": True,
+                    "errors": list(order.get("errors") or [])[:20],
+                    "pdf_revision": order.get("current_pdf_revision"),
+                    "pdf_sha256": order.get("current_pdf_sha256"),
+                },
+            )
+        except Exception:
+            logger.exception(
+                "order.forced_print_record_failed run_id=%s order_id=%s",
+                run_id,
+                order.get("order_id"),
+            )
+
     @staticmethod
     def _batch_print_eligible(
         order: dict[str, Any], command: OrderActionCommand
@@ -894,19 +942,16 @@ class OrderWorkflowService:
         status = str(order.get("status") or "")
         if status in {"accepted_for_print", "returned_for_rework"}:
             return False
-        pitstop = order.get("pitstop") or None
-        pitstop_ready = pitstop is None or (
-            pitstop.get("execution_status") == "completed"
-            and pitstop.get("verdict") in {"passed", "warning"}
-            and (
-                order.get("current_pdf_revision") is None
-                or pitstop.get("checked_revision")
-                == order.get("current_pdf_revision")
-            )
+        fix_state = (
+            read_callas_fix_state(order["pdf_path"]) if order.get("pdf_path") else None
         )
         if not (
-            (status in {"passed", "warning"} and pitstop_ready)
-            or (command.confirm_failed_processing and status == "error")
+            (status in {"passed", "warning"} and pitstop_ready(order))
+            or (
+                command.confirm_failed_processing
+                and status == "error"
+                and is_forced_print(order, fix_state)
+            )
         ):
             return False
         try:

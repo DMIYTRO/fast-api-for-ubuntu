@@ -14,17 +14,31 @@ export const FIX_BUTTONS = {
     label: "Удалить обтравку",
     title: "Callas: Fixup «RemoveClipPathes» удалит все обтравки, в том числе служебную обтравку по странице (замечание «Clipping objects found» создаёт Enfocus PitStop, ActionID 2079). Снятие масок может проявить скрытое содержимое: сравните «до» и «после».",
   },
+  downsample_images: {
+    label: "Уменьшить разрешение до 300 ppi",
+    title: "Callas: Fixup «Downsample image resolution to specified value»: уменьшит до 300 ppi все изображения выше 300 ppi; штриховые 1-бит проверьте по превью. Исходный PDF сохраняется, результат нужно принять или отклонить.",
+  },
 };
 
 export const CLIPPING_CODE = "action:2079";
 
 const ok = (block) => block && block.status === "ok";
 
+// Значок «ICC off»: бэкенд ставит icc_removed только если ICC/выходной профиль был и из результата
+// исчез. Неудавшаяся конвертация оставляет PDF как был, поэтому для неё значка нет.
 export function iccOff(order) {
   const info = order?.color_conversion;
-  if (!info || info.status !== "converted" || !info.icc_removed) return null;
-  const pages = (info.icc_pages || []).join(", ");
-  return `ICC-профиль снят, цвет переведён в DeviceCMYK${pages ? ` (стр. ${pages})` : ""}. Исходный ICC/Lab больше не действует: проверьте цвета по превью.`;
+  if (!info || info.status === "failed" || info.icc_removed !== true) return null;
+  const iccPages = info.icc_pages || [];
+  const remaining = new Set(info.icc_remaining_pages || []);
+  const removedPages = iccPages.filter((page) => !remaining.has(page)).join(", ");
+  const parts = [];
+  if (removedPages || !info.output_intent_removed) {
+    parts.push(`ICC-профиль снят, цвет переведён в DeviceCMYK${removedPages ? ` (стр. ${removedPages})` : ""}`);
+  }
+  if (info.output_intent_removed) parts.push("выходной профиль (OutputIntent) удалён");
+  if (remaining.size) parts.push(`ICC остался на стр. ${[...remaining].join(", ")}`);
+  return `${parts.join("; ")}. Исходный ICC/Lab больше не действует: проверьте цвета по превью.`;
 }
 
 export function fontsInfo(order) {
@@ -60,7 +74,8 @@ export function prepressNotices(order) {
   if (ok(ppi) && ppi.one_bit_message) notices.push({ key: "one_bit_ppi", level: "info", text: ppi.one_bit_message });
   const black = prepress.black_solid;
   if (ok(black) && black.message) {
-    notices.push({ key: black.detected ? "black_solid" : "black_manual", level: black.detected ? "warning" : "info", text: black.message });
+    const key = black.detected ? "black_solid" : black.fix_available ? "black_solid_minor" : "black_manual";
+    notices.push({ key, level: black.detected ? "warning" : "info", text: black.message });
   }
   const clip = clippingGroup(order);
   if (clip) notices.push({ key: "clipping", level: "warning", text: `${clip.message}. Источник: Enfocus PitStop. Снятие обтравки может проявить скрытое содержимое.` });
@@ -71,12 +86,29 @@ export function prepressNotices(order) {
   return notices;
 }
 
-export function availableFixes(order) {
+// Кнопки исправлений Callas показываются всегда (при наличии PDF) и всегда активны.
+// Проверка только подсвечивает «рекомендованные» — те, где она нашла что исправлять.
+// Если исправлять нечего, профиль сам сообщит об этом (fixups_applied == 0) и ничего не изменит.
+export const ALL_FIXES = ["fonts_to_outlines", "black_to_rich", "remove_clipping", "downsample_images"];
+export const NOT_DETECTED_NOTE = "Проверка не нашла, что исправлять: профиль можно запустить, лишнего он не изменит";
+
+export function blackFixAvailable(black) {
+  if (!black || typeof black !== "object") return false;
+  if (ok(black)) return Boolean(black.detected || black.fix_available);
+  return false;
+}
+
+export function recommendedFixes(order) {
   const fixes = [];
   const fonts = fontsInfo(order);
   if (fonts && fonts.count > fonts.notEmbedded) fixes.push("fonts_to_outlines");
-  const black = order?.prepress?.black_solid;
-  if (ok(black) && black.detected) fixes.push("black_to_rich");
+  if (blackFixAvailable(order?.prepress?.black_solid)) fixes.push("black_to_rich");
   if (clippingGroup(order)) fixes.push("remove_clipping");
+  const ppi = order?.prepress?.high_ppi;
+  if (ok(ppi) && ppi.count > 0) fixes.push("downsample_images");
   return fixes;
+}
+
+export function availableFixes() {
+  return [...ALL_FIXES];
 }

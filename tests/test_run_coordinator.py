@@ -418,6 +418,29 @@ class RunCoordinatorTests(unittest.TestCase):
         self.assertEqual(completed["orders"]["order-1"]["status"], "error")
         self.assertIn(("decide", "order-1", False), calls)
 
+    def test_auto_policy_keeps_over_limit_correction_waiting_for_operator(self):
+        calls = []
+        adapter = FakeAdapter([make_order("order-1", waiting=True)], calls=calls)
+        # BatchProcessorAdapter: в «автоматическом» режиме малые коррекции уже
+        # применены, а ожидающие подтверждения (выше предела) решает оператор.
+        adapter.auto_approves_pending = False
+        self.adapters["auto-over-limit"] = adapter
+        run = self.coordinator.submit(
+            ProcessingOptions(
+                input_path="auto-over-limit",
+                direction="digital",
+                approve_corrections=True,
+                correction_policy="auto",
+            )
+        )
+        waiting = self.coordinator.wait_for(
+            run["id"], {"waiting_confirmation"}, timeout=2
+        )
+        self.assertEqual(
+            waiting["orders"]["order-1"]["status"], "waiting_confirmation"
+        )
+        self.assertNotIn(("decide", "order-1", True), calls)
+
     def test_waiting_run_releases_worker_for_next_run(self):
         self.adapters["blocking"] = FakeAdapter(
             [make_order("order-1", waiting=True)]

@@ -48,6 +48,8 @@ class FileCheck:
     resample_crop_mm: tuple[float, float] = (0.0, 0.0)
     resample_effective_dpi: Optional[tuple[float, float]] = None
     resample_confirmed: Optional[bool] = None
+    # Исходное DPI растра, который будет уменьшен до целевого (размер был верным).
+    downsampled_from_dpi: Optional[float] = None
     rotation_degrees: int = 0
     orientation_verified: bool = False
     # PDF-specific facts.  These are optional so existing image workflows and

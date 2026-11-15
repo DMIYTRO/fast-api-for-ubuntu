@@ -92,6 +92,7 @@ class PrintAfterFixTests(CallasFixApiTests):
         pdf.unlink()
         order = self.order(run_id)
         self.assertEqual([b["code"] for b in order["print_blockers"]], ["pdf_missing"])
+        self.assertEqual(order["print_mode"], "blocked")
         self.assertEqual(order["print_blockers"][0]["kind"], "file")
         self.assertIn(pdf.name, order["print_blockers"][0]["message"])
         prepared = self.client.post("/api/orders/prepare-print", json={"run_id": run_id, "order_ids": ["1001"]})
@@ -158,3 +159,49 @@ class PrintAfterFixTests(CallasFixApiTests):
         self.assertEqual(calls[1]["fonts"]["count"], 2)  # прежний результат передан для флага «переведены»
         self.assertTrue(order["prepress"]["fonts"]["converted"])
         self.assertEqual(order["prepress"]["fonts"]["count"], 0)
+
+    def test_pitstop_checked_pdf_after_size_correction_is_printable(self):
+        """Зелёный заказ после принятой коррекции размера должен уйти в печать при включённом PitStop.
+
+        UI сверяет pitstop.input_sha256 с current_pdf_sha256; без этого поля в ответе
+        PitStop кнопка «Провести в печать» оставалась заблокированной у зелёного заказа.
+        """
+        import hashlib
+        from datetime import UTC, datetime
+
+        from services.pitstop.models import (
+            PitStopCheckResult, PitStopCounts, PitStopExecutionStatus, PitStopReport,
+        )
+
+        class FakePitStop:
+            def check_pdf(self, pdf, *, profile_id):
+                digest = hashlib.sha256(Path(pdf).read_bytes()).hexdigest()
+                return PitStopCheckResult(
+                    status=PitStopExecutionStatus.COMPLETED,
+                    profile_id=profile_id,
+                    input_pdf=Path(pdf),
+                    checked_at=datetime.now(UTC),
+                    input_sha256=digest,
+                    report=PitStopReport(counts=PitStopCounts(), pages=1),
+                    job_id=f"check-{digest[:8]}",
+                )
+
+        self.client.app.state.order_workflow.reviewed_pdf_pitstop_service_factory = (
+            lambda _input_path, _direction: FakePitStop()
+        )
+        run_id = self.make_run()
+        self.fix_and_accept(run_id)
+        order = self.order(run_id)
+        self.assertEqual(order["status"], "passed", order)
+        self.assertEqual(order["print_blockers"], [])
+        pitstop = order["pitstop"]
+        self.assertEqual((pitstop["execution_status"], pitstop["verdict"]), ("completed", "passed"))
+        self.assertEqual(pitstop["checked_revision"], order["current_pdf_revision"])
+        # Контракт для isOrderPrintable в UI: хэш проверенного PDF совпадает с хэшем текущей ревизии.
+        self.assertEqual(pitstop["input_sha256"], order["current_pdf_sha256"])
+        self.assertEqual(order["current_pdf_sha256"], hashlib.sha256(Path(order["pdf_path"]).read_bytes()).hexdigest())
+
+        prepared = self.client.post("/api/orders/prepare-print", json={"run_id": run_id, "order_ids": ["1001"]})
+        self.assertEqual(prepared.json()["items"][0]["status"], "prepared", prepared.text)
+        printed = self.wait_print(run_id)
+        self.assertEqual(printed["status"], "accepted_for_print", printed)

@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Mapping
+
+
+#: Предел автоматической коррекции размера по умолчанию, мм обрезки.
+DEFAULT_AUTO_CORRECT_MAX_MM = 4.0
+#: Жёсткий максимум коррекции с подтверждением оператора, мм обрезки.
+DEFAULT_CORRECTION_CONFIRM_MAX_MM = 10.0
+#: Разрешение растра, выше которого файл с подходящим размером уменьшается до целевого DPI.
+DEFAULT_MAX_DPI = 500.0
+#: Целевое разрешение профилей по умолчанию.
+DEFAULT_TARGET_DPI = 300.0
 
 
 @dataclass(frozen=True)
@@ -21,8 +31,19 @@ class PrePressProfile:
     bleed_mm: float = 2.0
     size_tolerance_mm: float = 0.5
     metadata_tolerance_mm: float = 0.1
-    auto_crop_mm: float = 0.5
-    confirm_crop_mm: float = 2.0
+    # Предел автоматической коррекции: максимальная обрезка (мм) при
+    # пропорциональном масштабировании «с покрытием» и центральной обрезке.
+    # Обрезка между ``auto_crop_mm`` и ``confirm_crop_mm`` требует подтверждения
+    # оператора; выше ``confirm_crop_mm`` — отклонение. Значения переопределяются
+    # через ``with_correction_limit`` (IMAGE_MAGIC_AUTO_CORRECT_MAX_MM и
+    # IMAGE_MAGIC_CORRECTION_CONFIRM_MAX_MM).
+    auto_crop_mm: float = DEFAULT_AUTO_CORRECT_MAX_MM
+    confirm_crop_mm: float = DEFAULT_CORRECTION_CONFIRM_MAX_MM
+    # Растры с подходящим размером, но разрешением выше ``max_dpi``, уменьшаются
+    # до ``target_dpi`` (без обрезки и без смены размера). Переопределяется через
+    # ``with_downsample`` (IMAGE_MAGIC_MAX_DPI и IMAGE_MAGIC_DOWNSAMPLE_HIGH_DPI_ENABLED).
+    max_dpi: float = DEFAULT_MAX_DPI
+    downsample_high_dpi: bool = True
     # Пороги красочности (callas inkcoverage): минимум и максимум
     # ``total_sum_percent`` страницы — суммы СРЕДНИХ покрытий красок по рамке,
     # не TAC. Ниже минимума — «Недолив», выше максимума — «Перелив».
@@ -43,6 +64,26 @@ class PrePressProfile:
     sheet_trim: Mapping[str, str] | None = None
     cut_lines: Mapping[str, str] | None = None
     spots: tuple[str, ...] = field(default_factory=tuple)
+
+    def with_correction_limit(
+        self, limit_mm: float, confirm_max_mm: float | None = None
+    ) -> "PrePressProfile":
+        """Профиль с пределом автокоррекции и максимумом коррекции с подтверждением."""
+        limit = max(0.0, float(limit_mm))
+        cap = self.confirm_crop_mm if confirm_max_mm is None else float(confirm_max_mm)
+        return replace(self, auto_crop_mm=limit, confirm_crop_mm=max(limit, cap))
+
+    def with_downsample(
+        self, max_dpi: float | None = None, enabled: bool | None = None
+    ) -> "PrePressProfile":
+        """Профиль с порогом DPI для автоматического уменьшения растров."""
+        return replace(
+            self,
+            max_dpi=self.max_dpi if max_dpi is None else max(float(max_dpi), self.target_dpi),
+            downsample_high_dpi=(
+                self.downsample_high_dpi if enabled is None else bool(enabled)
+            ),
+        )
 
     @property
     def size_extra_mm(self) -> float:

@@ -6,16 +6,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from config.callas_plans import CALLAS_PLANS
+from config.callas_plans import CALLAS_PLANS, DEFAULT_DOWNSAMPLE_PROFILE, with_profile_overrides
 from services.callas.fix_checks import build_post_checks
 from services.callas.prepress import PrepressAnalyzer, WARN_FONTS_PROFILE
 from services.callas_fix import CallasFixError, CallasFixService
-from tests.fake_callas import FakeCallasProcessClient, fonts_report_xml, make_separations
+from services.callas.prepress import PPI_PROFILE
+from tests.fake_callas import FakeCallasProcessClient, fonts_report_xml, make_separations, ppi_report_xml
 from tests.test_rgb_to_cmyk import make_pdf
 
 FONTS = CALLAS_PLANS["fonts_to_outlines"].profile
 BLACK = CALLAS_PLANS["black_to_rich"].profile
 CLIP = CALLAS_PLANS["remove_clipping"].profile
+DOWN = CALLAS_PLANS["downsample_images"].profile
 
 
 def fake_compare(changed: float):
@@ -34,7 +36,7 @@ def fake_compare(changed: float):
 
 
 class Env:
-    def __init__(self, tmp: Path, *, changed=0.0, k100_before=0.5, k100_after=0.0, fonts_after=()):
+    def __init__(self, tmp: Path, *, changed=0.0, k100_before=0.5, k100_after=0.0, fonts_after=(), ppi_after=()):
         self.tmp = tmp
         pdf_dir = tmp / "PDF"
         pdf_dir.mkdir()
@@ -43,6 +45,11 @@ class Env:
         self.shares = {"source": k100_before, "fixed": k100_after}
         self.fonts_after = list(fonts_after)
         self.fonts_calls = 0
+        self.ppi_after = list(ppi_after)
+        self.ppi_before = [(1, 720.0, 8)]
+
+        def ppi_handler(pdf, mode):
+            return {"xml": ppi_report_xml(self.ppi_before if Path(pdf).name == "order.pdf" else self.ppi_after)}
 
         def fonts_handler(pdf, mode):
             # Первый вызов Warn Fonts — после фикса (на результате).
@@ -58,6 +65,8 @@ class Env:
             FONTS: lambda pdf, mode: {"summary": {"fixups_applied": 2}, "exit_code": 5, "xml": "<r/>", "fixed": self.fixed},
             BLACK: lambda pdf, mode: {"summary": {"fixups_applied": 1}, "exit_code": 5, "xml": "<r/>", "fixed": self.fixed},
             CLIP: lambda pdf, mode: {"summary": {"fixups_applied": 1}, "exit_code": 5, "xml": "<r/>", "fixed": self.fixed},
+            DOWN: lambda pdf, mode: {"summary": {"fixups_applied": 0}, "exit_code": 5, "xml": "<r/>", "fixed": self.fixed},
+            PPI_PROFILE: ppi_handler,
         }
         self.client = FakeCallasProcessClient(tmp / "jobs", self.profiles, separations_factory=seps)
         self.profiles = self.client.profiles  # тесты подменяют обработчики на лету
@@ -204,3 +213,76 @@ def test_exit_code_decides_when_report_has_no_fixup_counters(env):
     env.profiles[FONTS] = lambda pdf, mode: {"exit_code": 8, "status": "errors", "xml": "<r/>"}
     state = env.run("fonts_to_outlines")
     assert state["status"] == "failed" and state["error"].startswith("Шрифты не встроены")
+
+
+def test_black_plan_profile_matches_the_deployed_fixup_file():
+    """Имя профиля плана = «Image Magic/» + файл .kfpx из callas_profiles/ (копия шары soft/callas_checks_fixups)."""
+    profile = CALLAS_PLANS["black_to_rich"].profile
+    assert profile == "Image Magic/Pure CMYK black to rich black (C60 M40 Y40 K100)"
+    folder, name = profile.split("/", 1)
+    assert folder == "Image Magic"
+    assert (Path(__file__).resolve().parent.parent / "callas_profiles" / f"{name}.kfpx").is_file()
+
+
+def test_black_post_check_warns_when_small_pure_k100_remains(tmp_path):
+    env = Env(tmp_path, k100_before=0.05, k100_after=0.03)
+    check = env.run("black_to_rich")["summary"]["post_check"]
+    assert check["level"] == "warning" and "осталась" in " ".join(check["messages"])
+
+
+# ----------------------------------------------------------------------------- downsample
+def test_downsample_plan_is_registered_without_variables():
+    plan = CALLAS_PLANS["downsample_images"]
+    assert plan.profile == DEFAULT_DOWNSAMPLE_PROFILE == "PDF fixups/Downsample image resolution to specified value"
+    assert plan.title == "Уменьшить разрешение до 300 ppi" and plan.requires_cmyk is False
+    assert "уменьшит до 300 ppi все изображения выше 300 ppi; штриховые 1-бит проверьте по превью" in plan.description
+    assert "Однобитные" in plan.warning
+
+
+def test_downsample_profile_is_configurable():
+    plans = with_profile_overrides(CALLAS_PLANS, {"downsample_images": " Custom/Downsample "})
+    assert plans["downsample_images"].profile == "Custom/Downsample"
+    assert plans["fonts_to_outlines"] is CALLAS_PLANS["fonts_to_outlines"]
+    assert CALLAS_PLANS["downsample_images"].profile == DEFAULT_DOWNSAMPLE_PROFILE
+    assert with_profile_overrides(CALLAS_PLANS, {"downsample_images": " "})["downsample_images"].profile == DEFAULT_DOWNSAMPLE_PROFILE
+
+
+def test_downsample_uses_exit_code_when_report_has_xmp_assertion(env):
+    """Профиль отдаёт код 5 и fixups_applied=0 (ошибка XMP в отчёте): результат всё равно готов."""
+    state = env.run("downsample_images")
+    assert state["status"] == "ready"
+    assert env.client.calls[0] == (DOWN, "fix")
+    check = state["summary"]["post_check"]
+    assert check["kind"] == "downsample_images" and check["level"] == "ok" and check["remaining"] == 0
+    assert "было 1, стало 0" in check["messages"][0]
+    assert "1-бит" in check["messages"][-1]
+    assert env.source.is_file()
+
+
+def test_downsample_warns_when_high_ppi_remains(tmp_path):
+    env = Env(tmp_path, ppi_after=[(2, 650.0, 8)])
+    check = env.run("downsample_images")["summary"]["post_check"]
+    assert check["level"] == "warning" and check["remaining"] == 1
+    assert any("остались: стр. 2" in message for message in check["messages"])
+
+
+def test_downsample_nothing_to_do_is_reported(env):
+    env.profiles[DOWN] = lambda pdf, mode: {"exit_code": 0, "xml": "<r/>"}
+    state = env.run("downsample_images")
+    assert state["status"] == "failed" and state["error"] == "Изображений выше 300 ppi в PDF не найдено: профиль ничего не изменил."
+
+
+def test_downsample_recheck_failure_keeps_result(env):
+    env.profiles[PPI_PROFILE] = RuntimeError("анализ недоступен")
+    state = env.run("downsample_images")
+    assert state["status"] == "ready" and state["summary"]["post_check"]["level"] == "warning"
+
+
+def test_downsample_custom_profile_is_sent_to_callas(tmp_path):
+    env = Env(tmp_path)
+    plans = with_profile_overrides(CALLAS_PLANS, {"downsample_images": "Custom/Downsample"})
+    env.profiles["Custom/Downsample"] = env.profiles[DOWN]
+    service = CallasFixService(env.client, plans, compare=fake_compare(0.0))
+    service.start(env.source, "downsample_images")
+    assert service.execute(env.source, "downsample_images")["status"] == "ready"
+    assert env.client.calls[0] == ("Custom/Downsample", "fix")

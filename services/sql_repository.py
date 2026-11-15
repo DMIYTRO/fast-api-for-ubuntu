@@ -1355,7 +1355,9 @@ class SqlRunRepository:
                         ),
                     )
                     order["pitstop"] = _pitstop_check_to_dto(
-                        latest_check, current_revision.revision_number
+                        latest_check,
+                        current_revision.revision_number,
+                        current_revision.sha256,
                     )
             for field_name in (
                 "source_status",
@@ -1470,7 +1472,7 @@ def _optional_int(value: Any) -> int | None:
 
 
 def _pitstop_check_to_dto(
-    check: PitstopCheck, revision_number: int
+    check: PitstopCheck, revision_number: int, input_sha256: str | None = None
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "check_id": check.id,
@@ -1509,6 +1511,8 @@ def _pitstop_check_to_dto(
             "xml_url": check.report_xml_path,
         },
     }
+    if input_sha256:
+        result["input_sha256"] = input_sha256
     if check.technical_error is not None:
         result["technical_error"] = check.technical_error
     return result

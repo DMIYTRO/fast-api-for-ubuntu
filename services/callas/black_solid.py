@@ -45,7 +45,9 @@ def page_shares(black: Path, cyan: Path, magenta: Path, yellow: Path) -> tuple[f
     return pure / total, dark / total
 
 
-def analyze_separations(files: dict[tuple[int, str], Path], threshold: float) -> dict[str, Any]:
+def analyze_separations(
+    files: dict[tuple[int, str], Path], threshold: float, fix_threshold: float | None = None
+) -> dict[str, Any]:
     pages: dict[int, dict[str, float]] = {}
     for page in sorted({key[0] for key in files}):
         try:
@@ -54,6 +56,9 @@ def analyze_separations(files: dict[tuple[int, str], Path], threshold: float) ->
             continue
         pure, dark = page_shares(*paths)
         pages[page] = {"k100": pure, "dark": dark}
+    # Кнопка исправления: чистый K100 есть хотя бы на малой доле страницы (порог не выше порога плашки).
+    fix_limit = threshold if fix_threshold is None else min(fix_threshold, threshold)
+    fixable = {page: v["k100"] for page, v in pages.items() if v["k100"] > 0 and v["k100"] >= fix_limit}
     solid = {page: v["k100"] for page, v in pages.items() if v["k100"] >= threshold}
     heavy_other = {
         page: v["dark"] for page, v in pages.items()
@@ -64,6 +69,11 @@ def analyze_separations(files: dict[tuple[int, str], Path], threshold: float) ->
         "detected": bool(solid),
         "share": round(max(solid.values()), 4) if solid else round(max((v["k100"] for v in pages.values()), default=0.0), 4),
         "pages": sorted(solid),
+        # Есть чистый K100, который профиль «в составной чёрный» может заменить (плашка или меньше).
+        "fix_available": bool(fixable),
+        "fix_threshold": fix_limit,
+        "fix_pages": sorted(fixable),
+        "fix_share": round(max(fixable.values()), 4) if fixable else 0.0,
         "page_shares": {str(page): round(v["k100"], 4) for page, v in sorted(pages.items())},
         # Тёмное поле есть, но это не чистый K100 (составной чёрный или растр).
         "manual_check": bool(heavy_other) and not solid,
@@ -71,12 +81,14 @@ def analyze_separations(files: dict[tuple[int, str], Path], threshold: float) ->
     }
 
 
-def detect_black_solid(client: Any, pdf: Path | str, threshold: float, label: str) -> dict[str, Any]:
+def detect_black_solid(
+    client: Any, pdf: Path | str, threshold: float, label: str, *, fix_threshold: float | None = None
+) -> dict[str, Any]:
     source = Path(pdf)
     job_id = deterministic_job_id(f"sep-{label}", str(source), uuid.uuid4().hex[:12])
     try:
         files = client.separations(source, resolution=50, job_id=job_id)
-        return {"status": "ok", **analyze_separations(files, threshold)}
+        return {"status": "ok", **analyze_separations(files, threshold, fix_threshold)}
     finally:
         try:
             client.delete(job_id)

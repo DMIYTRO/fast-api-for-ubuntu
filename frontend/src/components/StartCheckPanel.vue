@@ -12,6 +12,12 @@ const browsing = ref(false);
 const folderData = ref(null);
 const folderError = ref("");
 const profiles = computed(() => props.config?.profiles || [{ id: "digital", name: "Цифровая печать" }, { id: "offset", name: "Офсетная печать" }]);
+function mm(value, fallback) {
+  const number = Number(value ?? fallback);
+  return String(Number.isFinite(number) ? number : fallback).replace(".", ",");
+}
+const correctionLimit = computed(() => mm(props.config?.auto_correct_max_mm, 4));
+const correctionCap = computed(() => mm(props.config?.correction_confirm_max_mm, 10));
 watch(() => props.config, (value) => {
   if (!form.input_path) form.input_path = value?.default_input_path || "";
 }, { immediate: true });
@@ -45,8 +51,8 @@ function submit() { emit("start", { ...form, approve_corrections: form.correctio
             <label class="check"><input v-model="form.copy_failures" type="checkbox"> Копировать проблемные файлы</label>
           </fieldset>
           <fieldset><legend>Спорные коррекции</legend>
-            <label class="radio"><input v-model="form.correction_policy" value="ask" type="radio"> Запрашивать решение</label>
-            <label class="radio"><input v-model="form.correction_policy" value="auto" type="radio"> Автоматически принимать малые коррекции</label>
+            <label class="radio"><input v-model="form.correction_policy" value="ask" type="radio"> Запрашивать решение по каждой коррекции</label>
+            <label class="radio"><input v-model="form.correction_policy" value="auto" type="radio"> Автоматически принимать малые коррекции (до {{ correctionLimit }} мм обрезки; до {{ correctionCap }} мм — с подтверждением)</label>
             <label class="radio"><input v-model="form.correction_policy" value="reject" type="radio"> Не применять коррекции</label>
           </fieldset>
           <div class="safe-note">Исходные файлы не изменяются. Результаты сохраняются в отдельные папки.</div>

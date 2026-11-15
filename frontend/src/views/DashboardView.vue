@@ -16,10 +16,10 @@ const auth = useAuthStore(); const checks = useChecksStore(); const router = use
 const actionBusy = ref(false); const toast = ref("");
 const showBackToTop = ref(false);
 async function logout() { await auth.logout(); router.replace("/login"); }
-async function act(action, comment) {
+async function act(action, comment, confirmFailed = false) {
   actionBusy.value = true;
   try {
-    const result = await checks.act(action, comment);
+    const result = await checks.act(action, comment, "fail", confirmFailed);
     const failed = result.filter((item) => !["prepared", "pending", "conflict"].includes(item.status));
     if (failed.length) {
       const first = failed[0];
@@ -40,7 +40,7 @@ async function resolveConflict(strategy) {
   if (!prompt) return;
   actionBusy.value = true;
   try {
-    await checks.act(prompt.action, prompt.comment, strategy);
+    await checks.act(prompt.action, prompt.comment, strategy, Boolean(prompt.confirmFailed));
     checks.conflictPrompt = null;
     toast.value = strategy === "replace" ? "Существующий файл заменён" : "Файл сохранён под новым именем";
   } catch (error) {
@@ -96,7 +96,7 @@ onBeforeUnmount(() => {
     <div v-else class="loading-page"><span class="spinner"></span> Загружаем рабочий пульт…</div>
   </main>
   <StartCheckPanel :open="checks.drawerOpen" :config="checks.config" :busy="checks.loading" @close="checks.drawerOpen = false" @start="checks.start" />
-  <ActionBar :count="checks.selected.length" :selected-ids="checks.selected" :comments="checks.returnComments" :can-print="checks.canPrint" :block-reason="checks.printBlockReason" :busy="actionBusy" :reasons="checks.config?.return_reasons || []" @clear="checks.clearSelection" @action="act" />
+  <ActionBar :count="checks.selected.length" :selected-ids="checks.selected" :comments="checks.returnComments" :can-print="checks.canPrint" :needs-print-confirmation="checks.printNeedsConfirmation" :block-reason="checks.printBlockReason" :busy="actionBusy" :reasons="checks.config?.return_reasons || []" @clear="checks.clearSelection" @action="act" />
   <div v-if="checks.conflictPrompt" class="confirm-backdrop">
     <section class="confirm-card">
       <h3>Файл уже существует</h3>

@@ -7,7 +7,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+
+
+#: Стандартный профиль callas; имя меняется через IMAGE_MAGIC_CALLAS_DOWNSAMPLE_PROFILE.
+DEFAULT_DOWNSAMPLE_PROFILE = "PDF fixups/Downsample image resolution to specified value"
 
 
 @dataclass(frozen=True)
@@ -86,7 +90,33 @@ CALLAS_PLANS: dict[str, CallasPlan] = {
         ),
         no_change_message="Обтравок в PDF не найдено: профиль ничего не изменил.",
     ),
+    "downsample_images": CallasPlan(
+        key="downsample_images",
+        title="Уменьшить разрешение до 300 ppi",
+        profile=DEFAULT_DOWNSAMPLE_PROFILE,
+        description=(
+            "Стандартный Fixup callas «Downsample image resolution to specified value» (без переменных): "
+            "уменьшит до 300 ppi все изображения выше 300 ppi; штриховые 1-бит проверьте по превью. "
+            "Изображения не выше 300 ppi не меняются. Исходный PDF сохраняется."
+        ),
+        warning=(
+            "Профиль не различает порог 500 ppi: пересэмплируется всё, что выше 300 ppi. "
+            "Однобитные (штриховые) растры тоже могут стать мягче: проверьте их по превью "
+            "до и после, прежде чем принимать результат."
+        ),
+        no_change_message="Изображений выше 300 ppi в PDF не найдено: профиль ничего не изменил.",
+    ),
 }
+
+
+def with_profile_overrides(
+    plans: dict[str, CallasPlan], overrides: dict[str, str]
+) -> dict[str, CallasPlan]:
+    """Копия каталога, где у планов из ``overrides`` (ключ → имя профиля) заменён профиль callas."""
+    return {
+        key: replace(plan, profile=overrides[key].strip()) if overrides.get(key, "").strip() else plan
+        for key, plan in plans.items()
+    }
 
 
 def get_plan(key: str) -> CallasPlan | None:

@@ -7,6 +7,13 @@ import os
 import math
 from pathlib import Path
 
+from config.profiles import (
+    DEFAULT_AUTO_CORRECT_MAX_MM,
+    DEFAULT_CORRECTION_CONFIRM_MAX_MM,
+    DEFAULT_MAX_DPI,
+    DEFAULT_TARGET_DPI,
+)
+
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 # Временный пароль для локального тестового сервера. Удалить после тестового этапа.
@@ -37,6 +44,36 @@ def _env_optional_float(name: str) -> float | None:
         raise ValueError(f"{name} должен быть числом (процент), получено: {value!r}") from exc
 
 
+def _env_correction_limit(name: str, default: float = DEFAULT_AUTO_CORRECT_MAX_MM) -> float:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = float(value.strip().replace(",", "."))
+        if not math.isfinite(parsed) or parsed < 0:
+            raise ValueError("invalid limit")
+        return parsed
+    except ValueError as exc:
+        raise ValueError(
+            f"{name} должен быть неотрицательным числом (мм), получено: {value!r}"
+        ) from exc
+
+
+def _env_max_dpi(name: str, default: float = DEFAULT_MAX_DPI) -> float:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = float(value.strip().replace(",", "."))
+        if not math.isfinite(parsed) or parsed < DEFAULT_TARGET_DPI:
+            raise ValueError("invalid dpi")
+        return parsed
+    except ValueError as exc:
+        raise ValueError(
+            f"{name} должен быть числом DPI не меньше {DEFAULT_TARGET_DPI:g}, получено: {value!r}"
+        ) from exc
+
+
 def _env_bool(name: str, default: bool) -> bool:
     value = os.environ.get(name)
     if value is None:
@@ -49,7 +86,11 @@ def _env_bool(name: str, default: bool) -> bool:
 # по-прежнему можно задать через IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_PROFILE.
 DEFAULT_RGB_TO_CMYK_PROFILE = "Image Magic/NEW_Convert color to 4c for digital printing"
 DEFAULT_BLACK_SOLID_AREA_THRESHOLD = 0.25
+# Нижний порог доступности кнопки «в составной чёрный»: доля площади страницы с чистым K100.
+DEFAULT_BLACK_SOLID_FIX_AREA_THRESHOLD = 0.01
 DEFAULT_HIGH_PPI_LIMIT = 500.0
+# Стандартный fixup callas: уменьшает до 300 ppi всё, что выше 300 ppi (переменных не принимает).
+DEFAULT_DOWNSAMPLE_PROFILE = "PDF fixups/Downsample image resolution to specified value"
 
 
 def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
@@ -115,6 +156,13 @@ class Settings:
     # Переопределение порогов красочности профиля (None — из профиля направления).
     ink_min_percent: float | None = None
     ink_max_percent: float | None = None
+    # Предел автоматической коррекции размера (мм обрезки), IMAGE_MAGIC_AUTO_CORRECT_MAX_MM.
+    auto_correct_max_mm: float = DEFAULT_AUTO_CORRECT_MAX_MM
+    # Жёсткий максимум коррекции с подтверждением оператора (выше — отклонение).
+    correction_confirm_max_mm: float = DEFAULT_CORRECTION_CONFIRM_MAX_MM
+    # Растры с верным размером и разрешением выше max_dpi уменьшаются до целевого DPI.
+    downsample_high_dpi_enabled: bool = True
+    max_dpi: float = DEFAULT_MAX_DPI
     strip_icc_cmyk: bool = False
     # Автоматический перевод RGB → CMYK итогового PDF процесс-планом callas.
     callas_rgb_to_cmyk_enabled: bool = False
@@ -123,7 +171,9 @@ class Settings:
     # растры выше предела ppi, крупная плашка 100% K (цветоделения).
     callas_prepress_enabled: bool = True
     black_solid_area_threshold: float = DEFAULT_BLACK_SOLID_AREA_THRESHOLD
+    black_solid_fix_area_threshold: float = DEFAULT_BLACK_SOLID_FIX_AREA_THRESHOLD
     high_ppi_limit: float = DEFAULT_HIGH_PPI_LIMIT
+    callas_downsample_profile: str = DEFAULT_DOWNSAMPLE_PROFILE
     callas_request_timeout_seconds: float = 30.0
     callas_job_timeout_seconds: float = 600.0
     callas_poll_interval_seconds: float = 0.2
@@ -157,6 +207,16 @@ class Settings:
         identity_value = os.environ.get(
             "IMAGE_MAGIC_PITSTOP_IDENTITY_FILE", ""
         ).strip()
+        auto_correct_max_mm = _env_correction_limit("IMAGE_MAGIC_AUTO_CORRECT_MAX_MM")
+        correction_confirm_max_mm = _env_correction_limit(
+            "IMAGE_MAGIC_CORRECTION_CONFIRM_MAX_MM",
+            max(DEFAULT_CORRECTION_CONFIRM_MAX_MM, auto_correct_max_mm),
+        )
+        if correction_confirm_max_mm < auto_correct_max_mm:
+            raise ValueError(
+                "IMAGE_MAGIC_CORRECTION_CONFIRM_MAX_MM не может быть меньше "
+                f"IMAGE_MAGIC_AUTO_CORRECT_MAX_MM ({auto_correct_max_mm:g} мм)"
+            )
         return cls(
             database_url=os.environ.get(
                 "IMAGE_MAGIC_DATABASE_URL", f"sqlite:///{default_db}"
@@ -299,6 +359,12 @@ class Settings:
             ),
             ink_min_percent=_env_optional_float("IMAGE_MAGIC_INK_MIN_PERCENT"),
             ink_max_percent=_env_optional_float("IMAGE_MAGIC_INK_MAX_PERCENT"),
+            auto_correct_max_mm=auto_correct_max_mm,
+            correction_confirm_max_mm=correction_confirm_max_mm,
+            downsample_high_dpi_enabled=_env_bool(
+                "IMAGE_MAGIC_DOWNSAMPLE_HIGH_DPI_ENABLED", True
+            ),
+            max_dpi=_env_max_dpi("IMAGE_MAGIC_MAX_DPI"),
             strip_icc_cmyk=_env_bool("IMAGE_MAGIC_STRIP_ICC_CMYK", False),
             callas_rgb_to_cmyk_enabled=_env_bool(
                 "IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_ENABLED", False
@@ -312,6 +378,14 @@ class Settings:
                 "IMAGE_MAGIC_BLACK_SOLID_AREA_THRESHOLD",
                 DEFAULT_BLACK_SOLID_AREA_THRESHOLD, minimum=0.0, maximum=1.0,
             ),
+            black_solid_fix_area_threshold=_env_float(
+                "IMAGE_MAGIC_BLACK_SOLID_FIX_AREA_THRESHOLD",
+                DEFAULT_BLACK_SOLID_FIX_AREA_THRESHOLD, minimum=0.0, maximum=1.0,
+            ),
+            callas_downsample_profile=os.environ.get(
+                "IMAGE_MAGIC_CALLAS_DOWNSAMPLE_PROFILE", ""
+            ).strip()
+            or DEFAULT_DOWNSAMPLE_PROFILE,
             high_ppi_limit=_env_float(
                 "IMAGE_MAGIC_HIGH_PPI_LIMIT", DEFAULT_HIGH_PPI_LIMIT, minimum=72.0, maximum=5000.0
             ),

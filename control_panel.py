@@ -64,7 +64,7 @@ from services.sborka_integration import (
     build_sender,
 )
 from services.callas_fix import comparison_payload as callas_fix_payload, read_state_file as read_callas_fix_state
-from services.print_readiness import print_blockers
+from services.print_readiness import print_blockers, print_mode
 from services.ftp_preview_uploader import build_ftp_preview_uploader
 from services.return_preview import CUSTOM_PREVIEWS_RELATIVE_PATH, custom_return_preview_path
 from core.preview_cache import full_preview_cache_path, preview_media_type, preview_variants
@@ -224,8 +224,10 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
             if fix_state:
                 order["callas_fix"] = {"comparison": callas_fix_payload(fix_state, fix_base)}
             order["print_blockers"] = print_blockers(order, fix_state)
+            order["print_mode"] = print_mode(order["print_blockers"])
         elif input_path:
             order["print_blockers"] = print_blockers(order)
+            order["print_mode"] = print_mode(order["print_blockers"])
             # Итогового PDF нет (например, ошибка размера): исправлять можно исходные PDF.
             input_root = input_path.resolve()
             for index, entry in enumerate(order.get("files") or []):
@@ -647,6 +649,7 @@ def _callas_fix_service(settings: Settings):
     """Сервис исправления Callas или ``None``, если он выключен или не настроен."""
     if not (settings.callas_process_enabled and settings.callas_url):
         return None
+    from config.callas_plans import CALLAS_PLANS, with_profile_overrides
     from services.callas_fix import CallasFixService
 
     from services.callas.fix_checks import build_post_checks
@@ -657,8 +660,12 @@ def _callas_fix_service(settings: Settings):
         client,
         high_ppi_limit=settings.high_ppi_limit,
         black_solid_threshold=settings.black_solid_area_threshold,
+        black_solid_fix_threshold=settings.black_solid_fix_area_threshold,
     )
-    return CallasFixService(client, post_checks=build_post_checks(analyzer))
+    plans = with_profile_overrides(
+        CALLAS_PLANS, {"downsample_images": settings.callas_downsample_profile}
+    )
+    return CallasFixService(client, plans, post_checks=build_post_checks(analyzer))
 
 
 def _configure_callas_pdf_renderer(settings: Settings) -> None:
@@ -718,6 +725,7 @@ def _callas_prepress_checker(settings: Settings, client=None):
         client or _shared_callas_client(settings),
         high_ppi_limit=settings.high_ppi_limit,
         black_solid_threshold=settings.black_solid_area_threshold,
+        black_solid_fix_threshold=settings.black_solid_fix_area_threshold,
     )
 
 
@@ -823,6 +831,10 @@ def _pitstop_adapter_factory(settings: Settings):
             processor_factory=processor_factory,
             pitstop_service=service,
             ink_coverage_checker=ink_checker,
+            correction_limit_mm=settings.auto_correct_max_mm,
+            correction_confirm_max_mm=settings.correction_confirm_max_mm,
+            max_dpi=settings.max_dpi,
+            downsample_high_dpi=settings.downsample_high_dpi_enabled,
             order_info_fetcher=(
                 build_order_info_fetcher(
                     settings.sborka_api_dir,
@@ -853,6 +865,10 @@ def _default_adapter_factory(settings: Settings):
         processor_factory=processor_factory,
         order_info_fetcher=fetcher,
         ink_coverage_checker=ink_checker,
+        correction_limit_mm=settings.auto_correct_max_mm,
+        correction_confirm_max_mm=settings.correction_confirm_max_mm,
+        max_dpi=settings.max_dpi,
+        downsample_high_dpi=settings.downsample_high_dpi_enabled,
     )
 
 
@@ -1068,6 +1084,8 @@ def create_app(
                 {"id": key, "name": value.name} for key, value in PROFILES.items()
             ],
             "return_reasons": load_return_reasons(),
+            "auto_correct_max_mm": settings.auto_correct_max_mm,
+            "correction_confirm_max_mm": settings.correction_confirm_max_mm,
         }
 
     @application.get("/api/folders", dependencies=[Depends(protected)])
