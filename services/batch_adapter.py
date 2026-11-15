@@ -309,17 +309,21 @@ class BatchProcessorAdapter:
         result.pdf_path = pdf_path
         result.pdf_kind = "diagnostic"
         result.current_pdf_revision = 1
-        result.current_pdf_sha256 = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+        # The digest of this revision is computed once: PitStop reports the
+        # sha256 of the very file it read, so it is hashed here only when
+        # PitStop is not going to supply it (not configured, or it failed).
         if self.ink_coverage_checker is not None:
             result.ink_coverage = self._check_ink_coverage(order, pdf_path)
         if self.pitstop_service is None:
             result.pitstop_skipped_reason = "PitStop не запускался: проверка PitStop не настроена."
+            result.current_pdf_sha256 = _sha256_file(pdf_path)
             return
         try:
             pitstop_result = self.pitstop_service.check_pdf(
                 pdf_path, profile_id=self.options.direction
             )
         except Exception as exc:
+            result.current_pdf_sha256 = _sha256_file(pdf_path)
             logger.exception("order.diagnostic_pitstop_failed order_id=%s", order.order_id)
             result.pitstop_skipped_reason = f"PitStop не завершил проверку: {type(exc).__name__}: {exc}"
             result.pitstop = {"execution_status": "failed", "verdict": "error", "technical_error": str(exc)}
@@ -412,12 +416,18 @@ class BatchProcessorAdapter:
             result.pdf_path = pdf_path
             result.pdf_kind = "production"
             result.current_pdf_revision = 1
-            result.current_pdf_sha256 = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
 
             if self.pitstop_service is not None:
-                pitstop_result = self.pitstop_service.check_pdf(
-                    pdf_path, profile_id=self.options.direction
-                )
+                # PitStop returns the sha256 of the exact file it checked, so
+                # the PDF is not read a second time here; if the check fails
+                # the digest is still recorded for the revision.
+                try:
+                    pitstop_result = self.pitstop_service.check_pdf(
+                        pdf_path, profile_id=self.options.direction
+                    )
+                except Exception:
+                    result.current_pdf_sha256 = _sha256_file(pdf_path)
+                    raise
                 result.pitstop = _pitstop_result_to_dto(
                     pitstop_result, checked_revision=1
                 )
@@ -460,6 +470,7 @@ class BatchProcessorAdapter:
                         )
                         create_source_previews()
             else:
+                result.current_pdf_sha256 = _sha256_file(pdf_path)
                 # Without PitStop there is no production PDF revision to
                 # render, so source previews are the single compact variant.
                 create_source_previews()
@@ -507,6 +518,15 @@ class BatchProcessorAdapter:
             key=lambda item: 0 if item.parsed and item.parsed.side == "face" else 1,
         )
         return [item.path.stem for item in ordered]
+
+
+def _sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """Stream a file through SHA-256 without loading it into memory."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _ink_coverage_failed_dto(error: str) -> dict[str, Any]:

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pymupdf
 
-from core.inspector import ImageMetadata
+from core.inspector import ImageMetadata, RasterInspection
 from processing.batch_processor import BatchProcessor
 from tests.fake_callas import FakeCallasMerger
 
@@ -94,8 +94,9 @@ def test_mixed_face_image_and_back_pdf_merges_in_order(tmp_path: Path) -> None:
     _make_pdf(back, 1)
     processor = _processor(tmp_path)
 
-    with patch("processing.batch_processor.count_frames", return_value=1), patch(
-        "processing.batch_processor.inspect_file", side_effect=_image_metadata
+    with patch(
+        "processing.batch_processor.inspect_raster",
+        side_effect=lambda path: RasterInspection(1, _image_metadata(path)),
     ):
         orders = processor.inspect_orders()
 

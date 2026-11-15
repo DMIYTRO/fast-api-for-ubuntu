@@ -90,6 +90,25 @@ def completed_status(
     return "passed"
 
 
+def _link_or_copy(source: Path, target: Path) -> None:
+    """Make *target* a second name for *source*'s bytes, copying only if needed.
+
+    A hard link on the same filesystem costs no I/O however large the PDF is.
+    The source is renamed away right after (see ``route_pdf``) and never
+    rewritten in place, so sharing the inode is safe.  Symlinks are copied so
+    that the result never aliases a file outside the PDF folders; a failing
+    ``os.link`` (other filesystem, SMB/FAT without hard links, permissions)
+    falls back to the byte copy.
+    """
+    if not source.is_symlink():
+        try:
+            os.link(source, target)
+            return
+        except OSError:
+            pass
+    shutil.copyfile(source, target)
+
+
 def route_pdf(
     pdf_path: Path | str,
     status: str,
@@ -115,7 +134,7 @@ def route_pdf(
     with tempfile.TemporaryDirectory(prefix=".pdf-route-", dir=root) as backup_dir:
         temporary = Path(backup_dir) / "candidate.pdf"
         try:
-            shutil.copyfile(source, temporary)
+            _link_or_copy(source, temporary)
             candidates = [source, destination, root / destination.name]
             candidates.extend(root / folder / destination.name for folder in STATUS_FOLDERS)
             seen: set[Path] = set()

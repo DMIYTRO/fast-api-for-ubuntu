@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.inspector import ImageMetadata
+from core.inspector import ImageMetadata, RasterInspection
 from processing.batch_processor import BatchProcessor
 from processing.filename_parser import parse_filename
 from control_panel import _find_order, _orders_from_run
@@ -148,9 +148,8 @@ class OrderIdentityTests(unittest.TestCase):
             )
             processor = BatchProcessor(root, root / "PDF")
             with patch(
-                "processing.batch_processor.count_frames", return_value=1
-            ), patch(
-                "processing.batch_processor.inspect_file", return_value=metadata
+                "processing.batch_processor.inspect_raster",
+                return_value=RasterInspection(1, metadata),
             ):
                 orders = processor.inspect_orders()
 
