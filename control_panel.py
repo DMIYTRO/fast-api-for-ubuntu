@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ from urllib.parse import quote
 import resource
 import shutil
 import time
+import threading
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -22,6 +24,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import desc, func, select
+from sqlalchemy.orm import joinedload, selectinload
 
 from config.profiles import DEFAULT_DIRECTION, PROFILES
 from core.return_reasons import load_return_reasons
@@ -150,6 +153,50 @@ def _get_run_or_404(coordinator: RunCoordinator, run_id: str) -> dict[str, Any]:
         return coordinator.get_run(run_id)
     except RunNotFoundError as exc:
         raise APIError(404, "run_not_found", "Запуск проверки не найден.") from exc
+
+
+def _get_run_summary_or_404(coordinator: RunCoordinator, run_id: str) -> dict[str, Any]:
+    """Cheap existence/status read: the run row without its orders."""
+    try:
+        return coordinator.get_run_summary(run_id)
+    except RunNotFoundError as exc:
+        raise APIError(404, "run_not_found", "Запуск проверки не найден.") from exc
+
+
+# Upper bound of events read and sent to a client per SSE iteration.
+SSE_EVENT_BATCH = 500
+SSE_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
+
+def _parse_event_cursor(*values: str | None) -> int:
+    """Largest valid non-negative event id among the given raw values (else 0)."""
+    cursor = 0
+    for value in values:
+        try:
+            cursor = max(cursor, int(value)) if value not in (None, "") else cursor
+        except (TypeError, ValueError):
+            continue
+    return cursor
+
+
+def _list_events_batch(
+    coordinator: RunCoordinator, run_id: str, after_id: int, limit: int
+) -> list[Any]:
+    """Events after ``after_id`` read straight from the repository.
+
+    ``RunCoordinator.events`` loads the entire run aggregate before every read,
+    which is far too heavy for a per-second poll, so the poll talks to the
+    repository. A ``limit`` is passed only when the repository supports it;
+    otherwise the caller receives the full list and sends it in chunks.
+    """
+    lister = coordinator.repository.list_events
+    try:
+        supports_limit = "limit" in inspect.signature(lister).parameters
+    except (TypeError, ValueError):
+        supports_limit = False
+    if supports_limit:
+        return list(lister(run_id, after_id, limit=limit))
+    return list(lister(run_id, after_id))
 
 
 def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
@@ -574,17 +621,38 @@ def _callas_fix_order(
     return run, order, source
 
 
+_CALLAS_CLIENTS: dict[Any, Any] = {}
+_CALLAS_CLIENTS_LOCK = threading.Lock()
+
+
+def _shared_callas_client(settings: Settings):
+    """One CallasClient per callas configuration for the whole process.
+
+    The client's concurrency limit (``callas_max_concurrent_jobs``) is a semaphore
+    inside the instance; separate instances for processing, ink coverage, merge,
+    render and fixes would each get their own slots and exceed the global limit.
+    """
+    from services.callas import CallasClient
+    from services.callas.client import CallasConfig
+
+    config = CallasConfig.from_settings(settings)
+    with _CALLAS_CLIENTS_LOCK:
+        client = _CALLAS_CLIENTS.get(config)
+        if client is None:
+            client = _CALLAS_CLIENTS[config] = CallasClient(config)
+        return client
+
+
 def _callas_fix_service(settings: Settings):
     """Сервис исправления Callas или ``None``, если он выключен или не настроен."""
     if not (settings.callas_process_enabled and settings.callas_url):
         return None
-    from services.callas import CallasClient
     from services.callas_fix import CallasFixService
 
     from services.callas.fix_checks import build_post_checks
     from services.callas.prepress import PrepressAnalyzer
 
-    client = CallasClient.from_settings(settings)
+    client = _shared_callas_client(settings)
     analyzer = PrepressAnalyzer(
         client,
         high_ppi_limit=settings.high_ppi_limit,
@@ -597,10 +665,9 @@ def _configure_callas_pdf_renderer(settings: Settings) -> None:
     """Все рендеры PDF вне BatchProcessor (ревизии, сравнение, экспорт) — через callas."""
     if not settings.callas_url:
         return
-    from services.callas import CallasClient
     from services.callas.renderer import configure_pdf_renderer, make_callas_pdf_renderer
 
-    configure_pdf_renderer(make_callas_pdf_renderer(CallasClient.from_settings(settings)))
+    configure_pdf_renderer(make_callas_pdf_renderer(_shared_callas_client(settings)))
 
 
 def _callas_processor_factory(settings: Settings):
@@ -612,7 +679,6 @@ def _callas_processor_factory(settings: Settings):
     from functools import partial
 
     from processing.batch_processor import BatchProcessor
-    from services.callas import CallasClient
 
     if not settings.callas_url:
         logger.error(
@@ -620,7 +686,7 @@ def _callas_processor_factory(settings: Settings):
             "создание PDF заказов будет завершаться ошибкой"
         )
         return partial(BatchProcessor, strip_icc_cmyk=settings.strip_icc_cmyk)
-    client = CallasClient.from_settings(settings)
+    client = _shared_callas_client(settings)
     return partial(
         BatchProcessor,
         callas_client=client,
@@ -635,11 +701,10 @@ def _callas_rgb_to_cmyk_converter(settings: Settings, client=None):
     """Конвертер RGB → CMYK через callas; None, если выключен или callas не настроен."""
     if not settings.callas_url or not settings.callas_rgb_to_cmyk_enabled:
         return None
-    from services.callas import CallasClient
     from services.callas.color_conversion import CallasRgbToCmykConverter
 
     return CallasRgbToCmykConverter(
-        client or CallasClient.from_settings(settings), settings.callas_rgb_to_cmyk_profile
+        client or _shared_callas_client(settings), settings.callas_rgb_to_cmyk_profile
     )
 
 
@@ -647,11 +712,10 @@ def _callas_prepress_checker(settings: Settings, client=None):
     """Допечатные проверки (шрифты, ppi, плашка K100); None, если выключены или callas не настроен."""
     if not settings.callas_url or not settings.callas_prepress_enabled:
         return None
-    from services.callas import CallasClient
     from services.callas.prepress import PrepressAnalyzer
 
     return PrepressAnalyzer(
-        client or CallasClient.from_settings(settings),
+        client or _shared_callas_client(settings),
         high_ppi_limit=settings.high_ppi_limit,
         black_solid_threshold=settings.black_solid_area_threshold,
     )
@@ -661,9 +725,9 @@ def _callas_pdf_merger(settings: Settings):
     """Callas-склейка итогового reviewed-PDF; None, если callas не настроен (сборка упадёт с ошибкой)."""
     if not settings.callas_url:
         return None
-    from services.callas import CallasClient, make_callas_pdf_merger
+    from services.callas import make_callas_pdf_merger
 
-    return make_callas_pdf_merger(CallasClient.from_settings(settings))
+    return make_callas_pdf_merger(_shared_callas_client(settings))
 
 
 def _callas_page_extractor(settings: Settings):
@@ -674,20 +738,19 @@ def _callas_page_extractor(settings: Settings):
     """
     if not (settings.callas_url and settings.callas_token):
         return None
-    from services.callas import CallasClient, make_callas_page_extractor
+    from services.callas import make_callas_page_extractor
 
-    return make_callas_page_extractor(CallasClient.from_settings(settings))
+    return make_callas_page_extractor(_shared_callas_client(settings))
 
 
 def _ink_coverage_checker(settings: Settings):
     """Проверка красочности callas ``inkcoverage`` или None, если выключена/не настроена."""
     if not (settings.callas_inkcoverage_enabled and settings.callas_url):
         return None
-    from services.callas import CallasClient
     from services.callas.ink_coverage import build_ink_coverage_checker
 
     return build_ink_coverage_checker(
-        CallasClient.from_settings(settings),
+        _shared_callas_client(settings),
         min_percent_override=settings.ink_min_percent,
         max_percent_override=settings.ink_max_percent,
     )
@@ -744,6 +807,7 @@ def _pitstop_adapter_factory(settings: Settings):
                 ),
                 report_root=resolved_input / "output_report" / "pitstop",
                 command_timeout_seconds=settings.pitstop_command_timeout_seconds,
+                max_concurrent=settings.pitstop_max_concurrent,
             ),
             profiles=catalog,
             transport=transport,
@@ -823,21 +887,43 @@ def create_app(
     auth_service = AuthService(settings)
     protected = require_session(settings, auth_service)
 
+    def heartbeat_snapshot() -> tuple[dict[str, Any] | None, float, float]:
+        # Runs on a worker thread. Reads only the run summary (no orders) and
+        # does not take the coordinator lock. ``_active_run_id`` is a plain
+        # attribute read; get_active_run() (lock + full aggregate) is the
+        # fallback when the attribute is unavailable.
+        active_id = getattr(coordinator, "_active_run_id", False)
+        if active_id is False:
+            active = coordinator.get_active_run()
+        elif active_id:
+            try:
+                active = coordinator.get_run_summary(active_id)
+            except RunNotFoundError:
+                active = None
+        else:
+            active = None
+        disk = shutil.disk_usage(PROJECT_DIR)
+        max_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return active, disk.free / (1024**3), max_rss / (1024**2)
+
     async def heartbeat() -> None:
         while True:
-            active = coordinator.get_active_run()
-            disk = shutil.disk_usage(PROJECT_DIR)
-            max_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-            logger.info(
-                "application.heartbeat active_run_id=%s status=%s stage=%s "
-                "progress=%s disk_free_gb=%.1f max_rss_mb=%.1f",
-                active.get("id") if active else "-",
-                active.get("status") if active else "idle",
-                active.get("stage") if active else "-",
-                active.get("progress") if active else "-",
-                disk.free / (1024**3),
-                max_rss / (1024**2),
-            )
+            try:
+                active, disk_free_gb, max_rss_mb = await asyncio.to_thread(
+                    heartbeat_snapshot
+                )
+                logger.info(
+                    "application.heartbeat active_run_id=%s status=%s stage=%s "
+                    "progress=%s disk_free_gb=%.1f max_rss_mb=%.1f",
+                    active.get("id") if active else "-",
+                    active.get("status") if active else "idle",
+                    active.get("stage") if active else "-",
+                    active.get("progress") if active else "-",
+                    disk_free_gb,
+                    max_rss_mb,
+                )
+            except Exception:
+                logger.exception("application.heartbeat_failed")
             await asyncio.sleep(settings.log_heartbeat_seconds)
 
     @asynccontextmanager
@@ -1179,33 +1265,53 @@ def create_app(
     async def stream_events(
         request: Request,
         run_id: str,
-        last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+        last_event_id: str | None = Query(default=None, max_length=32),
+        last_event_id_header: str | None = Header(default=None, alias="Last-Event-ID"),
     ) -> StreamingResponse:
         coordinator_value = _get_coordinator(request)
-        _get_run_or_404(coordinator_value, run_id)
-        try:
-            cursor = max(0, int(last_event_id or "0"))
-        except ValueError:
-            cursor = 0
+        await asyncio.to_thread(_get_run_summary_or_404, coordinator_value, run_id)
+        # ``?last_event_id=`` is what the client passes on its own reconnects
+        # (EventSource cannot set headers); the Last-Event-ID header is what the
+        # browser sends on native reconnects. The later of the two wins.
+        cursor = _parse_event_cursor(last_event_id, last_event_id_header)
 
         async def generate():
             nonlocal cursor
-            heartbeat = 0
+            idle_polls = 0
+            drained_after_terminal = False
             while not await request.is_disconnected():
-                events = coordinator_value.events(run_id, cursor)
+                events = await asyncio.to_thread(
+                    _list_events_batch,
+                    coordinator_value, run_id, cursor, SSE_EVENT_BATCH,
+                )
                 if events:
-                    for event in events:
+                    idle_polls = 0
+                    for position, event in enumerate(events, start=1):
                         cursor = event.id
                         yield event.as_sse()
-                    heartbeat = 0
+                        if position % SSE_EVENT_BATCH == 0:
+                            # Let other tasks run while a long backlog is sent.
+                            await asyncio.sleep(0)
+                    if len(events) >= SSE_EVENT_BATCH:
+                        continue  # a full batch: more is probably waiting
                 else:
-                    heartbeat += 1
-                    if heartbeat >= 15:
+                    idle_polls += 1
+                    if idle_polls >= 15:
                         yield ": keep-alive\n\n"
-                        heartbeat = 0
-                run = coordinator_value.get_run(run_id)
-                if run["status"] in {"completed", "failed", "cancelled"} and not events:
-                    break
+                        idle_polls = 0
+                    try:
+                        summary = await asyncio.to_thread(
+                            coordinator_value.get_run_summary, run_id
+                        )
+                    except RunNotFoundError:
+                        break
+                    if summary["status"] in SSE_TERMINAL_STATUSES:
+                        if drained_after_terminal:
+                            break
+                        # Read once more so an event written just before the
+                        # status flipped is not lost, then finish.
+                        drained_after_terminal = True
+                        continue
                 await asyncio.sleep(1)
 
         return StreamingResponse(
@@ -1551,6 +1657,14 @@ def create_app(
 
         with request.app.state.database.session_factory() as session:
             statement = select(OrderAction).join(OrderResult)
+            # Eager loading keeps the query count constant per page: the
+            # preview paths need order.run and order.files for every row.
+            page_loading = (
+                selectinload(OrderAction.order_result).options(
+                    joinedload(OrderResult.run),
+                    selectinload(OrderResult.files),
+                ),
+            )
             if action != "all":
                 statement = statement.where(OrderAction.action == action)
             if status != "all":
@@ -1566,7 +1680,8 @@ def create_app(
                 )
             total = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
             actions = session.scalars(
-                statement.order_by(desc(OrderAction.created_at)).offset((page - 1) * limit).limit(limit)
+                statement.options(*page_loading)
+                .order_by(desc(OrderAction.created_at)).offset((page - 1) * limit).limit(limit)
             ).unique().all()
             items = []
             for item in actions:

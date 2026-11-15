@@ -25,6 +25,10 @@ from .settings import Settings
 
 AUTH_ERROR_MESSAGE = "Неверный пароль или слишком много попыток"
 UNAUTHENTICATED_MESSAGE = "Требуется авторизация"
+# ``last_seen_at`` is informational only (expiry is decided by the fixed
+# ``expires_at``), so it is refreshed at most this often. Writing it on every
+# request makes SQLite's single writer queue behind long transactions.
+LAST_SEEN_REFRESH_SECONDS = 60
 
 
 def _utcnow() -> datetime:
@@ -166,8 +170,15 @@ class AuthService:
             db.commit()
             return None
 
-        record.last_seen_at = now
-        db.flush()
+        last_seen = record.last_seen_at
+        if (
+            last_seen is None
+            or now - _as_utc(last_seen) >= timedelta(seconds=LAST_SEEN_REFRESH_SECONDS)
+            # A clock that moved backwards must not freeze the value forever.
+            or _as_utc(last_seen) > now
+        ):
+            record.last_seen_at = now
+            db.flush()
         return record
 
     def revoke(self, db: Session, raw_token: str | None) -> None:
