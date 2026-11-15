@@ -32,6 +32,9 @@ class Database:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA journal_mode=WAL")
+        # Safe with WAL: a power loss can drop the last commits but never
+        # corrupts the database; avoids an fsync on every event commit.
+        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute("PRAGMA busy_timeout=5000")
         cursor.close()
 

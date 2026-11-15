@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable
 
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import exists, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from server.models import (
@@ -27,7 +27,13 @@ from server.models import (
 )
 from server.models import RunEvent as SqlRunEvent
 
-from .repository import RunEvent
+from .repository import (
+    ENVELOPE_DEFER,
+    ENVELOPE_FULL,
+    ENVELOPE_MODES,
+    ENVELOPE_PATCH,
+    RunEvent,
+)
 
 
 logger = logging.getLogger("image_magic.repository")
@@ -40,6 +46,8 @@ _INTERRUPTED_STATUSES = {
     "waiting_confirmation",
     "cancelling",
 }
+# Mirrors services.coordinator.TERMINAL_ORDER_STATUSES for restart recovery.
+_TERMINAL_ORDER_STATUSES = {"passed", "warning", "error", "cancelled"}
 _RUN_STANDARD_KEYS = {
     "id",
     "status",
@@ -119,38 +127,184 @@ class SqlRunRepository:
             session.add(record)
             self._apply_run(session, record, run)
 
-    def save_run(self, run: dict[str, Any]) -> None:
+    def save_run(
+        self, run: dict[str, Any], *, include_orders: bool = True
+    ) -> None:
         with self._session_factory() as session, session.begin():
-            record = session.get(CheckRun, str(run["id"]))
-            if record is None:
-                raise KeyError(str(run["id"]))
-            self._apply_run(session, record, run)
+            self._save_run_in_session(session, run, include_orders=include_orders)
 
     def save_run_with_event(
-        self, run: dict[str, Any], event_type: str, data: dict[str, Any]
+        self,
+        run: dict[str, Any],
+        event_type: str,
+        data: dict[str, Any],
+        *,
+        include_orders: bool = True,
     ) -> RunEvent:
         with self._session_factory() as session, session.begin():
             run_id = str(run["id"])
-            record = session.get(CheckRun, run_id)
+            self._save_run_in_session(session, run, include_orders=include_orders)
+            session.flush()
+            self._apply_correction_audit(session, run_id, event_type, data)
+            return self._add_event(session, run_id, event_type, data)
+
+    def save_order_with_event(
+        self,
+        run: dict[str, Any],
+        order_key: str,
+        event_type: str,
+        data: dict[str, Any],
+        *,
+        envelope: str = ENVELOPE_PATCH,
+    ) -> RunEvent:
+        """Persist one order, the run's scalar columns and the event atomically.
+
+        Only the order row (and its files, PDF revision and PitStop check) for
+        ``order_key`` is touched, so the statement count does not depend on
+        the number of orders in the run.  ``envelope`` selects how the
+        whole-run compatibility blob in ``options_json`` is handled (see
+        ``services.repository.ENVELOPE_*``); ``defer`` does not read or write
+        it at all.
+
+        After a successful commit ``run["orders"][order_key]`` is replaced by a
+        copy whose files carry their stable ``file_result_id``, so the caller's
+        live aggregate matches what a fresh read would return.
+        """
+        if envelope not in ENVELOPE_MODES:
+            raise ValueError(f"unknown envelope mode: {envelope}")
+        run_id = str(run["id"])
+        key = str(order_key)
+        order = run["orders"][order_key]
+        with self._session_factory() as session, session.begin():
+            if envelope == ENVELOPE_DEFER:
+                record = None
+                result = session.execute(
+                    update(CheckRun)
+                    .where(CheckRun.id == run_id)
+                    .values(**self._run_scalar_values(run))
+                    .execution_options(synchronize_session=False)
+                )
+                if result.rowcount == 0:
+                    raise KeyError(run_id)
+            else:
+                record = session.get(CheckRun, run_id)
+                if record is None:
+                    raise KeyError(run_id)
+                self._apply_run_scalars(record, run)
+            order_record = self._find_order_record(session, run_id, key, order)
+            if order_record is None:
+                order_record = OrderResult(
+                    run_id=run_id, order_id=str(order.get("order_id") or key)
+                )
+                session.add(order_record)
+            file_ids = self._apply_order(session, order_record, order)
+            session.flush()
+            if record is not None and envelope == ENVELOPE_PATCH:
+                record.options_json = _json_dump(
+                    self._patched_envelope(
+                        record.options_json, run, key, order, file_ids
+                    )
+                )
+            elif record is not None:
+                record.options_json = _json_dump(
+                    self._options_envelope(
+                        run,
+                        self._envelope_file_ids(
+                            session, run_id, run, {key: file_ids}
+                        ),
+                    )
+                )
+            self._apply_correction_audit(session, run_id, event_type, data)
+            event = self._add_event(session, run_id, event_type, data)
+        # Replace (not mutate) the entry: the caller may reuse ``order`` as an
+        # event payload, whose shape must stay as it was before persistence.
+        # _apply_order returns exactly one ID per file DTO, in order.
+        run["orders"][order_key] = {
+            **order,
+            "files": [
+                {**file_dto, "file_result_id": file_id}
+                for file_dto, file_id in zip(order.get("files") or [], file_ids)
+            ],
+        }
+        return event
+
+    def run_exists(self, run_id: str) -> bool:
+        with self._session_factory() as session:
+            return session.scalar(
+                select(CheckRun.id).where(CheckRun.id == run_id)
+            ) is not None
+
+    def _save_run_in_session(
+        self, session: Session, run: dict[str, Any], *, include_orders: bool
+    ) -> None:
+        run_id = str(run["id"])
+        if include_orders:
+            record = session.scalar(
+                select(CheckRun)
+                .where(CheckRun.id == run_id)
+                .options(
+                    selectinload(CheckRun.orders).selectinload(OrderResult.files),
+                    selectinload(CheckRun.orders)
+                    .selectinload(OrderResult.pdf_revisions)
+                    .selectinload(PdfRevision.checks)
+                    .selectinload(PitstopCheck.issues),
+                )
+            )
             if record is None:
                 raise KeyError(run_id)
             self._apply_run(session, record, run)
-            session.flush()
-            self._apply_correction_audit(session, run_id, event_type, data)
-            event_record = SqlRunEvent(
-                run_id=run_id,
-                event_type=event_type,
-                payload_json=_json_dump(data),
+            return
+        record = session.get(CheckRun, run_id)
+        if record is None:
+            raise KeyError(run_id)
+        self._apply_run_scalars(record, run)
+        record.options_json = _json_dump(
+            self._options_envelope(
+                run, self._envelope_file_ids(session, run_id, run, {})
             )
-            session.add(event_record)
-            session.flush()
-            return RunEvent(
-                id=event_record.id,
-                type=event_record.event_type,
-                run_id=event_record.run_id,
-                data=deepcopy(data),
-                created_at=_iso(event_record.created_at) or _now_iso(),
+        )
+
+    @staticmethod
+    def _add_event(
+        session: Session, run_id: str, event_type: str, data: dict[str, Any]
+    ) -> RunEvent:
+        event_record = SqlRunEvent(
+            run_id=run_id,
+            event_type=event_type,
+            payload_json=_json_dump(data),
+        )
+        session.add(event_record)
+        session.flush()
+        return RunEvent(
+            id=event_record.id,
+            type=event_record.event_type,
+            run_id=event_record.run_id,
+            data=deepcopy(data),
+            created_at=_iso(event_record.created_at) or _now_iso(),
+        )
+
+    @staticmethod
+    def _find_order_record(
+        session: Session, run_id: str, key: str, order: dict[str, Any]
+    ) -> OrderResult | None:
+        order_id = str(order.get("order_id") or key)
+        customer_id = str(order.get("customer_id") or "")
+        customer_filter = (
+            OrderResult.customer_id == customer_id
+            if customer_id
+            else or_(OrderResult.customer_id.is_(None), OrderResult.customer_id == "")
+        )
+        return session.scalar(
+            select(OrderResult)
+            .where(
+                OrderResult.run_id == run_id,
+                OrderResult.order_id == order_id,
+                customer_filter,
             )
+            .options(selectinload(OrderResult.files))
+            .order_by(OrderResult.id)
+            .limit(1)
+        )
 
     @staticmethod
     def _apply_correction_audit(
@@ -418,31 +572,39 @@ class SqlRunRepository:
             created_at=_iso(record.created_at) or _now_iso(),
         )
 
-    def list_events(self, run_id: str, after_id: int = 0) -> list[RunEvent]:
+    def list_events(
+        self, run_id: str, after_id: int = 0, limit: int | None = None
+    ) -> list[RunEvent]:
         # Archived rows keep their original IDs and payloads. Merging both tables
         # preserves the SSE Last-Event-ID contract across the archive boundary.
+        # With ``limit`` each table is limited in SQL (ordered by id) and the
+        # merged result is truncated, which yields the first ``limit`` events.
+        if limit is not None and int(limit) <= 0:
+            return []
         with self._session_factory() as session:
-            archived = list(
-                session.scalars(
-                    select(ArchivedRunEvent)
-                    .where(
-                        ArchivedRunEvent.run_id == run_id,
-                        ArchivedRunEvent.id > after_id,
-                    )
-                    .order_by(ArchivedRunEvent.id)
+            archived_statement = (
+                select(ArchivedRunEvent)
+                .where(
+                    ArchivedRunEvent.run_id == run_id,
+                    ArchivedRunEvent.id > after_id,
                 )
+                .order_by(ArchivedRunEvent.id)
             )
-            live = list(
-                session.scalars(
-                    select(SqlRunEvent)
-                    .where(SqlRunEvent.run_id == run_id, SqlRunEvent.id > after_id)
-                    .order_by(SqlRunEvent.id)
-                )
+            live_statement = (
+                select(SqlRunEvent)
+                .where(SqlRunEvent.run_id == run_id, SqlRunEvent.id > after_id)
+                .order_by(SqlRunEvent.id)
             )
-            return sorted(
+            if limit is not None:
+                archived_statement = archived_statement.limit(int(limit))
+                live_statement = live_statement.limit(int(limit))
+            archived = list(session.scalars(archived_statement))
+            live = list(session.scalars(live_statement))
+            events = sorted(
                 (self._event_from_record(record) for record in (*archived, *live)),
                 key=lambda event: event.id,
             )
+            return events if limit is None else events[: int(limit)]
 
     def archive_old_terminal_events(
         self,
@@ -566,6 +728,7 @@ class SqlRunRepository:
                     "Проверка была прервана перезапуском приложения "
                     f"(предыдущее состояние: {previous_status})."
                 )
+                self._recount_interrupted_run(session, record)
                 session.add(
                     SqlRunEvent(
                         run_id=record.id,
@@ -588,6 +751,51 @@ class SqlRunRepository:
         return recovered
 
     @staticmethod
+    def _recount_interrupted_run(session: Session, record: CheckRun) -> None:
+        """Align stored run counters with the order rows of a crashed run.
+
+        During an active run the coordinator writes order rows per event but
+        refreshes the counters in the compatibility envelope only at
+        checkpoints, so after a crash the rows are the more recent truth.
+        """
+        envelope = _json_load(record.options_json, {})
+        metadata = (
+            envelope.get(_OPTIONS_MARKER) if isinstance(envelope, dict) else None
+        )
+        if not isinstance(metadata, dict) or "options" not in envelope:
+            return
+        statuses = {
+            str(status): int(count)
+            for status, count in session.execute(
+                select(OrderResult.status, func.count(OrderResult.id))
+                .where(OrderResult.run_id == record.id)
+                .group_by(OrderResult.status)
+            ).all()
+        }
+        run_extras = metadata.get("run_extras")
+        if not isinstance(run_extras, dict):
+            run_extras = metadata["run_extras"] = {}
+        try:
+            known_total = int(run_extras.get("total_orders") or 0)
+        except (TypeError, ValueError):
+            known_total = 0
+        run_extras.update(
+            {
+                "total_orders": max(known_total, sum(statuses.values())),
+                "processed_orders": sum(
+                    count
+                    for status, count in statuses.items()
+                    if status in _TERMINAL_ORDER_STATUSES
+                ),
+                "passed_orders": statuses.get("passed", 0),
+                "warning_orders": statuses.get("warning", 0),
+                "failed_orders": statuses.get("error", 0),
+                "waiting_orders": statuses.get("waiting_confirmation", 0),
+            }
+        )
+        record.options_json = _json_dump(envelope)
+
+    @staticmethod
     def _order_files_reconciled(order_result: OrderResult) -> bool:
         paths: list[str] = []
         if order_result.pdf_path:
@@ -601,21 +809,31 @@ class SqlRunRepository:
             return False
         return all(Path(path).exists() for path in paths)
 
+    @staticmethod
+    def _run_scalar_values(run: dict[str, Any]) -> dict[str, Any]:
+        options = run.get("options") or {}
+        return {
+            "input_path": str(options.get("input_path", "")),
+            "direction": str(options.get("direction", "")),
+            "status": str(run.get("status", "queued")),
+            "stage": _optional_str(run.get("stage")),
+            "progress": float(run.get("progress", 0)),
+            "created_at": _datetime(run.get("created_at"))
+            or datetime.now(timezone.utc),
+            "started_at": _datetime(run.get("started_at")),
+            "finished_at": _datetime(run.get("finished_at")),
+            "error": _optional_str(run.get("error")),
+        }
+
+    @classmethod
+    def _apply_run_scalars(cls, record: CheckRun, run: dict[str, Any]) -> None:
+        for name, value in cls._run_scalar_values(run).items():
+            setattr(record, name, value)
+
     def _apply_run(
         self, session: Session, record: CheckRun, run: dict[str, Any]
     ) -> None:
-        options = deepcopy(run.get("options") or {})
-        record.input_path = str(options.get("input_path", ""))
-        record.direction = str(options.get("direction", ""))
-        record.status = str(run.get("status", "queued"))
-        record.stage = _optional_str(run.get("stage"))
-        record.progress = float(run.get("progress", 0))
-        record.created_at = _datetime(run.get("created_at")) or datetime.now(
-            timezone.utc
-        )
-        record.started_at = _datetime(run.get("started_at"))
-        record.finished_at = _datetime(run.get("finished_at"))
-        record.error = _optional_str(run.get("error"))
+        self._apply_run_scalars(record, run)
         existing_orders = {
             (item.customer_id or "", item.order_id): item for item in record.orders
         }
@@ -810,8 +1028,11 @@ class SqlRunRepository:
         check.technical_error = _optional_str(pitstop.get("technical_error"))
         session.flush()
 
+        incoming_issues = list(pitstop.get("issues") or [])
+        if _issues_unchanged(check.issues, incoming_issues):
+            return
         check.issues.clear()
-        for issue in pitstop.get("issues") or []:
+        for issue in incoming_issues:
             check.issues.append(
                 PitstopIssue(
                     issue_id=str(issue.get("id") or uuid_hex()),
@@ -846,45 +1067,164 @@ class SqlRunRepository:
         record.preview_path = _optional_str(preview_path)
 
     @staticmethod
+    def _run_extras(run: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: value for key, value in run.items() if key not in _RUN_STANDARD_KEYS
+        }
+
+    @staticmethod
+    def _order_envelope_parts(
+        storage_key: str, order: dict[str, Any], ordered_file_ids: list[int]
+    ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+        order_extra = {
+            key: value
+            for key, value in order.items()
+            if key not in _ORDER_STANDARD_KEYS
+        }
+        order_extra["__pitstop_fields__"] = sorted(
+            key for key in _PITSTOP_ORDER_KEYS if key in order
+        )
+        order_extra["__storage_key__"] = storage_key
+        file_extra = {
+            str(ordered_file_ids[index]): {
+                key: value
+                for key, value in item.items()
+                if key not in _FILE_MAPPED_KEYS
+            }
+            for index, item in enumerate(order.get("files") or [])
+            if index < len(ordered_file_ids)
+            and ordered_file_ids[index] is not None
+        }
+        return order_extra, file_extra
+
+    @classmethod
     def _options_envelope(
+        cls,
         run: dict[str, Any],
         file_ids_by_order: dict[str, list[int]],
     ) -> dict[str, Any]:
-        run_extras = {
-            key: deepcopy(value)
-            for key, value in run.items()
-            if key not in _RUN_STANDARD_KEYS
-        }
+        # The result is serialized immediately, so values are shared with the
+        # DTO instead of deep-copied (this runs on every checkpoint).
         order_extras: dict[str, dict[str, Any]] = {}
         file_extras: dict[str, dict[str, dict[str, Any]]] = {}
         for order_id, order in (run.get("orders") or {}).items():
-            order_extras[str(order_id)] = {
-                key: deepcopy(value)
-                for key, value in order.items()
-                if key not in _ORDER_STANDARD_KEYS
-            }
-            order_extras[str(order_id)]["__pitstop_fields__"] = sorted(
-                key for key in _PITSTOP_ORDER_KEYS if key in order
+            key = str(order_id)
+            order_extras[key], file_extras[key] = cls._order_envelope_parts(
+                key, order, file_ids_by_order.get(key, [])
             )
-            order_extras[str(order_id)]["__storage_key__"] = str(order_id)
-            ordered_file_ids = file_ids_by_order.get(str(order_id), [])
-            file_extras[str(order_id)] = {
-                str(ordered_file_ids[index]): {
-                    key: deepcopy(value)
-                    for key, value in item.items()
-                    if key not in _FILE_MAPPED_KEYS
-                }
-                for index, item in enumerate(order.get("files") or [])
-                if index < len(ordered_file_ids)
-            }
         return {
-            "options": deepcopy(run.get("options") or {}),
+            "options": run.get("options") or {},
             _OPTIONS_MARKER: {
-                "run_extras": run_extras,
+                "run_extras": cls._run_extras(run),
                 "order_extras": order_extras,
                 "file_extras": file_extras,
             },
         }
+
+    @classmethod
+    def _patched_envelope(
+        cls,
+        options_json: str | None,
+        run: dict[str, Any],
+        storage_key: str,
+        order: dict[str, Any],
+        ordered_file_ids: list[int],
+    ) -> dict[str, Any]:
+        """Replace one order's extras and the run extras in a stored blob."""
+        envelope = _json_load(options_json, {})
+        metadata = (
+            envelope.get(_OPTIONS_MARKER)
+            if isinstance(envelope, dict) and "options" in envelope
+            else None
+        )
+        if not isinstance(metadata, dict):
+            # Legacy rows kept no extras for any order.
+            metadata = {}
+        order_extras = metadata.get("order_extras")
+        if not isinstance(order_extras, dict):
+            order_extras = {}
+        file_extras = metadata.get("file_extras")
+        if not isinstance(file_extras, dict):
+            file_extras = {}
+        order_extras[storage_key], file_extras[storage_key] = (
+            cls._order_envelope_parts(storage_key, order, ordered_file_ids)
+        )
+        return {
+            "options": run.get("options") or {},
+            _OPTIONS_MARKER: {
+                "run_extras": cls._run_extras(run),
+                "order_extras": order_extras,
+                "file_extras": file_extras,
+            },
+        }
+
+    @staticmethod
+    def _envelope_file_ids(
+        session: Session,
+        run_id: str,
+        run: dict[str, Any],
+        known: dict[str, list[int]],
+    ) -> dict[str, list[int]]:
+        """File row IDs per order for a full envelope rewrite.
+
+        The coordinator's live DTOs carry ``file_result_id`` (written back by
+        ``save_order_with_event``), so normally no query is needed.  DTOs
+        without IDs are resolved by path with a single query for the run.
+        """
+        result: dict[str, list[int]] = {}
+        missing: list[tuple[str, dict[str, Any]]] = []
+        for order_key, order in (run.get("orders") or {}).items():
+            key = str(order_key)
+            if key in known:
+                result[key] = known[key]
+                continue
+            ids = [item.get("file_result_id") for item in order.get("files") or []]
+            if all(value is not None for value in ids):
+                result[key] = [int(value) for value in ids]
+            else:
+                missing.append((key, order))
+        if not missing:
+            return result
+        rows = session.execute(
+            select(
+                FileResult.id,
+                FileResult.source_path,
+                OrderResult.customer_id,
+                OrderResult.order_id,
+            )
+            .join(OrderResult, FileResult.order_result_id == OrderResult.id)
+            .where(OrderResult.run_id == run_id)
+            .order_by(FileResult.id)
+        ).all()
+        by_order: dict[tuple[str, str], list[tuple[int, str]]] = {}
+        for file_id, source_path, customer_id, order_id in rows:
+            by_order.setdefault((customer_id or "", order_id), []).append(
+                (file_id, source_path)
+            )
+        for key, order in missing:
+            candidates = by_order.get(
+                (str(order.get("customer_id") or ""), str(order.get("order_id") or key)),
+                [],
+            )
+            used: set[int] = set()
+            ids: list[int] = []
+            for item in order.get("files") or []:
+                file_id = item.get("file_result_id")
+                if file_id is None:
+                    file_id = next(
+                        (
+                            candidate_id
+                            for candidate_id, path in candidates
+                            if path == str(item.get("path", ""))
+                            and candidate_id not in used
+                        ),
+                        None,
+                    )
+                if file_id is not None:
+                    used.add(int(file_id))
+                ids.append(file_id)
+            result[key] = ids
+        return result
 
     @staticmethod
     def _run_to_dict(
@@ -1047,8 +1387,50 @@ class SqlRunRepository:
                 order["actions"] = action_values
             order.setdefault("preview_paths", preview_paths)
             storage_key = order.pop("__storage_key__", None)
-            run["orders"][storage_key or order_record.order_id] = order
+            if not storage_key:
+                # Orders persisted after the last envelope checkpoint of an
+                # interrupted run have no extras; keep duplicate order numbers
+                # of different customers apart.
+                storage_key = (
+                    composite_key
+                    if order_record.order_id in run["orders"]
+                    else order_record.order_id
+                )
+            run["orders"][storage_key] = order
         return run
+
+
+def _issues_unchanged(
+    existing: list[PitstopIssue], incoming: list[dict[str, Any]]
+) -> bool:
+    """True when the stored issue rows already match the incoming check."""
+    if len(existing) != len(incoming):
+        return False
+    for record, issue in zip(
+        sorted(existing, key=lambda item: item.id or 0), incoming
+    ):
+        incoming_id = issue.get("id")
+        if incoming_id is None or str(incoming_id) != record.issue_id:
+            # Issues without an ID get a fresh one on insert, so they can
+            # never be proven identical; rewrite them.
+            return False
+        if (
+            record.fingerprint,
+            record.severity,
+            record.action_id,
+            record.message,
+            record.occurrences,
+            record.locations_json,
+        ) != (
+            _optional_str(issue.get("fingerprint")),
+            str(issue.get("severity") or "information"),
+            _optional_str(issue.get("action_id")),
+            str(issue.get("message") or ""),
+            int(issue.get("occurrences") or 1),
+            _json_dump(list(issue.get("locations") or [])),
+        ):
+            return False
+    return True
 
 
 def _file_status(value: dict[str, Any]) -> str:
