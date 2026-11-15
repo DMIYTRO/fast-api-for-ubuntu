@@ -1,6 +1,8 @@
 """Public API for report-only PitStop Server integration."""
 
 from .catalog import PitStopProfile, PitStopProfileCatalog
+from .concurrency import GateConfig, PitStopGate, shared_gate_for
+from .failures import FailureKind
 from .models import (
     PitStopCheckResult,
     PitStopCounts,
@@ -11,10 +13,17 @@ from .models import (
     PitStopSeverity,
     PitStopVerdict,
 )
-from .parser import PitStopReportError, parse_pitstop_payload, parse_pitstop_report
+from .parser import (
+    PitStopReportError,
+    PitStopReportUnreadableError,
+    parse_pitstop_payload,
+    parse_pitstop_report,
+)
 from .paths import SharedPathError, mac_shared_path_to_windows
 from .service import PitStopService, PitStopServiceSettings
 from .transport import (
+    PitStopLaunchError,
+    PitStopTimeoutError,
     PitStopTransport,
     PitStopTransportError,
     SSHSettings,
@@ -23,6 +32,13 @@ from .transport import (
 )
 
 __all__ = [
+    "FailureKind",
+    "GateConfig",
+    "PitStopGate",
+    "PitStopLaunchError",
+    "PitStopReportUnreadableError",
+    "PitStopTimeoutError",
+    "shared_gate_for",
     "PitStopCheckResult",
     "PitStopCounts",
     "PitStopExecutionStatus",

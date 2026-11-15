@@ -7,9 +7,35 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from .failures import FailureKind
+
 
 class PitStopTransportError(RuntimeError):
-    pass
+    """The check could not be completed for a technical reason.
+
+    ``kind`` tells the service whether a repeat can help.  A plain
+    ``PitStopTransportError`` (for example from a third-party transport) is
+    treated as transient; subclasses and the service itself set a more
+    precise kind.
+    """
+
+    def __init__(self, message: str = "", *, kind: FailureKind = FailureKind.TRANSIENT) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+class PitStopTimeoutError(PitStopTransportError):
+    """The remote command did not finish within the allowed time."""
+
+    def __init__(self, message: str = "") -> None:
+        super().__init__(message, kind=FailureKind.TIMEOUT)
+
+
+class PitStopLaunchError(PitStopTransportError):
+    """The local SSH client could not be started (configuration problem)."""
+
+    def __init__(self, message: str = "") -> None:
+        super().__init__(message, kind=FailureKind.DEFINITIVE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +69,12 @@ class SSHSettings:
 
 
 class SSHTransport:
-    """Run a non-interactive SSH command with strict host verification."""
+    """Run a non-interactive SSH command with strict host verification.
+
+    Safe for concurrent use: the settings are frozen and every call builds its
+    own argument list and runs its own ``ssh`` process, so no state is shared
+    between calls.
+    """
 
     def __init__(self, settings: SSHSettings) -> None:
         self._settings = settings
@@ -72,7 +103,7 @@ class SSHTransport:
                 start_new_session=True,
             )
         except subprocess.TimeoutExpired as exc:
-            raise PitStopTransportError("PitStop Server не ответил за отведённое время") from exc
+            raise PitStopTimeoutError("PitStop Server не ответил за отведённое время") from exc
         except OSError as exc:
-            raise PitStopTransportError("не удалось запустить SSH-клиент PitStop") from exc
+            raise PitStopLaunchError("не удалось запустить SSH-клиент PitStop") from exc
         return TransportResult(completed.returncode, completed.stdout, completed.stderr)

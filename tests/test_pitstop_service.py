@@ -154,6 +154,7 @@ class PitStopServiceTests(unittest.TestCase):
             windows_shared_root=PureWindowsPath("C:/Mac/Home/project"),
             report_root=report_root,
             command_timeout_seconds=7,
+            max_concurrent=1,
         )
         catalog = PitStopProfileCatalog(
             [
@@ -164,7 +165,12 @@ class PitStopServiceTests(unittest.TestCase):
                 )
             ]
         )
-        return PitStopService(settings=settings, profiles=catalog, transport=transport)
+        return PitStopService(
+            settings=settings,
+            profiles=catalog,
+            transport=transport,
+            sleep=lambda seconds: None,
+        )
 
 
 if __name__ == "__main__":
