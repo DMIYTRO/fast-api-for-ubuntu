@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import logging
 import shutil
+import uuid
 from pathlib import Path
 from typing import Callable
 
 from services.callas.client import CallasClient, deterministic_job_id
-from services.callas.merger import _sha256
 
 logger = logging.getLogger("image_magic.callas")
 
@@ -21,8 +21,10 @@ def make_callas_page_extractor(client: CallasClient) -> PdfPageExtractor:
 
     def extractor(source: Path, page_number: int, output: Path, label: str) -> None:
         source = Path(source)
-        digest = _sha256(source)
-        job_id = deterministic_job_id(f"split-{label}", digest, str(page_number))
+        # Задание уникально на операцию (как в merge/render): хеш всего PDF ради
+        # идентификатора не нужен, а одинаковый id у параллельных одинаковых извлечений
+        # давал бы конфликт 409 и общую папку задания.
+        job_id = deterministic_job_id(f"split-{label}", str(page_number), uuid.uuid4().hex[:12])
         part_name = "page.pdf"
         logger.info(
             "callas.split.start label=%s job_id=%s page=%d", label, job_id, page_number

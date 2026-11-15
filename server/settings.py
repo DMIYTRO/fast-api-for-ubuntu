@@ -63,6 +63,13 @@ def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> 
     return min(max(value, minimum), maximum)
 
 
+def _callas_poll_intervals() -> tuple[float, float]:
+    """Начальный и максимальный интервал опроса callas; максимум не меньше начального."""
+    interval = max(0.1, float(os.environ.get("IMAGE_MAGIC_CALLAS_POLL_INTERVAL_SECONDS", "0.2")))
+    ceiling = max(interval, float(os.environ.get("IMAGE_MAGIC_CALLAS_POLL_MAX_INTERVAL_SECONDS", "2")))
+    return interval, ceiling
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     database_url: str
@@ -90,6 +97,8 @@ class Settings:
     pitstop_identity_file: Path | None = None
     pitstop_connect_timeout_seconds: int = 10
     pitstop_command_timeout_seconds: float = 180.0
+    # Одновременных проверок PitStop Server (1 — строго последовательно, 1..8).
+    pitstop_max_concurrent: int = 4
     pitstop_mac_shared_root: Path = Path("/mnt/shared")
     pitstop_windows_shared_root: str = "//192.168.88.100/shared"
     pitstop_profiles: tuple[tuple[str, str, str], ...] = ()
@@ -117,8 +126,10 @@ class Settings:
     high_ppi_limit: float = DEFAULT_HIGH_PPI_LIMIT
     callas_request_timeout_seconds: float = 30.0
     callas_job_timeout_seconds: float = 600.0
-    callas_poll_interval_seconds: float = 1.0
-    callas_max_concurrent_jobs: int = 2
+    callas_poll_interval_seconds: float = 0.2
+    callas_poll_max_interval_seconds: float = 2.0
+    # 6 — лимит рендер-линии сервера callas (из 8 рабочих слотов).
+    callas_max_concurrent_jobs: int = 6
     callas_max_retries: int = 4
 
     @classmethod
@@ -247,6 +258,18 @@ class Settings:
                     )
                 ),
             ),
+            pitstop_max_concurrent=max(
+                1,
+                min(
+                    8,
+                    int(
+                        os.environ.get(
+                            "IMAGE_MAGIC_PITSTOP_MAX_CONCURRENT", "4"
+                        ).strip()
+                        or "4"
+                    ),
+                ),
+            ),
             pitstop_mac_shared_root=Path(
                 os.environ.get(
                     "IMAGE_MAGIC_PITSTOP_MAC_SHARED_ROOT", "/mnt/shared"
@@ -300,12 +323,10 @@ class Settings:
                 1.0,
                 float(os.environ.get("IMAGE_MAGIC_CALLAS_JOB_TIMEOUT_SECONDS", "600")),
             ),
-            callas_poll_interval_seconds=max(
-                0.1,
-                float(os.environ.get("IMAGE_MAGIC_CALLAS_POLL_INTERVAL_SECONDS", "1")),
-            ),
+            callas_poll_interval_seconds=_callas_poll_intervals()[0],
+            callas_poll_max_interval_seconds=_callas_poll_intervals()[1],
             callas_max_concurrent_jobs=max(
-                1, int(os.environ.get("IMAGE_MAGIC_CALLAS_MAX_CONCURRENT_JOBS", "2"))
+                1, int(os.environ.get("IMAGE_MAGIC_CALLAS_MAX_CONCURRENT_JOBS", "6"))
             ),
             callas_max_retries=max(
                 0, int(os.environ.get("IMAGE_MAGIC_CALLAS_MAX_RETRIES", "4"))
