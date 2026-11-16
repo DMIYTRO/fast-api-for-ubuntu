@@ -583,6 +583,37 @@ class RunCoordinatorTests(unittest.TestCase):
         self.assertEqual(cancelled["status"], "cancelled")
         self.assertNotIn(("process", "waiting"), adapter.calls)
 
+    def test_orders_confirmed_while_another_resume_runs_are_all_processed(self):
+        # Прод 2026-11-16: оператор подтвердил несколько заказов подряд, пока первый
+        # подтверждённый ещё обрабатывался; остальные навсегда оставались в очереди
+        # возобновлений, а проверка — «running» и активной, блокируя все следующие.
+        adapter = BlockingAdapter(
+            [make_order("a", waiting=True), make_order("b", waiting=True),
+             make_order("c", waiting=True)],
+            block_order="a",
+        )
+        self.adapters["confirm-burst"] = adapter
+        run_id = self.submit("confirm-burst")["id"]
+        self.coordinator.wait_for(run_id, {"waiting_confirmation"}, timeout=2)
+
+        self.coordinator.confirm_correction(run_id, "a")
+        self.assertTrue(adapter.processing_started.wait(timeout=2))
+        self.coordinator.confirm_correction(run_id, "b")
+        self.coordinator.confirm_correction(run_id, "c")
+        adapter.release_processing.set()
+
+        completed = self.coordinator.wait_for(run_id, {"completed"}, timeout=3)
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["processed_orders"], 3)
+        for order_id in ("a", "b", "c"):
+            self.assertIn(("process", order_id), adapter.calls)
+
+        self.adapters["next"] = FakeAdapter([make_order("next")])
+        next_id = self.submit("next")["id"]
+        self.assertEqual(
+            self.coordinator.wait_for(next_id, {"completed"}, timeout=2)["status"], "completed"
+        )
+
     def test_event_ids_are_replayable_for_sse(self):
         self.adapters["events"] = FakeAdapter([make_order("one")])
         run_id = self.submit("events")["id"]

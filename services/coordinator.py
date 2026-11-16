@@ -1362,6 +1362,17 @@ class RunCoordinator:
                 run, "run.completed", self._summary(run), include_orders=False
             )
             self._release_active_locked(run["id"])
+        elif self._active_run_id == run["id"]:
+            # Заказы, подтверждённые, пока шёл предыдущий, ждут в _pending_resumes:
+            # проверка остаётся «running», но воркер свободен — без этого очередь
+            # возобновлений и все следующие проверки блокируются навсегда.
+            self._active_run_id = None
+            if not any(pending_run == run["id"] for pending_run, _ in self._pending_resumes):
+                logger.warning(
+                    "scheduler.run_unsettled run_id=%s processed=%s total=%s",
+                    run["id"], run["processed_orders"], run["total_orders"],
+                )
+            self._schedule_next_locked()
         self._changed.notify_all()
 
     def _cancel_remaining(self, run_id: str) -> None:
