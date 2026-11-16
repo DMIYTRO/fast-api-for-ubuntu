@@ -828,6 +828,8 @@ def _pitstop_adapter_factory(settings: Settings):
                 report_root=resolved_input / "output_report" / "pitstop",
                 command_timeout_seconds=settings.pitstop_command_timeout_seconds,
                 max_concurrent=settings.pitstop_max_concurrent,
+                transient_retries=settings.pitstop_transient_retries,
+                retry_pause_seconds=settings.pitstop_retry_pause_seconds,
             ),
             profiles=catalog,
             transport=transport,
