@@ -85,6 +85,9 @@ def _env_bool(name: str, default: bool) -> bool:
 # Прежний профиль «Convert colors/Convert to CMYK, keep spot colors (ISO Coated v2 (ECI))»
 # по-прежнему можно задать через IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_PROFILE.
 DEFAULT_RGB_TO_CMYK_PROFILE = "Image Magic/NEW_Convert color to 4c for digital printing"
+# Профиль-обёртка: применяет QuickFix JSON из переменной quickfix_config
+# (scripts/build_quickfix_profile.py, callas_profiles/Apply QuickFix config.kfpx).
+DEFAULT_PDF_RESIZE_PROFILE = "Image Magic/Apply QuickFix config"
 DEFAULT_BLACK_SOLID_AREA_THRESHOLD = 0.25
 # Нижний порог доступности кнопки «в составной чёрный»: доля площади страницы с чистым K100.
 DEFAULT_BLACK_SOLID_FIX_AREA_THRESHOLD = 0.01
@@ -167,6 +170,9 @@ class Settings:
     # Автоматический перевод RGB → CMYK итогового PDF процесс-планом callas.
     callas_rgb_to_cmyk_enabled: bool = False
     callas_rgb_to_cmyk_profile: str = DEFAULT_RGB_TO_CMYK_PROFILE
+    # Коррекция размера PDF QuickFix callas (те же правила, что у растра); выключена по умолчанию.
+    callas_pdf_resize_enabled: bool = False
+    callas_pdf_resize_profile: str = DEFAULT_PDF_RESIZE_PROFILE
     # Автоматические допечатные проверки callas на итоговом PDF: шрифты (Warn Fonts),
     # растры выше предела ppi, крупная плашка 100% K (цветоделения).
     callas_prepress_enabled: bool = True
@@ -373,6 +379,11 @@ class Settings:
                 "IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_PROFILE", ""
             ).strip()
             or DEFAULT_RGB_TO_CMYK_PROFILE,
+            callas_pdf_resize_enabled=_env_bool("IMAGE_MAGIC_CALLAS_PDF_RESIZE_ENABLED", False),
+            callas_pdf_resize_profile=os.environ.get(
+                "IMAGE_MAGIC_CALLAS_PDF_RESIZE_PROFILE", ""
+            ).strip()
+            or DEFAULT_PDF_RESIZE_PROFILE,
             callas_prepress_enabled=_env_bool("IMAGE_MAGIC_CALLAS_PREPRESS_ENABLED", True),
             black_solid_area_threshold=_env_float(
                 "IMAGE_MAGIC_BLACK_SOLID_AREA_THRESHOLD",

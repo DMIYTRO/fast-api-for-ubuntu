@@ -50,6 +50,11 @@ class PdfPageInfo:
     rotation: int
     images: tuple[PdfImageInfo, ...]
     content_type: str
+    # Фоновые объекты (заливка, изображение, градиент), закрывающие всю страницу и
+    # выходящие за её край: (запас по ширине, запас по высоте) в мм — наименьший
+    # выход объекта за левый/правый и верхний/нижний край MediaBox. По ним коррекция
+    # размера решает, можно ли показать скрытые вылеты, раздвинув страницу.
+    hidden_margins_mm: tuple[tuple[float, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -120,6 +125,32 @@ def _page_content_type(page: pymupdf.Page, images: tuple[PdfImageInfo, ...]) -> 
     return "vector"
 
 
+_BACKGROUND_KINDS = {"fill-path", "fill-image", "fill-shade"}
+_HIDDEN_EPSILON_MM = 0.05
+
+
+def _hidden_margins(page: pymupdf.Page) -> tuple[tuple[float, float], ...]:
+    """Запасы фоновых объектов за краем страницы (см. ``PdfPageInfo.hidden_margins_mm``)."""
+    # Координаты bboxlog отсчитываются от CropBox; при CropBox ≠ MediaBox не гадаем.
+    if page.cropbox != page.mediabox:
+        return ()
+    try:
+        log = page.get_bboxlog()
+    except Exception:
+        return ()
+    width, height = page.rect.width, page.rect.height
+    margins: set[tuple[float, float]] = set()
+    for kind, rect in log:
+        if kind not in _BACKGROUND_KINDS:
+            continue
+        x0, y0, x1, y1 = rect
+        hx = _mm(min(-x0, x1 - width))
+        hy = _mm(min(-y0, y1 - height))
+        if hx >= -_HIDDEN_EPSILON_MM and hy >= -_HIDDEN_EPSILON_MM and max(hx, hy) > _HIDDEN_EPSILON_MM:
+            margins.add((round(max(hx, 0.0), 3), round(max(hy, 0.0), 3)))
+    return tuple(sorted(margins, reverse=True))
+
+
 def _inspect_page(page: pymupdf.Page, page_number: int) -> PdfPageInfo:
     mediabox = _rect_tuple(page.mediabox)
     images = tuple(
@@ -138,6 +169,7 @@ def _inspect_page(page: pymupdf.Page, page_number: int) -> PdfPageInfo:
         rotation=int(page.rotation),
         images=images,
         content_type=_page_content_type(page, images),
+        hidden_margins_mm=_hidden_margins(page),
     )
 
 

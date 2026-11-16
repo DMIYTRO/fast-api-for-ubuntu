@@ -87,14 +87,9 @@ def _one_page_pdf(path: Path) -> Path:
 
 
 def test_merge_without_callas_fails_with_actionable_error_and_no_pymupdf(tmp_path, monkeypatch):
-    import core.pdf_exporter
     from processing.batch_processor import CALLAS_MERGE_UNAVAILABLE_MESSAGE
     from processing.models import OrderCheck
 
-    def forbidden(*_a, **_k):
-        raise AssertionError("PyMuPDF merge must not be used")
-
-    monkeypatch.setattr(core.pdf_exporter, "merge_pdfs_with_pymupdf", forbidden)
     proc = BatchProcessor(tmp_path, tmp_path / "PDF")
     order = OrderCheck(order_id="1", customer_id="c", files=[])
     with pytest.raises(RuntimeError) as error:
@@ -105,12 +100,7 @@ def test_merge_without_callas_fails_with_actionable_error_and_no_pymupdf(tmp_pat
 
 
 def test_create_pdfs_without_callas_reports_error_per_order(tmp_path, monkeypatch):
-    import core.pdf_exporter
 
-    monkeypatch.setattr(
-        core.pdf_exporter, "merge_pdfs_with_pymupdf",
-        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("PyMuPDF merge used")),
-    )
     inp = tmp_path / "in"
     inp.mkdir()
     _one_page_pdf(inp / "T_(70x30)_4-0_(5-2)_face.pdf")

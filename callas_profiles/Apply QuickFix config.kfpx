@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<pdfpreflight version="23.0">
+	<package>
+		<id3>0a56550778e9483dbf51831d274d8fa6</id3>
+		<exportfingerprint>M5270ac7f206640428dc4b0f334ce02f2</exportfingerprint>
+		<pdfxoutintentlist>
+		</pdfxoutintentlist>
+		<iccprofilelist>
+		</iccprofilelist>
+		<ccpolicies>
+		</ccpolicies>
+		<occdsetups>
+		</occdsetups>
+		<curves>
+		</curves>
+		<fspolicies>
+		</fspolicies>
+		<resources>
+		</resources>
+		<variables>
+		</variables>
+		<conditions>
+		</conditions>
+		<rules>
+		</rules>
+		<rulesets>
+		</rulesets>
+		<fixups>
+		</fixups>
+		<fixupsets>
+		</fixupsets>
+		<actions>
+		</actions>
+		<quickfixes>
+			<quickfix>
+				<id1>Q37094e4e8958412b9f70b332ab3beafb</id1>
+				<id2>Q52426de5be8f415f889dc0336a8085bb</id2>
+				<id3>6e08b3dd7c964a868bd82ccfa481b35c</id3>
+				<id4>cfe0adec83c74d9c98b0de9cd8c5f977</id4>
+				<name>QF_Apply_Config</name>
+				<comment>QuickFix JSON из переменной quickfix_config</comment>
+				<flags edit="1" visible="1"></flags>
+				<metalist>
+					<metadata>
+						<metakey>custom_id</metakey>
+						<metavalue></metavalue>
+					</metadata>
+				</metalist>
+				<creation>D:20261116105750+00&apos;00&apos;</creation>
+				<modification>D:20261116105750+00&apos;00&apos;</modification>
+				<qfcfgs>
+					<qfcfg>
+						<qffeat>javascript</qffeat>
+						<qfinstructions>
+							<qfinstruction>
+								<qfparams>
+									<qfparam key="javascript">JSON.parse(app.vars.quickfix_config);&#10;</qfparam>
+								</qfparams>
+							</qfinstruction>
+						</qfinstructions>
+					</qfcfg>
+				</qfcfgs>
+			</quickfix>
+		</quickfixes>
+		<profiles>
+		</profiles>
+		<metaprofs>
+			<metaprof>
+				<id1>Mdc7327270d23492cbc0bf54a4b8897d4</id1>
+				<id2>M383c4b9195e04598b4b57e0b92c90fee</id2>
+				<id3>5fdd7a025abb49649a24b00f6b18dc5e</id3>
+				<id4>39d989f26b4b48bdaa021edcb5e9f1f6</id4>
+				<id5>M5270ac7f206640428dc4b0f334ce02f2</id5>
+				<name>Apply QuickFix config</name>
+				<comment>Image Magic: применяет QuickFix JSON из переменной quickfix_config</comment>
+				<flags edit="1" visible="1"></flags>
+				<metalist>
+				</metalist>
+				<creation>D:20261116105750+00&apos;00&apos;</creation>
+				<modification>D:20261116105750+00&apos;00&apos;</modification>
+				<sequence>
+					<step type="11">
+						<enabled disablednext="-2">1</enabled>
+						<customid></customid>
+						<quickfix>Q37094e4e8958412b9f70b332ab3beafb</quickfix>
+						<ppoptions>
+							<ppoption ret="0" next="-1">
+							</ppoption>
+							<ppoption ret="1" next="-2">
+							</ppoption>
+						</ppoptions>
+					</step>
+				</sequence>
+				<variables>
+				</variables>
+			</metaprof>
+		</metaprofs>
+		<profgroups>
+		</profgroups>
+	</package>
+</pdfpreflight>

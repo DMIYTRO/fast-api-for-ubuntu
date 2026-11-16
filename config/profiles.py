@@ -39,6 +39,12 @@ class PrePressProfile:
     # IMAGE_MAGIC_CORRECTION_CONFIRM_MAX_MM).
     auto_crop_mm: float = DEFAULT_AUTO_CORRECT_MAX_MM
     confirm_crop_mm: float = DEFAULT_CORRECTION_CONFIRM_MAX_MM
+    # Вытягивание PDF (callas ``stretch_to_fill``) — неравномерный масштаб по ширине и
+    # высоте, допустимый только для PDF и только если пропорциональное заполнение не
+    # проходит автоматически. Искажение пропорций, %: до ``auto`` — само, до ``confirm`` —
+    # с подтверждением оператора, выше — не применяется. 0 — вытягивание выключено.
+    pdf_stretch_auto_pct: float = 1.0
+    pdf_stretch_confirm_pct: float = 3.0
     # Растры с подходящим размером, но разрешением выше ``max_dpi``, уменьшаются
     # до ``target_dpi`` (без обрезки и без смены размера). Переопределяется через
     # ``with_downsample`` (IMAGE_MAGIC_MAX_DPI и IMAGE_MAGIC_DOWNSAMPLE_HIGH_DPI_ENABLED).

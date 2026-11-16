@@ -59,6 +59,9 @@ class FileCheck:
     pdf_colorspaces: tuple[str, ...] = ()
     pdf_min_dpi: Optional[float] = None
     pdf_content_type: Optional[str] = None
+    # Коррекция размера PDF (callas QuickFix): номер страницы → PdfPagePlan
+    # (способ, формат с вылетами в ориентации страницы). Пусто — PDF не меняется.
+    pdf_resize_plans: dict[int, object] = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:

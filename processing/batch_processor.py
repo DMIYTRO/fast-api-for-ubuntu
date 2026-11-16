@@ -25,6 +25,14 @@ from core.resampler import resample_image
 from core.tool_runner import run_command
 from config.profiles import DEFAULT_PROFILE, PrePressProfile
 from .resample_policy import ResampleDecision, analyze_resample
+from .pdf_resize_policy import (
+    METHOD_FILL,
+    METHOD_REVEAL,
+    PdfResizeLimits,
+    page_min_dpi,
+    plan_pdf_page_resize,
+    worst_plan,
+)
 from .profile_rules import evaluate_metadata_rules
 
 from .filename_parser import parse_filename
@@ -65,6 +73,14 @@ class _LogicalPageRef:
     expected_height_mm: float
 
 
+def _resized(item: FileCheck, page) -> tuple[float, float]:
+    """Ожидаемый размер страницы PDF в итоговом файле: после QuickFix — целевой."""
+    plan = item.pdf_resize_plans.get(page.page_number) if item.needs_resample else None
+    if plan is not None:
+        return plan.target_mm
+    return (page.width_mm, page.height_mm)
+
+
 def _logical_side(item: FileCheck) -> str:
     """Return the production side, including a side-less 4-0 PDF."""
     return item.parsed.side or "face"
@@ -98,10 +114,14 @@ class BatchProcessor:
         pdf_color_converter: "Callable[[Path, Path, str], object] | None" = None,
         pdf_prepress_checker: "Callable[..., dict[str, object]] | None" = None,
         correction_policy: str = "auto",
+        pdf_resizer: "Callable[[Path, Path, dict[int, tuple[float, float]], float, str], object] | None" = None,
     ):
         # "auto" — малые коррекции применяются сами (CLI, тесты); "ask" и "reject" —
         # любая коррекция размера требует решения оператора (подтверждение или отказ).
         self.correction_policy = correction_policy
+        # Коррекция размера PDF QuickFix callas (services/callas/page_resize.py); None —
+        # PDF не масштабируется, несовпадение размера остаётся ошибкой.
+        self.pdf_resizer = pdf_resizer
         # Допечатные проверки итогового PDF (шрифты, ppi, плашка K100); None — не проверяем.
         self.pdf_prepress_checker = pdf_prepress_checker
         # Перевод RGB → CMYK итогового PDF через callas; None — не конвертируем.
@@ -318,9 +338,12 @@ class BatchProcessor:
             parsed.width_mm + self.size_extra_mm,
             parsed.height_mm + self.size_extra_mm,
         )
+        resize_plans = self._plan_pdf_resize(check, inspection.pages, expected)
         for page in inspection.pages:
             actual = (page.width_mm, page.height_mm)
-            if not self._dimensions_match(actual, expected) and not self._dimensions_match(
+            if resize_plans is not None:
+                pass  # размер приводится QuickFix callas, решение записано ниже
+            elif not self._dimensions_match(actual, expected) and not self._dimensions_match(
                 actual, (expected[1], expected[0])
             ):
                 # PDF не масштабируется и не обрезается автоматически (в отличие от
@@ -371,6 +394,100 @@ class BatchProcessor:
                     check.errors.append(
                         f"PDF страница {page.page_number}: неизвестная цветовая модель"
                     )
+        if resize_plans is not None:
+            self._record_pdf_resize(check, resize_plans)
+
+    def _plan_pdf_resize(
+        self, check: FileCheck, pages: Sequence[object], expected: tuple[float, float]
+    ) -> "dict[int, object] | None":
+        """Планы QuickFix по страницам, если PDF нужно привести к формату; иначе None.
+
+        Способы и пороги — ``processing/pdf_resize_policy.py`` (показать скрытые вылеты,
+        пропорциональное заполнение как у растра, малое вытягивание). План строится для
+        всех страниц, потому что QuickFix выставляет боксы каждой; страницы с /Rotate
+        не трогаем.
+        """
+        if self.pdf_resizer is None or not pages:
+            return None
+        mismatched = [
+            page for page in pages
+            if not self._dimensions_match((page.width_mm, page.height_mm), expected)
+            and not self._dimensions_match((page.width_mm, page.height_mm), (expected[1], expected[0]))
+        ]
+        if not mismatched or any(page.rotation for page in pages):
+            return None
+        limits = PdfResizeLimits(
+            min_dpi=self.min_dpi,
+            metadata_tolerance_mm=self.profile.metadata_tolerance_mm,
+            auto_mm=self.profile.auto_crop_mm,
+            confirm_mm=self.profile.confirm_crop_mm,
+            stretch_auto_pct=self.profile.pdf_stretch_auto_pct,
+            stretch_confirm_pct=self.profile.pdf_stretch_confirm_pct,
+        )
+        return {
+            page.page_number: plan_pdf_page_resize(
+                (page.width_mm, page.height_mm),
+                expected,
+                page_min_dpi(page.images),
+                limits,
+                getattr(page, "hidden_margins_mm", ()),
+            )
+            for page in pages
+        }
+
+    def _record_pdf_resize(self, check: FileCheck, plans: "dict[int, object]") -> None:
+        plan = worst_plan(plans.values())
+        if plan.decision == ResampleDecision.ACCEPT:
+            return
+        worst_page = next(number for number, value in plans.items() if value is plan)
+        decision = plan.decision
+        reason = plan.reason
+        if self.correction_policy in {"ask", "reject"} and decision == ResampleDecision.AUTO_CORRECT:
+            decision = ResampleDecision.ASK_CONFIRMATION
+            reason = "коррекция размера PDF требует подтверждения пользователя"
+        check.resample_decision = decision.value
+        check.resample_reason = reason
+        check.resample_scale = max(plan.scale)
+        check.resample_crop_mm = plan.crop_mm
+        check.resample_effective_dpi = (
+            None if any(value == float("inf") for value in plan.effective_dpi) else plan.effective_dpi
+        )
+        page = next(p for p in check.pdf_pages if p.page_number == worst_page)
+        actual = (page.width_mm, page.height_mm)
+        target = plan.target_mm
+        if decision == ResampleDecision.REJECT:
+            check.errors.append(
+                f"PDF: размер {actual[0]:.1f}x{actual[1]:.1f} мм; ожидается "
+                f"{target[0]:.1f}x{target[1]:.1f} мм: {plan.reason}"
+            )
+            return
+        check.pdf_resize_plans = dict(plans)
+        check.resample_target_mm = target
+        methods = {value.method for value in plans.values() if value.decision != ResampleDecision.ACCEPT}
+        details = "; ".join(self._pdf_resize_detail(value) for value in plans.values()
+                            if value.method in methods and value.decision != ResampleDecision.ACCEPT)
+        change = f"{actual[0]:.1f}x{actual[1]:.1f} → {target[0]:.1f}x{target[1]:.1f} мм"
+        if decision == ResampleDecision.AUTO_CORRECT:
+            check.needs_resample = True
+            check.warnings.append(f"PDF: размер будет скорректирован callas {change}; {details}")
+        else:
+            check.warnings.append(f"PDF: требуется подтверждение коррекции {change}; {details}")
+
+    @staticmethod
+    def _pdf_resize_detail(plan) -> str:
+        if plan.method == METHOD_REVEAL:
+            return (
+                f"показаны скрытые вылеты: +{plan.enlarge_mm[0]:.2f}/{plan.enlarge_mm[1]:.2f} мм "
+                "с каждой стороны, без масштабирования"
+            )
+        if plan.method == METHOD_FILL:
+            return (
+                f"пропорции сохранены, обрезка {plan.crop_mm[0]:.2f}x{plan.crop_mm[1]:.2f} мм"
+            )
+        return (
+            f"вытягивание {plan.scale[0] * 100:.1f}% × {plan.scale[1] * 100:.1f}%, "
+            f"искажение пропорций {plan.distortion_pct:.2f}%"
+        )
 
     @staticmethod
     def _pdf_page_deviation(
@@ -830,8 +947,8 @@ class BatchProcessor:
                         source=item,
                         source_page_index=index,
                         expected_side="face" if index == 0 else "back",
-                        expected_width_mm=page.width_mm,
-                        expected_height_mm=page.height_mm,
+                        expected_width_mm=_resized(item, page)[0],
+                        expected_height_mm=_resized(item, page)[1],
                     )
                 )
             return refs
@@ -839,7 +956,7 @@ class BatchProcessor:
         for item in ordered_files:
             if item.page_count == 1 and item.pdf_pages:
                 page = item.pdf_pages[0]
-                width_mm, height_mm = page.width_mm, page.height_mm
+                width_mm, height_mm = _resized(item, page)
                 page_index = 0
             else:
                 width_mm, height_mm = item.actual_width_mm, item.actual_height_mm
@@ -864,8 +981,12 @@ class BatchProcessor:
         for page_number, ref in enumerate(page_refs, start=1):
             item = ref.source
             if item.path.suffix.lower() == ".pdf":
-                if str(item.path) not in page_pdfs:
-                    page_pdfs.append(str(item.path))
+                pdf_path = converted.get(item.path)
+                if pdf_path is None:
+                    pdf_path = self._resize_pdf_if_needed(item, page_number, temporary_dir)
+                    converted[item.path] = pdf_path
+                if pdf_path not in page_pdfs:
+                    page_pdfs.append(pdf_path)
                 continue
 
             source_image_path = str(item.path)
@@ -925,6 +1046,32 @@ class BatchProcessor:
             converted[item.path] = str(page_path)
             page_pdfs.append(str(page_path))
         return page_pdfs
+
+    def _resize_pdf_if_needed(self, item: FileCheck, page_number: int, temporary_dir: Path) -> str:
+        """Исходный PDF или его копия, приведённая к формату QuickFix callas."""
+        if not (item.needs_resample and item.pdf_resize_plans):
+            return str(item.path)
+        if self.pdf_resizer is None:
+            raise ValueError("коррекция размера PDF запланирована, но callas QuickFix не настроен")
+        resized = temporary_dir / f"resized_{page_number}_{item.path.stem}.pdf"
+        plans = dict(item.pdf_resize_plans)
+        self.pdf_resizer(item.path, resized, plans, self.size_extra_mm / 2.0, item.path.stem)
+        item.processing_actions.append({
+            "kind": "size_correction",
+            "method": "callas_quickfix",
+            "target_mm": list(item.resample_target_mm or ()),
+            "pages": [
+                {
+                    "page": number,
+                    "method": plan.method,
+                    "scale": [round(value, 5) for value in plan.scale],
+                    "crop_mm": list(plan.crop_mm),
+                    "enlarge_mm": list(plan.enlarge_mm),
+                }
+                for number, plan in sorted(plans.items())
+            ],
+        })
+        return str(resized)
 
     def _render_pdf_pages(self, pdf_path: Path, validation_dir: Path) -> list[Path]:
         """Контрольный рендер callas: доказывает, что PDF открывается; возвращает PNG страниц."""
