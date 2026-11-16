@@ -143,6 +143,10 @@ class Settings:
     pitstop_command_timeout_seconds: float = 180.0
     # Одновременных проверок PitStop Server (1 — строго последовательно, 1..8).
     pitstop_max_concurrent: int = 4
+    # Повторы временного сбоя PitStop (0–3) и пауза перед первым повтором, с;
+    # пауза растёт с каждым повтором (3 с, 6 с, ...).
+    pitstop_transient_retries: int = 2
+    pitstop_retry_pause_seconds: float = 3.0
     pitstop_mac_shared_root: Path = Path("/mnt/shared")
     pitstop_windows_shared_root: str = "//192.168.88.100/shared"
     pitstop_profiles: tuple[tuple[str, str, str], ...] = ()
@@ -335,6 +339,12 @@ class Settings:
                         or "4"
                     ),
                 ),
+            ),
+            pitstop_transient_retries=int(
+                _env_float("IMAGE_MAGIC_PITSTOP_TRANSIENT_RETRIES", 2, minimum=0, maximum=3)
+            ),
+            pitstop_retry_pause_seconds=_env_float(
+                "IMAGE_MAGIC_PITSTOP_RETRY_PAUSE_SECONDS", 3.0, minimum=0.0, maximum=60.0
             ),
             pitstop_mac_shared_root=Path(
                 os.environ.get(

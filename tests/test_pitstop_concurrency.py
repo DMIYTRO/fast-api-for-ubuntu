@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path, PureWindowsPath
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -340,7 +341,7 @@ class TransientFailureRetryTests(PitStopConcurrencyCase):
             self.assertEqual(len(transport.calls_for(name)), 1)
         self.assertEqual(results[0].report.counts.warnings, 1)
         # The pause before the retry was requested (injected, not slept).
-        self.assertEqual(self.sleeps, [1.0])
+        self.assertEqual(self.sleeps, [3.0])
         warning = "\n".join(logs.output)
         self.assertIn("order-0.pdf", warning)
         self.assertIn("transient", warning)  # first failure reason
@@ -396,13 +397,50 @@ class TransientFailureRetryTests(PitStopConcurrencyCase):
             result = service.check_pdf(pdf, profile_id="production_check")
 
         self.assertEqual(result.status, PitStopExecutionStatus.FAILED)
-        self.assertEqual(len(transport.calls), 2)  # exactly one retry
-        self.assertIn("после 2 попыток", result.technical_error)
+        self.assertEqual(len(transport.calls), 3)  # two retries by default
+        self.assertIn("после 3 попыток", result.technical_error)
+        self.assertEqual(self.sleeps, [3.0, 6.0])  # the pause grows per retry
         self.assertIn("кодом 1", result.technical_error)
         self.assertIn("profile busy", result.technical_error)
         self.assertLessEqual(len(result.technical_error), 1000)
         self.assertIsNone(result.report)
         self.assertEqual(result.input_pdf, pdf.resolve())
+
+    def test_file_invisible_to_pitstop_twice_succeeds_on_third_attempt(self):
+        # Прод 2026-11-16: PitStop Server на Windows не видел только что записанный
+        # в SMB-папку PDF (error code 2018) и после паузы в 1 с — заказ 16214265.
+        pdf = self.make_pdfs(1)[0]
+        invisible = (
+            "result", 1,
+            "349: Error while creating handle to the input file (PitStop Library "
+            "error code 2018): No valid path for the asked file or the file does not exists",
+        )
+        transport = FakeTransport(
+            self.report_root,
+            lambda call: invisible if call.attempt <= 2 else ("ok",),
+        )
+        service = self.make_service(transport)
+
+        with self.assertLogs("services.pitstop", level="WARNING"):
+            result = service.check_pdf(pdf, profile_id="production_check")
+
+        self.assertEqual(result.status, PitStopExecutionStatus.COMPLETED)
+        self.assertEqual([call.attempt for call in transport.calls], [1, 2, 3])
+        self.assertEqual(self.sleeps, [3.0, 6.0])
+
+    def test_pdf_is_flushed_to_the_share_before_each_attempt(self):
+        pdf = self.make_pdfs(1)[0]
+        transport = FakeTransport(
+            self.report_root,
+            lambda call: ("result", 1, "transient") if call.attempt == 1 else ("ok",),
+        )
+        service = self.make_service(transport)
+
+        with mock.patch("services.pitstop.service.os.fsync") as fsync:
+            with self.assertLogs("services.pitstop", level="WARNING"):
+                service.check_pdf(pdf, profile_id="production_check")
+
+        self.assertEqual(fsync.call_count, 2)  # before the first attempt and the retry
 
     def test_retries_can_be_disabled(self):
         pdf = self.make_pdfs(1)[0]

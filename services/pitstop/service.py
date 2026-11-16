@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import shutil
 import time
 from dataclasses import dataclass, replace
@@ -47,10 +48,15 @@ class PitStopServiceSettings:
     # How many PitStopServerCLI jobs may run at once (IMAGE_MAGIC_PITSTOP_MAX_CONCURRENT).
     # None: read the variable from the environment (default 4); 1 is strictly serial.
     max_concurrent: int | None = None
-    # Exclusive repeats of a transient failure; 0 disables retries.
-    transient_retries: int = 1
-    # Pause before an exclusive retry, so the server can settle.
-    retry_pause_seconds: float = 1.0
+    # Exclusive repeats of a transient failure; 0 disables retries
+    # (IMAGE_MAGIC_PITSTOP_TRANSIENT_RETRIES).
+    transient_retries: int = 2
+    # Pause before the first exclusive retry; it grows linearly (3 s, 6 s, ...),
+    # because a PDF just written to the SMB share may stay invisible to
+    # PitStop Server for a few seconds ("No valid path ... error code 2018",
+    # seen on prod 2026-11-15/16; a 1 s pause was not always enough).
+    # IMAGE_MAGIC_PITSTOP_RETRY_PAUSE_SECONDS.
+    retry_pause_seconds: float = 3.0
     # Automatic fallback to serial mode (see concurrency.py).
     degrade_threshold: int = DEGRADE_THRESHOLD_DEFAULT
     degrade_window_seconds: float = DEGRADE_WINDOW_SECONDS_DEFAULT
@@ -146,6 +152,7 @@ class PitStopService:
         if not input_pdf.is_file() or input_pdf.suffix.lower() != ".pdf":
             raise ValueError(f"PDF для проверки не найден: {input_pdf}")
         profile = self._profiles.get(profile_id)
+        _flush_to_share(input_pdf)
 
         first = self._attempt(input_pdf, profile, exclusive=False)
         if first.kind is None:
@@ -166,7 +173,8 @@ class PitStopService:
                 reason,
             )
             if self._settings.retry_pause_seconds > 0:
-                self._sleep(self._settings.retry_pause_seconds)
+                self._sleep(self._settings.retry_pause_seconds * (number - 1))
+            _flush_to_share(input_pdf)
             attempt = self._attempt(input_pdf, profile, exclusive=True)
             if attempt.kind is None:
                 logger.warning(
@@ -312,6 +320,20 @@ class PitStopService:
             logger.warning(
                 "Не удалось удалить временный отчёт PitStop: %s", report_dir
             )
+
+
+def _flush_to_share(path: Path) -> None:
+    """Push cached writes of *path* to the SMB server before PitStop opens it.
+
+    The PDF is written through the CIFS mount and read by PitStop Server on
+    Windows; fsync makes the client flush its cache so the server sees the
+    complete file.  Best effort: a failure here must not fail the check.
+    """
+    try:
+        with open(path, "rb") as handle:
+            os.fsync(handle.fileno())
+    except OSError as exc:
+        logger.debug("PitStop: fsync %s не выполнен: %s", path.name, exc)
 
 
 def _sha256(path: Path) -> str:
