@@ -169,7 +169,9 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
                         candidate = service.publish_accepted(pdf)
                         if candidate is not None:
                             _updated, _pitstop, revision, sha256 = (
-                                request.app.state.order_workflow.recheck_pdf_revision(run, order, candidate)
+                                request.app.state.order_workflow.recheck_pdf_revision(
+                                    run, order, candidate, callas_fix=True
+                                )
                             )
                             service.mark_published(pdf, sha256=sha256, revision=revision)
                     except Exception as exc:

@@ -686,6 +686,8 @@ class RunCoordinator:
         preview_paths: list[str] | None = None,
         color_conversion: dict[str, Any] | None = None,
         prepress: dict[str, Any] | None = None,
+        pitstop_baseline: dict[str, Any] | None = None,
+        invalidate_pitstop_baseline: bool = False,
     ) -> dict[str, Any]:
         """Replace the production PDF with a re-checked revision.
 
@@ -693,6 +695,11 @@ class RunCoordinator:
         routed into its status folder), so the operator transition rules do
         not apply; the order status becomes the recomputed one.  Returns the
         updated order DTO.
+
+        ``pitstop_baseline`` (PitStop DTO of the order's original PDF) is
+        stored only once and never overwritten.  ``invalidate_pitstop_baseline``
+        records that a revision not made by a Callas fix replaced the PDF, so
+        later fixes are no longer compared with the original check.
         """
         if status not in {"passed", "warning", "error"}:
             raise ValueError(f"недопустимый статус ревизии PDF: {status}")
@@ -720,6 +727,14 @@ class RunCoordinator:
                 updated["color_conversion"] = color_conversion
             if prepress is not None:
                 updated["prepress"] = prepress
+            if pitstop_baseline is not None and updated.get("pitstop_baseline") is None:
+                updated["pitstop_baseline"] = deepcopy(pitstop_baseline)
+            if (
+                invalidate_pitstop_baseline
+                and updated.get("pitstop_baseline") is not None
+                and updated.get("pitstop_baseline_invalid_since_revision") is None
+            ):
+                updated["pitstop_baseline_invalid_since_revision"] = current_pdf_revision
             updated["processing_errors"] = list(errors or [])
             updated["status"] = status
             updated["passed"] = status in {"passed", "warning"}

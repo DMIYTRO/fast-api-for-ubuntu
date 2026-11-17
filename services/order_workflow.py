@@ -34,6 +34,7 @@ from .pdf_routing import completed_status, pdf_root_for, route_pdf
 from .pdf_revision_validation import readable_pdf, validate_pdf_revision
 from .return_preview import custom_return_preview_path, prepare_return_preview_name
 from .callas.renderer import dpi_for_longest_side, render_pdf_to_pngs
+from .pitstop.baseline import FixBaselinePolicy, apply_fix_baseline, is_original_check
 from .layered_tiff_print import (
     ReviewedLayeredPdfError,
     build_reviewed_layered_print_pdf,
@@ -73,8 +74,11 @@ class OrderWorkflowService:
         accepted_pdf_provider: Callable[[Path], Path | None] | None = None,
         pdf_color_converter: Callable[[Path, Path, str], Any] | None = None,
         pdf_prepress_checker: Callable[..., dict[str, Any]] | None = None,
+        pitstop_fix_baseline: FixBaselinePolicy | None = None,
     ) -> None:
         self.pdf_color_converter = pdf_color_converter
+        # None — сравнение с исходной проверкой PitStop не подключено (тесты, CLI).
+        self.pitstop_fix_baseline = pitstop_fix_baseline
         self.pdf_prepress_checker = pdf_prepress_checker
         self.coordinator = coordinator
         self.session_factory = session_factory
@@ -114,10 +118,22 @@ class OrderWorkflowService:
             self._release_action(stored_id)
 
     def recheck_pdf_revision(
-        self, run: dict[str, Any], order: dict[str, Any], candidate: Path
+        self,
+        run: dict[str, Any],
+        order: dict[str, Any],
+        candidate: Path,
+        *,
+        callas_fix: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any] | None, int, str]:
-        """Validate a candidate before replacing the current PDF and its status."""
+        """Validate a candidate before replacing the current PDF and its status.
+
+        ``callas_fix`` — кандидат создан принятием исправления Callas: только тогда
+        находки PitStop сравниваются с проверкой исходного PDF клиента (см.
+        ``services/pitstop/baseline.py``). Ручная замена PDF и сборка из TIFF не
+        сравниваются.
+        """
         direction = str(run["options"].get("direction") or "digital")
+        captured_baseline, baseline = self._pitstop_baseline_for(order, callas_fix=callas_fix)
         conversion = None
         if self.pdf_color_converter is not None:
             from .callas.color_conversion import convert_rgb_to_cmyk
@@ -166,6 +182,11 @@ class OrderWorkflowService:
                 "technical_error": "Для повторной проверки исправленного PDF не настроен PitStop.",
                 "issues": [], "reports": {},
             }
+        if callas_fix and pitstop is not None and self.pitstop_fix_baseline is not None:
+            # Только в памяти: отчёты PitStop не меняются, повторных запусков нет.
+            pitstop = apply_fix_baseline(
+                pitstop, baseline, self.pitstop_fix_baseline, profile_key=direction
+            )
         status = completed_status(
             local_errors=not readable_pdf(inspection),
             local_warnings=bool(inspection.errors or inspection.warnings),
@@ -211,6 +232,8 @@ class OrderWorkflowService:
                     preview_paths=previews,
                     color_conversion=conversion,
                     prepress=prepress,
+                    pitstop_baseline=captured_baseline,
+                    invalidate_pitstop_baseline=not callas_fix,
                 )
             except Exception:
                 # Storage did not commit the new status: restore its previous bytes.
@@ -221,6 +244,30 @@ class OrderWorkflowService:
                     routed.unlink(missing_ok=True)
                 raise
         return updated, pitstop, revision, sha256
+
+    def _pitstop_baseline_for(
+        self, order: dict[str, Any], *, callas_fix: bool
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """(baseline to store now, baseline to compare with) for a PDF revision.
+
+        The baseline is the PitStop check of the order's first PDF revision. It
+        is captured once, on the first accepted Callas fix, and never replaced;
+        chained fixes compare against it. After a revision that was not a
+        Callas fix (manual replacement, reviewed TIFF) there is nothing to
+        compare against: the PDF is no longer the client's original plus fixes.
+        """
+        if not callas_fix or self.pitstop_fix_baseline is None:
+            return None, None
+        if order.get("pitstop_baseline_invalid_since_revision") is not None:
+            return None, None
+        stored = order.get("pitstop_baseline")
+        if stored:
+            return None, stored
+        current = order.get("pitstop")
+        if is_original_check(current, order.get("current_pdf_revision")):
+            captured = deepcopy(current)
+            return captured, captured
+        return None, None
 
     def _claim_action(self, order_result_id: int, action: str) -> str | None:
         """Claim an order without waiting; return the action already in progress."""
@@ -696,6 +743,7 @@ class OrderWorkflowService:
                                 transition_order = order
                                 if order["status"] not in {"passed", "warning"}:
                                     raise FileLifecycleError("PDF изменился и не прошёл повторную проверку.")
+                            accepted_callas_fix = False
                             reviewed_pdf = build_reviewed_layered_print_pdf(
                                 order,
                                 input_root,
@@ -713,9 +761,11 @@ class OrderWorkflowService:
                                 reviewed_pdf = self.accepted_pdf_provider(
                                     Path(str(order["pdf_path"]))
                                 )
+                                accepted_callas_fix = reviewed_pdf is not None
                             if reviewed_pdf is not None:
                                 order, reviewed_pitstop, reviewed_revision, reviewed_sha256 = self.recheck_pdf_revision(
-                                    run, order, reviewed_pdf
+                                    run, order, reviewed_pdf,
+                                    callas_fix=accepted_callas_fix,
                                 )
                                 previous_order = deepcopy(order)
                                 if order["status"] not in {"passed", "warning"}:

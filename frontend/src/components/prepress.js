@@ -1,6 +1,8 @@
 // Допечатные проверки callas на карточке заказа (order.prepress, order.color_conversion).
 // Данные считает бэкенд (services/callas/prepress.py); здесь только отображение.
 
+import { visibleIssueGroups } from "./pitstopBaseline.js";
+
 export const FIX_BUTTONS = {
   fonts_to_outlines: {
     label: "Перевести шрифты в кривые",
@@ -61,7 +63,7 @@ export function fontLabel(font) {
 }
 
 export function clippingGroup(order) {
-  const groups = Array.isArray(order?.issue_groups) ? order.issue_groups : [];
+  const groups = visibleIssueGroups(Array.isArray(order?.issue_groups) ? order.issue_groups : [], order?.pitstop);
   return groups.find((group) => group.code === CLIPPING_CODE || group.fix_plan === "remove_clipping") || null;
 }
 

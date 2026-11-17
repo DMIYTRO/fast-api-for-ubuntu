@@ -122,3 +122,63 @@ class PrepressSettingsTests(unittest.TestCase):
             settings = Settings.from_env()
         self.assertEqual(settings.black_solid_area_threshold, 0.25)
         self.assertEqual(settings.high_ppi_limit, 72.0)  # нижняя граница
+
+
+class PitStopFixBaselineSettingsTests(unittest.TestCase):
+    NAMES = (
+        "IMAGE_MAGIC_PITSTOP_FIX_BASELINE_ENABLED",
+        "IMAGE_MAGIC_PITSTOP_FIX_BASELINE_ACTIONS",
+        "IMAGE_MAGIC_PITSTOP_FIX_BASELINE_PROFILES",
+    )
+
+    def test_defaults_compare_clipping_and_transparency_for_digital(self):
+        environment = {key: value for key, value in os.environ.items() if key not in self.NAMES}
+        with patch.dict(os.environ, environment, clear=True):
+            settings = Settings.from_env()
+        self.assertTrue(settings.pitstop_fix_baseline_enabled)
+        self.assertEqual(settings.pitstop_fix_baseline_actions, frozenset({"2079", "3004"}))
+        self.assertEqual(settings.pitstop_fix_baseline_profiles, frozenset({"digital"}))
+
+    def test_overrides_are_trimmed_and_blank_means_default(self):
+        with patch.dict(os.environ, {
+            "IMAGE_MAGIC_PITSTOP_FIX_BASELINE_ENABLED": "false",
+            "IMAGE_MAGIC_PITSTOP_FIX_BASELINE_ACTIONS": " 2079, ,1012 ",
+            "IMAGE_MAGIC_PITSTOP_FIX_BASELINE_PROFILES": "digital,offset",
+        }):
+            settings = Settings.from_env()
+        self.assertFalse(settings.pitstop_fix_baseline_enabled)
+        self.assertEqual(settings.pitstop_fix_baseline_actions, frozenset({"2079", "1012"}))
+        self.assertEqual(settings.pitstop_fix_baseline_profiles, frozenset({"digital", "offset"}))
+        with patch.dict(os.environ, {"IMAGE_MAGIC_PITSTOP_FIX_BASELINE_ACTIONS": "  "}):
+            self.assertEqual(
+                Settings.from_env().pitstop_fix_baseline_actions, frozenset({"2079", "3004"})
+            )
+
+    def test_create_app_wires_the_policy_into_the_order_workflow(self):
+        import tempfile
+        from dataclasses import replace
+        from pathlib import Path
+
+        import control_panel
+
+        with tempfile.TemporaryDirectory() as directory:
+            settings = replace(
+                Settings.from_env(),
+                database_url=f"sqlite:///{Path(directory) / 'state.db'}",
+                log_dir=Path(directory) / "logs",
+                pitstop_fix_baseline_enabled=False,
+                pitstop_fix_baseline_actions=frozenset({"3004"}),
+                pitstop_fix_baseline_profiles=frozenset({"offset"}),
+            )
+            app = control_panel.create_app(
+                settings=settings,
+                allowed_roots=(Path(directory),),
+                default_input_dir=Path(directory),
+                initialize_schema=True,
+            )
+            policy = app.state.order_workflow.pitstop_fix_baseline
+            self.assertEqual(
+                (policy.enabled, policy.actions, policy.profiles),
+                (False, frozenset({"3004"}), frozenset({"offset"})),
+            )
+            app.state.database.dispose()

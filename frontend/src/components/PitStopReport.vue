@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from "vue";
 import { groupPitStopIssues, issueObjectLabel } from "./issueGroups.js";
+import { visiblePitStopIssues } from "./pitstopBaseline.js";
 
 const props = defineProps({
   pitstop: { type: Object, required: true },
@@ -8,7 +9,8 @@ const props = defineProps({
 });
 const expanded = ref(false);
 const counts = computed(() => props.pitstop.counts || {});
-const issues = computed(() => props.pitstop.issues || []);
+// Без находок, добавленных исправлением Callas; counts/verdict бэкенд уже скорректировал.
+const issues = computed(() => visiblePitStopIssues(props.pitstop.issues));
 // Одна строка на тип проблемы (severity + actionID/сообщение): "N объектов, страницы: …".
 const groupedIssues = computed(() => groupPitStopIssues(issues.value).map((group, index) => ({ ...group, key: `${group.source}-${group.severity}-${group.code}-${index}` })));
 const groupDetails = (group) => {

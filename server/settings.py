@@ -107,6 +107,12 @@ def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> 
     return min(max(value, minimum), maximum)
 
 
+def _env_csv_set(name: str, default: str) -> frozenset[str]:
+    """Comma-separated values; an empty or missing variable means ``default``."""
+    raw = os.environ.get(name, "").strip() or default
+    return frozenset(item.strip() for item in raw.split(",") if item.strip())
+
+
 def _callas_poll_intervals() -> tuple[float, float]:
     """Начальный и максимальный интервал опроса callas; максимум не меньше начального."""
     interval = max(0.1, float(os.environ.get("IMAGE_MAGIC_CALLAS_POLL_INTERVAL_SECONDS", "0.2")))
@@ -150,6 +156,11 @@ class Settings:
     pitstop_mac_shared_root: Path = Path("/mnt/shared")
     pitstop_windows_shared_root: str = "//192.168.88.100/shared"
     pitstop_profiles: tuple[tuple[str, str, str], ...] = ()
+    # Проверка PitStop PDF после принятого исправления Callas сравнивается с проверкой
+    # исходного PDF: находки этих действий, добавленные самим исправлением, не считаются.
+    pitstop_fix_baseline_enabled: bool = True
+    pitstop_fix_baseline_actions: frozenset[str] = frozenset({"2079", "3004"})
+    pitstop_fix_baseline_profiles: frozenset[str] = frozenset({"digital"})
     callas_url: str = ""
     callas_token: str = field(default="", repr=False)
     callas_share: Path = Path("/mnt/shared")
@@ -356,6 +367,15 @@ class Settings:
                 "//192.168.88.100/shared",
             ).strip(),
             pitstop_profiles=pitstop_profiles,
+            pitstop_fix_baseline_enabled=_env_bool(
+                "IMAGE_MAGIC_PITSTOP_FIX_BASELINE_ENABLED", True
+            ),
+            pitstop_fix_baseline_actions=_env_csv_set(
+                "IMAGE_MAGIC_PITSTOP_FIX_BASELINE_ACTIONS", "2079,3004"
+            ),
+            pitstop_fix_baseline_profiles=_env_csv_set(
+                "IMAGE_MAGIC_PITSTOP_FIX_BASELINE_PROFILES", "digital"
+            ),
             callas_url=os.environ.get("IMAGE_MAGIC_CALLAS_URL", "").strip(),
             callas_token=os.environ.get("IMAGE_MAGIC_CALLAS_TOKEN", "").strip(),
             callas_share=Path(
