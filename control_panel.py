@@ -1322,6 +1322,46 @@ def create_app(
         except InvalidRunStateError as exc:
             raise APIError(409, "invalid_run_state", str(exc)) from exc
 
+    event_polls: dict[
+        tuple[asyncio.AbstractEventLoop, str, int],
+        asyncio.Task[tuple[list[Any], bool, float | None]],
+    ] = {}
+
+    async def poll_events(
+        coordinator: RunCoordinator, run_id: str, cursor: int,
+    ) -> tuple[list[Any], bool, float | None]:
+        events = await asyncio.to_thread(
+            _list_events_batch, coordinator, run_id, cursor, SSE_EVENT_BATCH,
+        )
+        if events:
+            return events, False, None
+        summary = await asyncio.to_thread(coordinator.get_run_summary, run_id)
+        terminal = summary["status"] in SSE_TERMINAL_STATUSES
+        return events, terminal, None if terminal else asyncio.get_running_loop().time() + 1
+
+    async def shared_event_poll(
+        coordinator: RunCoordinator, run_id: str, cursor: int,
+    ) -> tuple[list[Any], bool, float | None]:
+        loop = asyncio.get_running_loop()
+        key = (loop, run_id, cursor)
+        task = event_polls.get(key)
+        if task is None:
+            task = loop.create_task(poll_events(coordinator, run_id, cursor))
+            event_polls[key] = task
+
+            def finished(result: asyncio.Task[tuple[list[Any], bool, float | None]]) -> None:
+                if not result.cancelled() and result.exception() is None:
+                    _, _, idle_until = result.result()
+                    # Keep empty active polls until the next poll is due, so
+                    # clients at the same cursor converge on a shared cadence.
+                    if idle_until is not None:
+                        loop.call_at(idle_until, event_polls.pop, key, None)
+                        return
+                event_polls.pop(key, None)
+
+            task.add_done_callback(finished)
+        return await asyncio.shield(task)
+
     @application.get(
         "/api/checks/{run_id}/events", dependencies=[Depends(protected)]
     )
@@ -1343,10 +1383,11 @@ def create_app(
             idle_polls = 0
             drained_after_terminal = False
             while not await request.is_disconnected():
-                events = await asyncio.to_thread(
-                    _list_events_batch,
-                    coordinator_value, run_id, cursor, SSE_EVENT_BATCH,
-                )
+                poll = poll_events if drained_after_terminal else shared_event_poll
+                try:
+                    events, terminal, idle_until = await poll(coordinator_value, run_id, cursor)
+                except RunNotFoundError:
+                    break
                 if events:
                     idle_polls = 0
                     for position, event in enumerate(events, start=1):
@@ -1362,20 +1403,17 @@ def create_app(
                     if idle_polls >= 15:
                         yield ": keep-alive\n\n"
                         idle_polls = 0
-                    try:
-                        summary = await asyncio.to_thread(
-                            coordinator_value.get_run_summary, run_id
-                        )
-                    except RunNotFoundError:
-                        break
-                    if summary["status"] in SSE_TERMINAL_STATUSES:
+                    if terminal:
                         if drained_after_terminal:
                             break
                         # Read once more so an event written just before the
                         # status flipped is not lost, then finish.
                         drained_after_terminal = True
                         continue
-                await asyncio.sleep(1)
+                if idle_until is not None:
+                    await asyncio.sleep(max(0, idle_until - asyncio.get_running_loop().time()))
+                else:
+                    await asyncio.sleep(1)
 
         return StreamingResponse(
             generate(),
