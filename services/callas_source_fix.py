@@ -30,7 +30,7 @@ from typing import Any, Mapping
 
 from processing.models import FileCheck
 
-from .callas_bleed import BLEED_ONLY_NOTE, not_bleed_only_warning
+from .callas_bleed import not_bleed_only_warning
 from .callas_fix import RASTER_SOURCE_SUFFIXES, STATUS_ACCEPTED, STATUS_READY, comparison_payload
 
 SIZE_PLAN_KEY = "size_correction"
@@ -56,7 +56,7 @@ ORDER_CHANGED_MESSAGE = (
 
 
 def applied_note(fix: Mapping[str, Any]) -> str:
-    """Предупреждение на файле, собранном из принятого исправления Callas."""
+    """Подпись принятого исправления Callas (подсказка значка; в warnings не пишется)."""
     if fix.get("plan") == SIZE_PLAN_KEY:
         return "Размер исправлен Callas (поля дорисованы), использован исправленный PDF"
     title = str(fix.get("plan_title") or fix.get("plan") or "исправление Callas")
@@ -76,12 +76,11 @@ def mark_applied(check: FileCheck, fix: Mapping[str, Any]) -> FileCheck:
     if info.get("baseline_pdf") is not None:
         info["baseline_pdf"] = str(info["baseline_pdf"])
     check.callas_source_fix = info
-    notes = [applied_note(info)]
-    if info.get("plan") == SIZE_PLAN_KEY:
-        notes.append(
-            BLEED_ONLY_NOTE if info["bleed_only"] else not_bleed_only_warning(info["bleed_only_reasons"])
-        )
-    check.warnings[:0] = notes
+    # Сам факт принятого исправления — пометка в интерфейсе (значок на карточке заказа
+    # по ``callas_source_fix``), а не предупреждение. Предупреждение остаётся только
+    # если фикс размера изменил макет, а не одни поля.
+    if info.get("plan") == SIZE_PLAN_KEY and not info["bleed_only"]:
+        check.warnings.insert(0, not_bleed_only_warning(info["bleed_only_reasons"]))
     return check
 
 

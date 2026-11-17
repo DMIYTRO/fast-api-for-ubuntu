@@ -10,7 +10,7 @@ import OrderActions from "./OrderActions.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import { orderIssueGroups } from "./issueGroups.js";
 import InkCoverage from "./InkCoverage.vue";
-import { availableFixes, fontLabel, fontsInfo, iccOff, prepressNotices, recommendedFixes } from "./prepress.js";
+import { availableFixes, callasSourceFixTitle, fontLabel, fontsInfo, iccOff, prepressNotices, recommendedFixes } from "./prepress.js";
 import { inkCoverageFlagLabel, inkCoverageMainFlag, inkCoverageTitle } from "./inkCoverage.js";
 
 const props = defineProps({ order: Object, runId: String, selected: Boolean, reasons: Array, paidDesign: { type: Boolean, default: true }, designCost: { type: String, default: "0" } });
@@ -61,6 +61,7 @@ const rgbConvertedTitle = computed(() => {
   return `Цветовая модель скорректирована: RGB переведён в CMYK${pages ? ` (стр. ${pages})` : ""}${info.profile ? `. Профиль: ${info.profile}` : ""}`;
 });
 const iccOffTitle = computed(() => iccOff(props.order));
+const callasFixTitle = computed(() => callasSourceFixTitle(props.order));
 const iccTitle = computed(() => iccOffTitle.value || "ICC-профиль не снимался");
 const fontsOutlinedTitle = computed(() => fonts.value?.converted ? "Шрифты переведены в кривые" : "Шрифты в кривые не переводились");
 const fonts = computed(() => fontsInfo(props.order));
@@ -219,6 +220,7 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
         <span class="rgb-cmyk-indicator" :class="{ inactive: !rgbConverted }" :title="rgbConvertedTitle" :aria-label="rgbConvertedTitle" role="img"><b class="c-r">R</b><b class="c-g">G</b><b class="c-b">B</b></span>
         <span class="icc-off-indicator" :class="{ inactive: !iccOffTitle }" :title="iccTitle" :aria-label="iccTitle" role="img">ICC off</span>
         <span class="fonts-outlined-indicator" :class="{ inactive: !fonts?.converted }" :title="fontsOutlinedTitle" :aria-label="fontsOutlinedTitle" role="img"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 16 9 4h2l5 12M6.5 11.5h7" /></svg></span>
+        <span v-if="callasFixTitle" class="callas-source-fix-indicator" :title="callasFixTitle" :aria-label="callasFixTitle">Поля Callas</span>
         <span v-if="flattenedTiffs.length" class="tiff-flatten-indicator" :title="tiffFlattenTitle" :aria-label="tiffFlattenTitle">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" aria-hidden="true"><path d="m3 7 9-4 9 4-9 4-9-4Zm0 5 9 4 9-4M3 17l9 4 9-4" /></svg>
           TIFF сведён

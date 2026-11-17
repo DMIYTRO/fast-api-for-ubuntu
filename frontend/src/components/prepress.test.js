@@ -4,7 +4,7 @@ import OrderCard from "./OrderCard.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import FixComparison from "./FixComparison.vue";
 import { api } from "../services/api.js";
-import { ALL_FIXES, NOT_DETECTED_NOTE, availableFixes, blackFixAvailable, fontLabel, iccOff, prepressNotices, recommendedFixes } from "./prepress.js";
+import { ALL_FIXES, NOT_DETECTED_NOTE, availableFixes, blackFixAvailable, callasSourceFixTitle, fontLabel, iccOff, prepressNotices, recommendedFixes } from "./prepress.js";
 
 const mounted = [];
 function mountComponent(component, props) {
@@ -274,5 +274,26 @@ describe("FixComparison post check", () => {
     const host = mountComponent(FixComparison, { comparison: { status: "failed", plan: { key: "fonts_to_outlines", title: "Шрифты" }, error: "Шрифты не встроены, перевод в кривые невозможен, нужна проверка макета.", summary: {} } });
     await nextTick();
     expect(host.querySelector(".fix-error")?.textContent).toContain("Шрифты не встроены, перевод в кривые невозможен");
+  });
+});
+
+describe("callasSourceFixTitle", () => {
+  it("is empty without accepted source fixes", () => {
+    expect(callasSourceFixTitle({ files: [{ name: "a.pdf" }, { name: "b.pdf", callas_source_fix: { status: "ready" } }] })).toBe("");
+  });
+  it("names each accepted fix and whether only bleed was drawn", () => {
+    const title = callasSourceFixTitle({ files: [
+      { name: "face.pdf", callas_source_fix: { status: "accepted", plan: "size_correction", bleed_only: true } },
+      { name: "back.tif", callas_source_fix: { status: "accepted", plan: "size_correction", bleed_only: false } },
+    ] });
+    expect(title).toContain("face.pdf: Callas дорисовал поля вылета, макет не изменён");
+    expect(title).toContain("back.tif: размер исправлен Callas, макет изменён");
+  });
+  it("shows the badge on the order card", async () => {
+    const host = card({ files: [{ id: "f", name: "face.pdf", side: "face", callas_source_fix: { status: "accepted", plan: "size_correction", bleed_only: true } }] });
+    await flush();
+    const badge = host.querySelector(".callas-source-fix-indicator");
+    expect(badge?.textContent).toBe("Поля Callas");
+    expect(badge?.getAttribute("title")).toContain("face.pdf");
   });
 });

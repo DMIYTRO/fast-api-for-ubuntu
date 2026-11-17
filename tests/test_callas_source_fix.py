@@ -32,6 +32,7 @@ from tests.fake_callas import FakeCallasMerger
 from tests.test_callas_fix_service import FakeClient, make_pdf
 from tests.test_pdf_resize import _fake_resizer
 
+# Принятое исправление — значок в интерфейсе, а не строка в warnings.
 NOTE = "Размер исправлен Callas (поля дорисованы), использован исправленный PDF"
 FACE = "T_(97x97)_4-4_(5-1)_face.pdf"
 BACK = "T_(97x97)_4-4_(5-1)_back.pdf"
@@ -206,7 +207,7 @@ class SourceFixTests(SourceFixCase):
         # Файл проверен заново по исправленному PDF: формат совпал, решения не нужно.
         self.assertEqual(face["resample_decision"], "accept")
         self.assertAlmostEqual(face["actual_width_mm"], 101, places=1)
-        self.assertIn(NOTE, face["warnings"])
+        self.assertNotIn(NOTE, face["warnings"])
         self.assertEqual(face["path"], str(self.face))
         self.assertEqual(back["resample_decision"], "ask_confirmation")
         self.assertNotIn("callas_source_fix", back)
@@ -260,7 +261,7 @@ class SourceFixTests(SourceFixCase):
         self.assertEqual(parts[0], "accepted.pdf")
         self.assertTrue(parts[1].startswith("resized_2_"), parts)
         face, back = self.entry(order, FACE), self.entry(order, BACK)
-        self.assertIn(NOTE, face["warnings"])
+        self.assertNotIn(NOTE, face["warnings"])
         self.assertNotIn("коррекция размера подтверждена пользователем", face["warnings"])
         self.assertIn("коррекция размера подтверждена пользователем", back["warnings"])
         with self.client.app.state.database.session_factory() as session:
@@ -354,7 +355,7 @@ class SourceFixTests(SourceFixCase):
         face = self.entry(self.order(run_id), FACE)
         self.assertEqual(face["callas_source_fix"]["status"], "accepted")
         self.assertTrue(face["callas_source_fix"]["pdf_path"].endswith("accepted.pdf"))
-        self.assertIn(NOTE, face["warnings"])
+        self.assertNotIn(NOTE, face["warnings"])
         comparison = face["callas_fix"]["comparison"]
         self.assertEqual(comparison["status"], "accepted")
         self.assertTrue(comparison["applied"])

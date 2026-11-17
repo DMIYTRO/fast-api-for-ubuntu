@@ -26,6 +26,23 @@ export const CLIPPING_CODE = "action:2079";
 
 const ok = (block) => block && block.status === "ok";
 
+// Значок «Поля Callas»: исходный файл заказа заменён принятым исправлением Callas
+// (file.callas_source_fix.status === "accepted"). Это пометка, а не предупреждение.
+export function callasSourceFixTitle(order) {
+  const files = order?.files || order?.file_results || [];
+  const parts = files
+    .filter((file) => file?.callas_source_fix?.status === "accepted")
+    .map((file) => {
+      const fix = file.callas_source_fix;
+      const name = file.name || file.filename || String(file.path || "").split("/").pop() || "файл";
+      if (fix.plan === "size_correction") {
+        return `${name}: ${fix.bleed_only ? "Callas дорисовал поля вылета, макет не изменён" : "размер исправлен Callas, макет изменён"}`;
+      }
+      return `${name}: исправлено Callas («${fix.plan_title || fix.plan || "исправление"}»)`;
+    });
+  return parts.join("; ");
+}
+
 // Значок «ICC off»: бэкенд ставит icc_removed только если ICC/выходной профиль был и из результата
 // исчез. Неудавшаяся конвертация оставляет PDF как был, поэтому для неё значка нет.
 export function iccOff(order) {

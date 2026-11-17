@@ -396,11 +396,12 @@ def test_mark_applied_explains_the_verdict():
     reasons = ["внутри формата изменилось 3.2 % изображения"]
     mark_applied(check, {"plan": "size_correction", "bleed_only": False,
                          "bleed_only_reasons": reasons, "baseline_pdf": Path("/x/face.pdf")})
-    assert check.warnings[1] == not_bleed_only_warning(reasons)
-    assert "все проверки выполнены по исправленному PDF" in check.warnings[1]
+    assert check.warnings[0] == not_bleed_only_warning(reasons)
+    assert "все проверки выполнены по исправленному PDF" in check.warnings[0]
     assert check.callas_source_fix["baseline_pdf"] == "/x/face.pdf"
 
     bleed = FileCheck(path=Path("face.pdf"))
     mark_applied(bleed, {"plan": "size_correction", "bleed_only": True, "bleed_only_reasons": []})
-    assert "проверены по исходному файлу" in bleed.warnings[1]
+    # «Только поля» — не предупреждение: пометка в интерфейсе по callas_source_fix.
+    assert bleed.warnings == []
     assert bleed.callas_source_fix["bleed_only"] is True
