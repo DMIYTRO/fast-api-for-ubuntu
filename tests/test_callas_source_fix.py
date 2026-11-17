@@ -47,7 +47,13 @@ def page_sizes_mm(path: Path) -> list[tuple[float, float]]:
         ]
 
 
-class SourceFixTests(unittest.TestCase):
+class SourceFixCase(unittest.TestCase):
+    """Заказ 97×97 мм, ждущий решения, и приложение с фейковыми callas (без тестов)."""
+
+    def adapter_kwargs(self) -> dict:
+        """Дополнительные аргументы BatchProcessorAdapter (PitStop и т. п.)."""
+        return {}
+
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory(dir=control_panel.PROJECT_DIR)
         self.root = Path(self.temporary_directory.name)
@@ -82,7 +88,7 @@ class SourceFixTests(unittest.TestCase):
             allowed_roots=(self.root,),
             default_input_dir=self.root,
             adapter_factory=lambda options: BatchProcessorAdapter(
-                options, processor_factory=processor_factory
+                options, processor_factory=processor_factory, **self.adapter_kwargs()
             ),
             callas_fix_service=CallasFixService(self.fix_client),
             initialize_schema=True,
@@ -166,7 +172,9 @@ class SourceFixTests(unittest.TestCase):
         for path, content in self.originals.items():
             self.assertEqual(path.read_bytes(), content, path.name)
 
-    # ------------------------------------------------------------------ tests
+
+
+class SourceFixTests(SourceFixCase):
     def test_ready_source_fix_of_waiting_order_can_be_accepted(self):
         run_id = self.make_run()
         order = self.order(run_id)

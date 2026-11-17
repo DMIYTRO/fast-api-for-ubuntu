@@ -1439,6 +1439,10 @@ class RunCoordinator:
                 dto["pitstop_skipped_reason"] = artifacts.pitstop_skipped_reason
             if artifacts.pdf_kind:
                 dto["pdf_kind"] = artifacts.pdf_kind
+            if getattr(artifacts, "pitstop_baseline", None):
+                # Проверка исходных PDF клиента (сторона из принятого исправления
+                # Callas исходника): с ней сравниваются и последующие исправления.
+                dto["pitstop_baseline"] = artifacts.pitstop_baseline
             if pitstop:
                 pitstop_event = (
                     "pitstop.check_completed"

@@ -780,6 +780,15 @@ def _ink_coverage_checker(settings: Settings):
     )
 
 
+def _pitstop_fix_baseline_policy(settings: Settings) -> FixBaselinePolicy:
+    """Сравнение PitStop с проверкой PDF клиента (IMAGE_MAGIC_PITSTOP_FIX_BASELINE_*)."""
+    return FixBaselinePolicy(
+        enabled=settings.pitstop_fix_baseline_enabled,
+        actions=settings.pitstop_fix_baseline_actions,
+        profiles=settings.pitstop_fix_baseline_profiles,
+    )
+
+
 def _pitstop_adapter_factory(settings: Settings):
     required = {
         "IMAGE_MAGIC_PITSTOP_HOST": settings.pitstop_host,
@@ -849,6 +858,7 @@ def _pitstop_adapter_factory(settings: Settings):
             processor_factory=processor_factory,
             pitstop_service=service,
             ink_coverage_checker=ink_checker,
+            pitstop_fix_baseline=_pitstop_fix_baseline_policy(settings),
             correction_limit_mm=settings.auto_correct_max_mm,
             correction_confirm_max_mm=settings.correction_confirm_max_mm,
             max_dpi=settings.max_dpi,
@@ -1015,11 +1025,7 @@ def create_app(
         pdf_color_converter=_callas_rgb_to_cmyk_converter(settings),
         pdf_prepress_checker=_callas_prepress_checker(settings),
         pdf_page_extractor=_callas_page_extractor(settings),
-        pitstop_fix_baseline=FixBaselinePolicy(
-            enabled=settings.pitstop_fix_baseline_enabled,
-            actions=settings.pitstop_fix_baseline_actions,
-            profiles=settings.pitstop_fix_baseline_profiles,
-        ),
+        pitstop_fix_baseline=_pitstop_fix_baseline_policy(settings),
         accepted_pdf_provider=(
             callas_fix_service.publish_accepted if callas_fix_service else None
         ),
