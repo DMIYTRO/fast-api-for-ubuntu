@@ -40,6 +40,7 @@ describe("checks store", () => {
       .mockReturnValueOnce(new Promise((resolve) => { resolveResync = resolve; }))
       .mockResolvedValueOnce({ id: "new", status: "running" });
     vi.spyOn(api, "orders")
+      .mockResolvedValueOnce({ items: [] })
       .mockReturnValueOnce(new Promise((resolve) => { resolveOrders = resolve; }))
       .mockResolvedValueOnce({ items: [{ order_id: "new-order" }] });
     const oldDisconnect = vi.fn();
@@ -48,15 +49,15 @@ describe("checks store", () => {
       .mockReturnValueOnce(oldDisconnect)
       .mockReturnValueOnce(newDisconnect);
 
-    const oldSelection = store.selectRun("old");
-    await Promise.resolve();
+    await store.selectRun("old");
+    const oldPage = store.loadOrders(1);
     const oldStream = connect.mock.calls[0][1];
     const oldResync = oldStream.onState("reconnecting");
     await store.selectRun("new");
     await connect.mock.calls[1][1].onState("connected");
     resolveOrders({ items: [{ order_id: "old-order" }] });
     resolveResync({ id: "old", status: "completed" });
-    await Promise.all([oldSelection, oldResync]);
+    await Promise.all([oldPage, oldResync]);
     await oldStream.onState("closed");
     oldStream.onEvent({ type: "run.completed" });
 

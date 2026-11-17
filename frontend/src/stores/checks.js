@@ -170,9 +170,8 @@ export const useChecksStore = defineStore("checks", {
       this.orders = [];
       this.page = 1; this.pageInfo = { total: 0, total_pages: 1, counts: {} };
       this.selected = []; this.selectedOrderSnapshots = {};
-      const orders = this.loadOrders(1);
-      if (running(run.status)) this.listen(id);
-      await orders;
+      await this.loadOrders(1);
+      if (selectionSequence === this.runSelectionSequence && running(run.status)) this.listen(id);
     },
     stopListening() {
       this.runSelectionSequence += 1;
