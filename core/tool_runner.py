@@ -76,6 +76,10 @@ def run_command(
                     pass
                 process.wait()
                 raise
+            except BaseException:
+                # Match subprocess.run: do not wait for an interrupted tool to finish.
+                process.kill()
+                raise
 
             result = subprocess.CompletedProcess(process.args, process.poll(), stdout, stderr)
             if check:

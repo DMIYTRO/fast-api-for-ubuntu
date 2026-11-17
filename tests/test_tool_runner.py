@@ -25,6 +25,15 @@ class ToolRunnerTests(unittest.TestCase):
         mocked_popen.assert_called_once_with(["magick", "-version"], start_new_session=True)
         process.communicate.assert_called_once_with(None, timeout=12)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX subprocess wrapper")
+    @patch("core.tool_runner.subprocess.Popen")
+    def test_interrupted_communication_stops_tool_before_context_exit(self, mocked_popen):
+        process = mocked_popen.return_value.__enter__.return_value
+        process.communicate.side_effect = KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            run_command(["magick", "-version"])
+        process.kill.assert_called_once_with()
+
     def test_preserves_captured_output_on_nonzero_exit(self):
         command = [sys.executable, "-c", "import sys; sys.exit(sys.stdin.read())"]
 
