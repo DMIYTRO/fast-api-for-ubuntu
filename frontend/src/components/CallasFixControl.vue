@@ -28,7 +28,8 @@ const extraButtons = computed(() => props.fixes.filter((key) => FIX_BUTTONS[key]
   return { key, ...base, recommended, title: recommended ? base.title : `${NOT_DETECTED_NOTE}. ${base.title}` };
 }));
 
-// «applied» — принятое исправление стало новой ревизией PDF: карточка заказа (статус, замечания,
+// «applied» — принятое исправление стало новой ревизией PDF (или исходный файл заказа теперь
+// собирается из исправленного PDF, либо снова из исходника): карточка заказа (статус, замечания,
 // кнопки исправлений, превью) устарела и должна перечитаться.
 const emit = defineEmits(["applied"]);
 const uid = useId();
@@ -127,12 +128,15 @@ async function start(key = planKey.value) {
   if (!key || busy.value) return;
   busy.value = true;
   error.value = "";
+  // Новый запуск сбрасывает принятое исправление исходника: заказ снова проверяет исходный файл.
+  const wasApplied = Boolean(comparison.value?.applied);
   try {
     const payload = await api.startCallasFix(props.runId, props.orderId, key, props.fileId);
     if (disposed) return;
     stopPolling();
     const next = extract(payload);
     apply(next ? payload : { comparison: { status: "processing", plan: plans.value.find((p) => p.key === key) || { key, title: key } } });
+    if (wasApplied) emit("applied");
   } catch (e) {
     if (UNAVAILABLE.includes(e?.status)) unavailable.value = true;
     error.value = errorMessage(e, "Не удалось запустить исправление Callas.");

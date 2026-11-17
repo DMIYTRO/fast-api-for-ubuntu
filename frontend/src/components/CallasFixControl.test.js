@@ -71,6 +71,53 @@ describe("CallasFixControl for a source PDF of an order without a built PDF", ()
   });
 });
 
+describe("CallasFixControl for a source PDF of an order waiting for a correction decision", () => {
+  const sourceReady = { comparison: { ...ready.comparison, source_only: true, can_accept: true, pdf_url: "/p" } };
+
+  it("accepts the source fix for that file, shows the decided state and refreshes the order card", async () => {
+    const decide = vi.spyOn(api, "decideCallasFix").mockResolvedValue({
+      comparison: { ...sourceReady.comparison, status: "accepted", decision: "accepted", applied: true, can_accept: false },
+    });
+    const onApplied = vi.fn();
+    const { host } = mount({ fileId: "f-1", initial: sourceReady, onApplied });
+    await nextTick();
+    expect(host.querySelector("a[href='/p']")).toBeNull();
+    byText(host, "Принять").click();
+    await flush();
+    expect(decide).toHaveBeenCalledWith("run-1", "agg-1", "accept", "f-1");
+    expect(onApplied).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain("Принято: этот файл будет собран из исправленного PDF");
+    expect(host.querySelector(".fix-actions")).toBeNull();
+  });
+
+  it("rejects the source fix without refreshing the order card", async () => {
+    const decide = vi.spyOn(api, "decideCallasFix").mockResolvedValue({
+      comparison: { ...sourceReady.comparison, status: "rejected", decision: "rejected", can_accept: false },
+    });
+    const onApplied = vi.fn();
+    const { host } = mount({ fileId: "f-1", initial: sourceReady, onApplied });
+    await nextTick();
+    byText(host, "Отклонить").click();
+    await flush();
+    expect(decide).toHaveBeenCalledWith("run-1", "agg-1", "reject", "f-1");
+    expect(onApplied).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("Исправление отклонено");
+  });
+
+  it("refreshes the order card when a new fix replaces an applied one", async () => {
+    vi.spyOn(api, "callasPlans").mockResolvedValue({ plans: [plan] });
+    vi.spyOn(api, "startCallasFix").mockResolvedValue(proc);
+    vi.spyOn(api, "callasFixStatus").mockResolvedValue(proc);
+    const onApplied = vi.fn();
+    const applied = { comparison: { ...sourceReady.comparison, status: "accepted", applied: true, can_accept: false } };
+    const { host } = mount({ fileId: "f-1", initial: applied, onApplied });
+    await nextTick();
+    sizeButton(host).click();
+    await flush();
+    expect(onApplied).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("CallasFixControl", () => {
   it("does not run a different plan when size correction is unavailable", async () => {
     vi.spyOn(api, "callasPlans").mockResolvedValue({ plans: [{ key: "other", title: "Другой план" }] });
