@@ -401,6 +401,9 @@ class BatchProcessorAdapter:
         result.pitstop = _pitstop_result_to_dto(pitstop_result, checked_revision=1)
         result.current_pdf_revision = 1
         result.current_pdf_sha256 = pitstop_result.input_sha256
+        # Как и в производственной ветке: до итогового статуса и раскладки PDF —
+        # вердикт без находок, добавленных принятым исправлением Callas исходника.
+        self._apply_source_fix_baseline(order, result)
 
     def _process_order_unrouted(self, order: OrderCheck) -> OrderArtifacts:
         # Fold overlays and previews depend on postpress; wait for Sborka here
@@ -571,51 +574,94 @@ class BatchProcessorAdapter:
         return result
 
     def _apply_source_fix_baseline(self, order: OrderCheck, result: OrderArtifacts) -> None:
-        """Сравнить PitStop собранного PDF с проверкой исходных PDF клиента.
+        """Сравнить PitStop PDF заказа с проверкой исходных PDF клиента.
+
+        Вызывается в КАЖДОЙ ветке, где PitStop проверяет PDF заказа (производственный
+        и диагностический PDF), до итогового статуса, раскладки и превью.
 
         Только если хотя бы одна сторона собрана из принятого исправления Callas
         исходника и профиль входит в ``IMAGE_MAGIC_PITSTOP_FIX_BASELINE_PROFILES``;
         остальные заказы не получают ни одного лишнего запуска PitStop.
 
-        Baseline — проверки исходников ВСЕХ файлов заказа (и исправленных, и нет):
-        сравнение идёт по суммам вхождений на ``action_id``, а находки стороны без
-        исправления попадают в собранный PDF без изменений, поэтому они всегда есть в
-        baseline и не могут быть скрыты. Скрывается только то, чего у клиента не было
-        ни в одном исходнике.
+        Объём сравнения: если каждое принятое исправление только дорисовало вылеты
+        (``callas_source_fix["bleed_only"]``), сравниваются все действия PitStop —
+        всё новое принесли вылеты. Если хоть одно исправление сделало что-то ещё,
+        осторожно сравниваются только ``IMAGE_MAGIC_PITSTOP_FIX_BASELINE_ACTIONS``.
 
-        Сбой baseline (ошибка, таймаут, растровый файл, который PitStop не проверяет)
-        ничего не вычитает (``baseline_status`` = ``failed``/``missing``) и не роняет
-        заказ. PDF заказа, превью и отчёты основной проверки не меняются.
+        Baseline — проверки исходников ВСЕХ файлов заказа (и исправленных, и нет):
+        для стороны с исправлением — её PDF до исправления
+        (``callas_source_fix["baseline_pdf"]``: исходный PDF или PDF, собранный из
+        растрового исходника), для прочих — сам исходник, если это PDF. Сравнение идёт
+        по суммам вхождений на ``action_id``, а находки стороны без исправления попадают
+        в PDF заказа без изменений, поэтому они всегда есть в baseline и не могут быть
+        скрыты. Скрывается только то, чего у клиента не было ни в одном исходнике.
+
+        Сбой baseline (ошибка, таймаут, растровый файл без исправления, который PitStop
+        не проверяет) ничего не вычитает (``baseline_status`` = ``failed``/``missing``)
+        и не роняет заказ. PDF заказа, превью и отчёты основной проверки не меняются.
         """
         policy = self.pitstop_fix_baseline
         pitstop = result.pitstop
         direction = self.options.direction
         if policy is None or self.pitstop_service is None or not pitstop:
             return
-        if not any(
-            item.callas_source_fix is not None and item.content_path is not None
+        fixes = [
+            item.callas_source_fix
             for item in order.files
-        ):
+            if item.callas_source_fix is not None and item.content_path is not None
+        ]
+        if not fixes:
             return
-        if not policy.applies_to(direction):
+        bleed_only = all(
+            isinstance(fix, dict) and fix.get("bleed_only") is True for fix in fixes
+        )
+        scope = "all" if policy.actions_for(all_actions=bleed_only) is None else "actions"
+        branch = result.pdf_kind or "production"
+
+        def log(status: Any, checks: str = "", reason: str = "", after: Any = None) -> None:
+            logger.info(
+                "order.pitstop_source_baseline order_id=%s branch=%s scope=%s "
+                "status=%s reason=%s checks=%s verdict=%s->%s",
+                order.order_id,
+                branch,
+                scope,
+                status,
+                reason or "-",
+                checks,
+                pitstop.get("verdict"),
+                after,
+            )
+
+        if not policy.applies_to(direction, all_actions=bleed_only):
+            log("skipped", reason="policy")
             return
         if pitstop.get("execution_status") != "completed":
+            log("skipped", reason="main_check_failed")
             return
         sources: list[Path] = []
+        missing: list[str] = []
         ordered = sorted(
             order.files,
             key=lambda item: 0 if item.parsed and item.parsed.side == "face" else 1,
         )
         for item in ordered:
-            if item.path not in sources:
-                sources.append(item.path)
-        if any(path.suffix.lower() != ".pdf" for path in sources):
-            # Растровый исходник PitStop не проверяет: сравнить не с чем.
-            logger.info(
-                "order.pitstop_source_baseline_skipped order_id=%s reason=raster_source",
-                order.order_id,
+            path = _baseline_source(item)
+            if path is None:
+                missing.append(item.path.name)
+            elif path not in sources:
+                sources.append(path)
+        if missing:
+            # Растровый исходник без PDF до исправления PitStop не проверяет:
+            # сравнить не с чем, ничего не скрывается.
+            adjusted = apply_fix_baseline(
+                pitstop, None, policy, profile_key=direction, all_actions=bleed_only
             )
-            result.pitstop = apply_fix_baseline(pitstop, None, policy, profile_key=direction)
+            log(
+                adjusted.get("baseline_status") if adjusted else None,
+                reason="raster_source:" + ",".join(missing),
+                after=adjusted.get("verdict") if adjusted else None,
+            )
+            result.pitstop = adjusted
             return
         checks: list[tuple[str, dict[str, Any]]] = []
         for path in sources:
@@ -639,14 +685,13 @@ class BatchProcessorAdapter:
             if check.get("execution_status") != "completed":
                 break  # Неполный baseline всё равно не используется.
         baseline = merge_source_checks(checks)
-        adjusted = apply_fix_baseline(pitstop, baseline, policy, profile_key=direction)
-        logger.info(
-            "order.pitstop_source_baseline order_id=%s status=%s checks=%s verdict=%s->%s",
-            order.order_id,
+        adjusted = apply_fix_baseline(
+            pitstop, baseline, policy, profile_key=direction, all_actions=bleed_only
+        )
+        log(
             adjusted.get("baseline_status") if adjusted else None,
-            ",".join(str(check.get("check_id")) for _, check in checks),
-            pitstop.get("verdict"),
-            adjusted.get("verdict") if adjusted else None,
+            checks=",".join(str(check.get("check_id")) for _, check in checks),
+            after=adjusted.get("verdict") if adjusted else None,
         )
         result.pitstop = adjusted
         if baseline.get("execution_status") == "completed":
@@ -674,6 +719,23 @@ class BatchProcessorAdapter:
             key=lambda item: 0 if item.parsed and item.parsed.side == "face" else 1,
         )
         return [item.path.stem for item in ordered]
+
+
+def _baseline_source(item: FileCheck) -> Path | None:
+    """PDF стороны до исправления Callas для baseline или ``None``, если его нет.
+
+    У стороны с принятым исправлением — ``callas_source_fix["baseline_pdf"]``
+    (исходный PDF или PDF, собранный из растрового исходника); иначе — сам исходник,
+    если это PDF. Растровый исходник без такого PDF PitStop не проверяет.
+    """
+    fix = item.callas_source_fix
+    if isinstance(fix, dict) and item.content_path is not None:
+        baseline_pdf = fix.get("baseline_pdf")
+        if baseline_pdf:
+            path = Path(str(baseline_pdf))
+            if path.is_file():
+                return path
+    return item.path if item.path.suffix.lower() == ".pdf" else None
 
 
 def _sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:

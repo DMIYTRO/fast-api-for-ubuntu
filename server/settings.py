@@ -161,6 +161,9 @@ class Settings:
     pitstop_fix_baseline_enabled: bool = True
     pitstop_fix_baseline_actions: frozenset[str] = frozenset({"2079", "3004"})
     pitstop_fix_baseline_profiles: frozenset[str] = frozenset({"digital"})
+    # Исправление, которое только дорисовало вылеты, сравнивается по всем действиям
+    # PitStop: всё новое по сравнению с PDF клиента принесли вылеты.
+    pitstop_bleed_fix_all_actions: bool = True
     callas_url: str = ""
     callas_token: str = field(default="", repr=False)
     callas_share: Path = Path("/mnt/shared")
@@ -375,6 +378,9 @@ class Settings:
             ),
             pitstop_fix_baseline_profiles=_env_csv_set(
                 "IMAGE_MAGIC_PITSTOP_FIX_BASELINE_PROFILES", "digital"
+            ),
+            pitstop_bleed_fix_all_actions=_env_bool(
+                "IMAGE_MAGIC_PITSTOP_BLEED_FIX_ALL_ACTIONS", True
             ),
             callas_url=os.environ.get("IMAGE_MAGIC_CALLAS_URL", "").strip(),
             callas_token=os.environ.get("IMAGE_MAGIC_CALLAS_TOKEN", "").strip(),

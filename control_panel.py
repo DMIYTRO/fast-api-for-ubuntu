@@ -65,7 +65,7 @@ from services.sborka_integration import (
     build_sender,
 )
 from services.callas_fix import comparison_payload as callas_fix_payload, read_state_file as read_callas_fix_state
-from services.callas_source_fix import source_comparison as source_fix_comparison
+from services.callas_source_fix import fixable_source_path, source_comparison as source_fix_comparison
 from services.print_readiness import print_blockers, print_mode
 from services.ftp_preview_uploader import build_ftp_preview_uploader
 from services.return_preview import CUSTOM_PREVIEWS_RELATIVE_PATH, custom_return_preview_path
@@ -230,7 +230,7 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
         elif input_path:
             order["print_blockers"] = print_blockers(order)
             order["print_mode"] = print_mode(order["print_blockers"])
-            # Итогового PDF нет (например, ошибка размера): исправлять можно исходные PDF.
+            # Итогового PDF нет (например, ошибка размера): исправлять можно исходные файлы (PDF и растры).
             input_root = input_path.resolve()
             for index, entry in enumerate(order.get("files") or []):
                 source = _source_pdf_path(input_root, entry)
@@ -577,14 +577,8 @@ def _order_file_id(run_id: str, order: dict[str, Any], index: int, entry: dict[s
 
 
 def _source_pdf_path(input_root: Path, entry: dict[str, Any]) -> Path | None:
-    """Исходный PDF заказа внутри папки проверки или ``None`` (растр, чужой путь, файла нет)."""
-    raw = entry.get("path") or entry.get("source_path")
-    if not raw:
-        return None
-    source = Path(str(raw)).resolve()
-    if source.suffix.lower() != ".pdf" or not _is_inside(source, input_root) or not source.is_file():
-        return None
-    return source
+    """Исходный файл заказа (PDF или растр) внутри папки проверки или ``None``."""
+    return fixable_source_path(input_root, entry)
 
 
 def _callas_fix_order(
@@ -622,7 +616,7 @@ def _callas_fix_order(
         raise APIError(
             422,
             "callas_fix_not_pdf",
-            "Исправление Callas доступно только для существующего PDF-файла заказа.",
+            "Исправление Callas доступно только для существующего исходного файла заказа (PDF или растр).",
         )
     return run, order, source
 
@@ -786,6 +780,7 @@ def _pitstop_fix_baseline_policy(settings: Settings) -> FixBaselinePolicy:
         enabled=settings.pitstop_fix_baseline_enabled,
         actions=settings.pitstop_fix_baseline_actions,
         profiles=settings.pitstop_fix_baseline_profiles,
+        bleed_fix_all_actions=settings.pitstop_bleed_fix_all_actions,
     )
 
 

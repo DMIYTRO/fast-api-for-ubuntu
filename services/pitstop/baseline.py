@@ -12,10 +12,18 @@
 Callas собранного PDF), либо сумма проверок исходных PDF клиента
 (``merge_source_checks``), если сторона заказа собрана из принятого исправления
 исходника (``BatchProcessorAdapter``).
+
+Объём сравнения. Исправления, которые только дорисовали вылеты (``bleed_only``
+у плана ``size_correction``), сравниваются по ВСЕМ действиям PitStop: всё, чего не
+было у клиента, принесли вылеты (растянутые полосы с низким разрешением — 1150,
+обтравка — 2079, прозрачность — 3004 и любые другие). Прочие исправления (шрифты,
+K100, снятие обтравки...) сравниваются только по списку
+``IMAGE_MAGIC_PITSTOP_FIX_BASELINE_ACTIONS``.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
@@ -58,9 +66,20 @@ class FixBaselinePolicy:
     enabled: bool = True
     actions: frozenset[str] = DEFAULT_FIX_BASELINE_ACTIONS
     profiles: frozenset[str] = DEFAULT_FIX_BASELINE_PROFILES
+    # IMAGE_MAGIC_PITSTOP_BLEED_FIX_ALL_ACTIONS: исправление «только вылеты»
+    # сравнивается по всем действиям, а не по ``actions``.
+    bleed_fix_all_actions: bool = True
 
-    def applies_to(self, profile_key: str | None) -> bool:
-        return bool(self.enabled and self.actions and profile_key in self.profiles)
+    def actions_for(self, *, all_actions: bool = False) -> frozenset[str] | None:
+        """Действия для сравнения; ``None`` — все действия проверки."""
+        if all_actions and self.bleed_fix_all_actions:
+            return None
+        return self.actions
+
+    def applies_to(self, profile_key: str | None, *, all_actions: bool = False) -> bool:
+        if not self.enabled or profile_key not in self.profiles:
+            return False
+        return self.actions_for(all_actions=all_actions) is None or bool(self.actions)
 
 
 def is_original_check(pitstop: Mapping[str, Any] | None, current_revision: Any) -> bool:
@@ -88,15 +107,18 @@ def apply_fix_baseline(
     policy: FixBaselinePolicy,
     *,
     profile_key: str | None = None,
+    all_actions: bool = False,
 ) -> dict[str, Any] | None:
     """DTO проверки ревизии, созданной принятием исправления Callas, с учётом baseline.
 
-    ``profile_key`` — профиль запуска, если в самом DTO его нет.
+    ``profile_key`` — профиль запуска, если в самом DTO его нет. ``all_actions`` —
+    исправление только дорисовало вылеты: сравниваются все действия (если это не
+    выключено в ``policy.bleed_fix_all_actions``).
     """
     if current is None:
         return None
     key = profile_key_of(current) or profile_key
-    if not policy.applies_to(key):
+    if not policy.applies_to(key, all_actions=all_actions):
         result = _raw_copy(current)
         result["baseline_status"] = BASELINE_DISABLED
         return result
@@ -104,18 +126,23 @@ def apply_fix_baseline(
     if baseline_key is not None and baseline_key != key:
         # Другой профиль — другие правила и уровни: сравнивать не с чем.
         baseline = None
-    return diff_against_baseline(current, baseline, policy.actions)
+    return diff_against_baseline(
+        current, baseline, policy.actions_for(all_actions=all_actions)
+    )
 
 
 def diff_against_baseline(
     current: Mapping[str, Any],
     baseline: Mapping[str, Any] | None,
-    actions: frozenset[str],
+    actions: Iterable[str] | None,
 ) -> dict[str, Any]:
     """Новый DTO ``current``, где учтено только добавленное после ``baseline``.
 
-    Сопоставление — по ``action_id``. Для каждого действия из ``actions``: B — число
-    вхождений в исходной проверке, C — в текущей.
+    Сопоставление — по ``action_id``. ``actions`` — сравниваемые действия; ``None`` —
+    все действия текущей проверки, и тогда находка без ``action_id`` сопоставляется
+    по тексту сообщения без цифр (число вхождений и номера страниц в тексте
+    меняются, суть — нет). Для каждого действия: B — число вхождений в исходной
+    проверке, C — в текущей.
 
     * C <= B — без изменений;
     * C > B > 0 — уровень сохраняется, ``baseline_occurrences = B``,
@@ -138,16 +165,16 @@ def diff_against_baseline(
         result["baseline_status"] = BASELINE_FAILED
         return result
 
-    wanted = {str(item) for item in actions}
+    wanted = None if actions is None else {str(item) for item in actions}
     budget = _baseline_occurrences(baseline.get("issues") or (), wanted)
     raw_counts = dict(result.get("counts") or {})
     counts = dict(raw_counts)
     for issue in result.get("issues") or ():
         if not isinstance(issue, dict):
             continue
-        action = _action_key(issue.get("action_id"))
+        action = _match_key(issue, wanted)
         severity = str(issue.get("severity") or "")
-        if action not in wanted or severity not in _COUNT_KEYS:
+        if action is None or severity not in _COUNT_KEYS:
             continue
         occurrences = _occurrences(issue)
         allowed = min(occurrences, budget.get(action, 0))
@@ -271,16 +298,36 @@ def _raw_copy(dto: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _baseline_occurrences(
-    issues: Iterable[Any], wanted: set[str]
+    issues: Iterable[Any], wanted: set[str] | None
 ) -> dict[str, int]:
     totals: dict[str, int] = {}
     for issue in issues:
         if not isinstance(issue, Mapping):
             continue
-        action = _action_key(issue.get("action_id"))
-        if action in wanted:
+        action = _match_key(issue, wanted)
+        if action is not None:
             totals[action] = totals.get(action, 0) + _occurrences(issue)
     return totals
+
+
+def _match_key(issue: Mapping[str, Any], wanted: set[str] | None) -> str | None:
+    """Ключ сопоставления находки или ``None``, если она не сравнивается.
+
+    Со списком действий — только ``action_id`` из списка. Без списка (все действия)
+    — ``action_id``, а у находки без него — нормализованный текст сообщения.
+    """
+    action = _action_key(issue.get("action_id"))
+    if wanted is not None:
+        return action if action in wanted else None
+    if action is not None:
+        return action
+    message = _normalized_message(issue.get("message"))
+    return f"message:{message}" if message else None
+
+
+def _normalized_message(value: Any) -> str:
+    text = re.sub(r"\d+", "", str(value or "")).casefold()
+    return " ".join(text.split())
 
 
 def _action_key(value: Any) -> str | None:
