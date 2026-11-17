@@ -62,7 +62,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("auth:expired", expired);
   window.removeEventListener("scroll", updateBackToTop);
-  checks.stopEvents?.();
+  checks.stopListening();
 });
 </script>
 

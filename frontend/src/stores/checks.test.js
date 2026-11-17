@@ -3,12 +3,84 @@ import { createPinia, setActivePinia } from "pinia";
 import { useChecksStore, isOrderPrintable, isOrderForcePrintable } from "./checks.js";
 import { orderIdentity } from "./orderIdentity.js";
 import { api } from "../services/api.js";
+import * as events from "../services/events.js";
 
 describe("checks store", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     localStorage.clear();
     vi.restoreAllMocks();
+  });
+
+  it("ignores an older selection that resolves after the latest run", async () => {
+    const store = useChecksStore();
+    let resolveOld;
+    vi.spyOn(api, "run")
+      .mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve; }))
+      .mockResolvedValueOnce({ id: "new", status: "running" });
+    vi.spyOn(api, "orders").mockResolvedValue({ items: [{ order_id: "new-order" }] });
+    const connect = vi.spyOn(events, "connectRunEvents").mockReturnValue(vi.fn());
+
+    const oldSelection = store.selectRun("old");
+    await store.selectRun("new");
+    resolveOld({ id: "old", status: "running" });
+    await oldSelection;
+
+    expect(store.activeRun.id).toBe("new");
+    expect(store.orders[0].order_id).toBe("new-order");
+    expect(connect).toHaveBeenCalledExactlyOnceWith("new", expect.any(Object));
+  });
+
+  it("keeps a delayed page and obsolete stream from changing the selected run", async () => {
+    const store = useChecksStore();
+    let resolveOrders;
+    let resolveResync;
+    vi.spyOn(api, "run")
+      .mockResolvedValueOnce({ id: "old", status: "running" })
+      .mockReturnValueOnce(new Promise((resolve) => { resolveResync = resolve; }))
+      .mockResolvedValueOnce({ id: "new", status: "running" });
+    vi.spyOn(api, "orders")
+      .mockReturnValueOnce(new Promise((resolve) => { resolveOrders = resolve; }))
+      .mockResolvedValueOnce({ items: [{ order_id: "new-order" }] });
+    const oldDisconnect = vi.fn();
+    const newDisconnect = vi.fn();
+    const connect = vi.spyOn(events, "connectRunEvents")
+      .mockReturnValueOnce(oldDisconnect)
+      .mockReturnValueOnce(newDisconnect);
+
+    const oldSelection = store.selectRun("old");
+    await Promise.resolve();
+    const oldStream = connect.mock.calls[0][1];
+    const oldResync = oldStream.onState("reconnecting");
+    await store.selectRun("new");
+    await connect.mock.calls[1][1].onState("connected");
+    resolveOrders({ items: [{ order_id: "old-order" }] });
+    resolveResync({ id: "old", status: "completed" });
+    await Promise.all([oldSelection, oldResync]);
+    await oldStream.onState("closed");
+    oldStream.onEvent({ type: "run.completed" });
+
+    expect(store.activeRun).toEqual({ id: "new", status: "running" });
+    expect(store.orders[0].order_id).toBe("new-order");
+    expect(store.events).toEqual([]);
+    expect(store.connection).toBe("connected");
+    expect(oldDisconnect).toHaveBeenCalledOnce();
+    expect(newDisconnect).not.toHaveBeenCalled();
+  });
+
+  it("does not connect after leaving the dashboard while a selection is pending", async () => {
+    const store = useChecksStore();
+    let resolveRun;
+    vi.spyOn(api, "run").mockReturnValue(new Promise((resolve) => { resolveRun = resolve; }));
+    const connect = vi.spyOn(events, "connectRunEvents");
+
+    const selection = store.selectRun("run-1");
+    store.stopListening();
+    resolveRun({ id: "run-1", status: "running" });
+    await selection;
+
+    expect(connect).not.toHaveBeenCalled();
+    expect(store.connection).toBe("closed");
   });
 
   it("filters and searches orders without embedding report data", () => {

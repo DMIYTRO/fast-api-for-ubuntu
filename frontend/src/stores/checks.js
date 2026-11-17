@@ -79,6 +79,7 @@ export const useChecksStore = defineStore("checks", {
     runs: [], activeRun: null, fileProgress: createRunFileProgress(), orders: [], config: null, loading: false, error: "",
     connection: "closed", selected: [], selectedOrderSnapshots: {}, filter: localStorage.getItem("im-filter") || "passed",
     search: "", page: 1, pageSize: 10, pageInfo: { total: 0, total_pages: 1, counts: {} },
+    runSelectionSequence: 0, runResyncSequence: 0,
     events: [], drawerOpen: false, stopEvents: null, actionResults: {}, returnComments: {}, returnDesign: {}, conflictPrompt: null,
   }),
   getters: {
@@ -117,13 +118,14 @@ export const useChecksStore = defineStore("checks", {
     async loadOrders(page = this.page) {
       if (!this.activeRun?.id) return;
       const runId = this.activeRun.id;
+      const selectionSequence = this.runSelectionSequence;
       const requestSequence = ++ordersRequestSequence;
       const eventRevision = orderEventRevision;
       const result = await api.orders(runId, {
         page, page_size: this.pageSize, status: this.filter,
         search: this.search.trim(), active_only: true,
       });
-      if (requestSequence !== ordersRequestSequence || eventRevision !== orderEventRevision || String(this.activeRun?.id) !== String(runId)) return;
+      if (selectionSequence !== this.runSelectionSequence || requestSequence !== ordersRequestSequence || eventRevision !== orderEventRevision || String(this.activeRun?.id) !== String(runId)) return;
       const totalPages = result.total_pages || 1;
       if (page > totalPages) return this.loadOrders(totalPages);
       this.page = result.page || page;
@@ -136,8 +138,10 @@ export const useChecksStore = defineStore("checks", {
     },
     async initialize() {
       this.loading = true; this.error = "";
+      const selectionSequence = this.runSelectionSequence;
       try {
         const [config, runs] = await Promise.all([api.config(), api.runs()]);
+        if (selectionSequence !== this.runSelectionSequence) return;
         this.config = config;
         this.runs = list(runs);
         // Prefer work that is still running, otherwise restore the latest
@@ -145,6 +149,7 @@ export const useChecksStore = defineStore("checks", {
         const candidate = this.runs.find((item) => running(item.status)) || this.runs[0];
         if (candidate) await this.selectRun(candidate.id);
         else {
+          this.stopListening();
           this.activeRun = null;
           this.orders = [];
           this.selected = []; this.selectedOrderSnapshots = {};
@@ -154,26 +159,53 @@ export const useChecksStore = defineStore("checks", {
       finally { this.loading = false; }
     },
     async selectRun(id) {
-      this.stopEvents?.(); this.stopEvents = null;
-      const [run] = await Promise.all([api.run(id, { include_orders: false })]);
+      const selectionSequence = ++this.runSelectionSequence;
+      const run = await api.run(id, { include_orders: false });
+      if (selectionSequence !== this.runSelectionSequence) return;
+      this.stopEvents?.();
+      this.runResyncSequence += 1;
       this.activeRun = run;
       this.fileProgress = createRunFileProgress(run.id);
-      this.page = 1; this.selected = []; this.selectedOrderSnapshots = {};
-      await this.loadOrders(1);
+      this.events = [];
+      this.orders = [];
+      this.page = 1; this.pageInfo = { total: 0, total_pages: 1, counts: {} };
+      this.selected = []; this.selectedOrderSnapshots = {};
+      const orders = this.loadOrders(1);
       if (running(run.status)) this.listen(id);
+      await orders;
+    },
+    stopListening() {
+      this.runSelectionSequence += 1;
+      this.stopEvents?.();
     },
     listen(id) {
-      this.stopEvents = connectRunEvents(id, {
+      this.stopEvents?.();
+      let disconnect;
+      const stop = () => {
+        if (this.stopEvents !== stop) return;
+        this.stopEvents = null;
+        this.connection = "closed";
+        disconnect?.();
+      };
+      const ownsConnection = () => this.stopEvents === stop && String(this.activeRun?.id) === String(id);
+      this.stopEvents = stop;
+      disconnect = connectRunEvents(id, {
         onState: async (state) => {
+          if (!ownsConnection()) return;
           this.connection = state;
           if (state === "reconnecting") await this.resync(id).catch(() => {});
         },
-        onEvent: (event) => this.applyEvent(event),
+        onEvent: (event) => {
+          if (ownsConnection()) this.applyEvent(event);
+        },
       });
     },
     async resync(id = this.activeRun?.id) {
-      if (!id) return;
-      const [run] = await Promise.all([api.run(id, { include_orders: false })]);
+      if (!id || String(this.activeRun?.id) !== String(id)) return;
+      const selectionSequence = this.runSelectionSequence;
+      const resyncSequence = ++this.runResyncSequence;
+      const run = await api.run(id, { include_orders: false });
+      if (selectionSequence !== this.runSelectionSequence || resyncSequence !== this.runResyncSequence || String(this.activeRun?.id) !== String(id)) return;
       this.activeRun = run;
       await this.loadOrders(this.page);
     },
@@ -184,12 +216,15 @@ export const useChecksStore = defineStore("checks", {
     // Принятое исправление Callas меняет заказ (новая ревизия PDF, статус, замечания, превью). Прогон к
     // этому моменту обычно завершён и поток событий закрыт, поэтому перечитываем и прогон, и страницу заказов.
     async refreshAfterFix(id = this.activeRun?.id) {
-      if (!id) return;
+      if (!id || String(this.activeRun?.id) !== String(id)) return;
+      const selectionSequence = this.runSelectionSequence;
       try {
         const run = await api.run(id, { include_orders: false });
-        if (String(this.activeRun?.id) === String(id)) this.activeRun = run;
+        if (selectionSequence === this.runSelectionSequence && String(this.activeRun?.id) === String(id)) this.activeRun = run;
       } catch { /* счётчики обновятся при следующей загрузке */ }
-      await this.loadOrders(this.page).catch(() => {});
+      if (selectionSequence === this.runSelectionSequence && String(this.activeRun?.id) === String(id)) {
+        await this.loadOrders(this.page).catch(() => {});
+      }
     },
     applyEvent(event) {
       this.events.unshift(event);
@@ -264,15 +299,16 @@ export const useChecksStore = defineStore("checks", {
       }
       if (["run.completed", "run.failed", "run.cancelled"].includes(event.type)) {
         this.stopEvents?.();
-        this.stopEvents = null;
         this.connection = "closed";
         this.resync().catch(() => {});
       }
     },
     async start(options) {
       this.loading = true;
+      const selectionSequence = this.runSelectionSequence;
       try {
         const run = await api.start(options);
+        if (selectionSequence !== this.runSelectionSequence) return;
         this.drawerOpen = false;
         await this.selectRun(run.id);
         await this.refreshRuns();
