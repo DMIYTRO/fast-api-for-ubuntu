@@ -124,13 +124,16 @@ class OrderWorkflowService:
         candidate: Path,
         *,
         callas_fix: bool = False,
+        bleed_only: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any] | None, int, str]:
         """Validate a candidate before replacing the current PDF and its status.
 
         ``callas_fix`` — кандидат создан принятием исправления Callas: только тогда
         находки PitStop сравниваются с проверкой исходного PDF клиента (см.
         ``services/pitstop/baseline.py``). Ручная замена PDF и сборка из TIFF не
-        сравниваются.
+        сравниваются. ``bleed_only`` — исправление только дорисовало вылеты
+        (``summary["bleed_only"]`` состояния исправления): сравниваются все действия
+        PitStop, а не только ``IMAGE_MAGIC_PITSTOP_FIX_BASELINE_ACTIONS``.
         """
         direction = str(run["options"].get("direction") or "digital")
         captured_baseline, baseline = self._pitstop_baseline_for(order, callas_fix=callas_fix)
@@ -185,7 +188,21 @@ class OrderWorkflowService:
         if callas_fix and pitstop is not None and self.pitstop_fix_baseline is not None:
             # Только в памяти: отчёты PitStop не меняются, повторных запусков нет.
             pitstop = apply_fix_baseline(
-                pitstop, baseline, self.pitstop_fix_baseline, profile_key=direction
+                pitstop,
+                baseline,
+                self.pitstop_fix_baseline,
+                profile_key=direction,
+                all_actions=bleed_only,
+            )
+            logger.info(
+                "order.pitstop_fix_baseline order_id=%s revision=%s bleed_only=%s "
+                "status=%s verdict=%s->%s",
+                order.get("order_id"),
+                revision,
+                bleed_only,
+                pitstop.get("baseline_status") if pitstop else None,
+                pitstop.get("verdict_raw") if pitstop else None,
+                pitstop.get("verdict") if pitstop else None,
             )
         status = completed_status(
             local_errors=not readable_pdf(inspection),
@@ -744,6 +761,7 @@ class OrderWorkflowService:
                                 if order["status"] not in {"passed", "warning"}:
                                     raise FileLifecycleError("PDF изменился и не прошёл повторную проверку.")
                             accepted_callas_fix = False
+                            accepted_bleed_only = False
                             reviewed_pdf = build_reviewed_layered_print_pdf(
                                 order,
                                 input_root,
@@ -758,6 +776,9 @@ class OrderWorkflowService:
                                 # Принятое оператором исправление Callas идёт в печать
                                 # тем же путём, что и PDF из просмотренных TIFF:
                                 # проверка PDF, PitStop, новая ревизия.
+                                accepted_bleed_only = _fix_is_bleed_only(
+                                    read_callas_fix_state(order["pdf_path"])
+                                )
                                 reviewed_pdf = self.accepted_pdf_provider(
                                     Path(str(order["pdf_path"]))
                                 )
@@ -766,6 +787,7 @@ class OrderWorkflowService:
                                 order, reviewed_pitstop, reviewed_revision, reviewed_sha256 = self.recheck_pdf_revision(
                                     run, order, reviewed_pdf,
                                     callas_fix=accepted_callas_fix,
+                                    bleed_only=accepted_callas_fix and accepted_bleed_only,
                                 )
                                 previous_order = deepcopy(order)
                                 if order["status"] not in {"passed", "warning"}:
@@ -1021,3 +1043,9 @@ class OrderWorkflowService:
         if suffix:
             return f"{stem} (новый){suffix}"
         return f"{stem} (новый)"
+
+
+def _fix_is_bleed_only(state: dict[str, Any] | None) -> bool:
+    """Исправление Callas только дорисовало вылеты (``summary["bleed_only"]``)."""
+    summary = (state or {}).get("summary")
+    return isinstance(summary, dict) and summary.get("bleed_only") is True

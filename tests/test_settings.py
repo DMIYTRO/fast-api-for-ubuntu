@@ -129,6 +129,7 @@ class PitStopFixBaselineSettingsTests(unittest.TestCase):
         "IMAGE_MAGIC_PITSTOP_FIX_BASELINE_ENABLED",
         "IMAGE_MAGIC_PITSTOP_FIX_BASELINE_ACTIONS",
         "IMAGE_MAGIC_PITSTOP_FIX_BASELINE_PROFILES",
+        "IMAGE_MAGIC_PITSTOP_BLEED_FIX_ALL_ACTIONS",
     )
 
     def test_defaults_compare_clipping_and_transparency_for_digital(self):
@@ -138,15 +139,18 @@ class PitStopFixBaselineSettingsTests(unittest.TestCase):
         self.assertTrue(settings.pitstop_fix_baseline_enabled)
         self.assertEqual(settings.pitstop_fix_baseline_actions, frozenset({"2079", "3004"}))
         self.assertEqual(settings.pitstop_fix_baseline_profiles, frozenset({"digital"}))
+        self.assertTrue(settings.pitstop_bleed_fix_all_actions)
 
     def test_overrides_are_trimmed_and_blank_means_default(self):
         with patch.dict(os.environ, {
             "IMAGE_MAGIC_PITSTOP_FIX_BASELINE_ENABLED": "false",
             "IMAGE_MAGIC_PITSTOP_FIX_BASELINE_ACTIONS": " 2079, ,1012 ",
             "IMAGE_MAGIC_PITSTOP_FIX_BASELINE_PROFILES": "digital,offset",
+            "IMAGE_MAGIC_PITSTOP_BLEED_FIX_ALL_ACTIONS": "false",
         }):
             settings = Settings.from_env()
         self.assertFalse(settings.pitstop_fix_baseline_enabled)
+        self.assertFalse(settings.pitstop_bleed_fix_all_actions)
         self.assertEqual(settings.pitstop_fix_baseline_actions, frozenset({"2079", "1012"}))
         self.assertEqual(settings.pitstop_fix_baseline_profiles, frozenset({"digital", "offset"}))
         with patch.dict(os.environ, {"IMAGE_MAGIC_PITSTOP_FIX_BASELINE_ACTIONS": "  "}):
@@ -169,6 +173,7 @@ class PitStopFixBaselineSettingsTests(unittest.TestCase):
                 pitstop_fix_baseline_enabled=False,
                 pitstop_fix_baseline_actions=frozenset({"3004"}),
                 pitstop_fix_baseline_profiles=frozenset({"offset"}),
+                pitstop_bleed_fix_all_actions=False,
             )
             app = control_panel.create_app(
                 settings=settings,
@@ -178,7 +183,7 @@ class PitStopFixBaselineSettingsTests(unittest.TestCase):
             )
             policy = app.state.order_workflow.pitstop_fix_baseline
             self.assertEqual(
-                (policy.enabled, policy.actions, policy.profiles),
-                (False, frozenset({"3004"}), frozenset({"offset"})),
+                (policy.enabled, policy.actions, policy.profiles, policy.bleed_fix_all_actions),
+                (False, frozenset({"3004"}), frozenset({"offset"}), False),
             )
             app.state.database.dispose()

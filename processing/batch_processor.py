@@ -10,7 +10,8 @@ import threading
 import uuid
 
 import pymupdf
-from typing import TYPE_CHECKING, Callable, Mapping, Optional, Sequence
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Callable, Collection, Mapping, Optional, Sequence
 
 if TYPE_CHECKING:  # services.__init__ imports this module; avoid a cycle
     from services.callas import CallasClient
@@ -46,6 +47,175 @@ REJECTED_EXTENSIONS = {".psd", ".bmp", ".heic", ".heif"}
 # PDF point / pixel arithmetic can undershoot an exact boundary by several
 # millionths (e.g. 249.9999957 for a nominal 250 DPI image).
 DPI_EPSILON = 0.01
+
+
+# --- Классификация проверок файла: геометрия или содержимое --------------------------
+#
+# После принятого исправления Callas, которое только дорисовало вылеты (``bleed_only``,
+# ``services/callas_bleed.py``), файл проверяется дважды: исправленный PDF даёт
+# ГЕОМЕТРИЮ (то, что меняет исправление: размер страницы, боксы, число страниц,
+# поворот, решение по размеру, целостность печатаемого файла), исходник клиента —
+# СОДЕРЖИМОЕ (то, что принадлежит макету: разрешение, цвет, альфа/слои/страницы
+# растра, вес файла, цветность в имени). Так однопиксельные полосы вылета с ~13 dpi
+# не дают ошибку разрешения, а настоящая проблема макета клиента — даёт.
+# Каждая проверка ниже обязана иметь здесь запись (``_report`` падает на неизвестной).
+SCOPE_GEOMETRY = "geometry"
+SCOPE_CONTENT = "content"
+ALL_SCOPES = frozenset({SCOPE_GEOMETRY, SCOPE_CONTENT})
+CHECK_SCOPES: Mapping[str, str] = MappingProxyType({
+    # PDF
+    "pdf_structure": SCOPE_GEOMETRY,  # не открывается/зашифрован/нет страниц: печатается исправленный файл
+    "pdf_page_size": SCOPE_GEOMETRY,  # размер страницы не совпадает с форматом + вылеты
+    "pdf_page_size_tolerance": SCOPE_GEOMETRY,  # отклонение размера в пределах допуска
+    "pdf_rotation": SCOPE_GEOMETRY,  # недопустимый /Rotate
+    "pdf_size_correction": SCOPE_GEOMETRY,  # решение по размеру QuickFix (_record_pdf_resize)
+    "pdf_effective_dpi": SCOPE_CONTENT,  # effective DPI растров на странице
+    "pdf_rgb_image": SCOPE_CONTENT,  # RGB-растр без ICC
+    "pdf_unknown_colorspace": SCOPE_CONTENT,  # неизвестная цветовая модель растра
+    # Растр (TIFF/JPEG/PNG)
+    "raster_alpha": SCOPE_CONTENT,  # альфа-канал TIFF
+    "raster_layers": SCOPE_CONTENT,  # несведённые слои без известного числа
+    "raster_pages": SCOPE_CONTENT,  # многостраничный TIFF / несколько кадров
+    "raster_size": SCOPE_GEOMETRY,  # решение по размеру (коррекция, поворот, уменьшение DPI)
+    "raster_metadata": SCOPE_CONTENT,  # вес файла, цветовая модель, DPI (profile_rules)
+    "color_mode": SCOPE_CONTENT,  # цветность в имени файла
+})
+# Поля FileCheck, которые описывают содержимое: при ``bleed_only`` берутся из исходника.
+CONTENT_FIELDS = (
+    "dpi", "dpi_x", "dpi_y", "width_px", "height_px", "colorspace", "actual_format",
+    "has_alpha", "has_unflattened_layers", "channels", "tiff_page_count", "tiff_layer_count",
+    "pdf_colorspaces", "pdf_min_dpi", "pdf_content_type",
+)
+
+
+def _accepted_fix_state(content_path: Path, source: Path) -> Mapping[str, object] | None:
+    """``summary`` исправления Callas, лежащего рядом с ``content_path``, для ``source``."""
+    import json
+
+    try:
+        state = json.loads((Path(content_path).parent / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(state, dict) or (state.get("source") or {}).get("name") != Path(source).name:
+        return None
+    summary = state.get("summary")
+    return summary if isinstance(summary, dict) else None
+
+
+def _fix_is_bleed_only(fix: Mapping[str, object] | None) -> bool:
+    return isinstance(fix, Mapping) and fix.get("bleed_only") is True
+
+
+def _report(
+    check: FileCheck, kind: str, level: str, message: str, scopes: Collection[str] = ALL_SCOPES
+) -> None:
+    """Записать находку ``kind`` (см. ``CHECK_SCOPES``), если её область проверяется."""
+    if CHECK_SCOPES[kind] not in scopes:
+        return
+    (check.errors if level == "error" else check.warnings).append(message)
+
+
+def _is_pdf_content(item: FileCheck) -> bool:
+    """Содержимое файла — PDF (исходный PDF или принятое исправление растра/PDF)."""
+    return item.input_path.suffix.lower() == ".pdf"
+
+
+def _read_raster_facts(check: FileCheck, scopes: Collection[str] = ALL_SCOPES) -> bool:
+    """Сведения о растре (одна инспекция ImageMagick); ``False`` — дальше не проверять."""
+    raster = inspect_raster(str(check.path))
+    structure = raster.tiff
+    if structure is not None:
+        check.tiff_page_count = structure.page_count
+        check.has_unflattened_layers = structure.has_unflattened_layers
+        check.tiff_layer_count = structure.layer_count
+        check.has_alpha = structure.has_alpha
+        check.channels = structure.channels
+        if structure.has_alpha:
+            _report(check, "raster_alpha", "error",
+                    "TIFF содержит альфа-канал; перед отправкой удалите прозрачность", scopes)
+        if structure.has_unflattened_layers and not structure.layer_count:
+            _report(check, "raster_layers", "error",
+                    "TIFF содержит несведённые слои, но ImageMagick не смог "
+                    "определить их число; требуется ручное решение", scopes)
+        if structure.page_count > 1:
+            _report(check, "raster_pages", "error",
+                    f"TIFF содержит {structure.page_count} страниц; "
+                    "разрешён только одностраничный файл", scopes)
+    elif raster.frame_count != 1:
+        _report(check, "raster_pages", "error",
+                f"файл содержит {raster.frame_count} страниц/изображений; разрешён только одностраничный файл",
+                scopes)
+        return False
+    meta = raster.metadata
+    check.actual_width_mm = meta.width_mm
+    check.actual_height_mm = meta.height_mm
+    check.width_px = meta.width_px
+    check.height_px = meta.height_px
+    check.dpi = meta.dpi
+    check.dpi_x = meta.dpi_x
+    check.dpi_y = meta.dpi_y
+    check.actual_format = meta.format.upper()
+    check.colorspace = meta.colorspace
+    check.size_mb = meta.size_mb
+    return True
+
+
+def _flatten_for_pdf(item: FileCheck, source_image_path: str, flat_path: Path):
+    """Видимые слои TIFF, сведённые во временный файл, как при сборке заказа."""
+    if not (item.has_unflattened_layers and item.tiff_layer_count):
+        return source_image_path, None
+    from core.tiff_flatten import flatten_visible_tiff
+
+    flattened = flatten_visible_tiff(item.path, flat_path)
+    return str(flat_path), flattened
+
+
+def _record_flatten(item: FileCheck, flattened) -> None:
+    if flattened is None:
+        return
+    item.tiff_flattened = True
+    item.tiff_visible_layer_count = flattened.visible_layer_count
+    item.tiff_hidden_layer_count = flattened.hidden_layer_count
+    item.tiff_flatten_strategy = flattened.strategy
+
+
+def _convert_raster_page(
+    item: FileCheck, source_image_path: str, page_path: Path, dpi_arg: str | float, strip_icc_cmyk: bool
+) -> None:
+    """Растр → одностраничный PDF ImageMagick: то же DPI, без перевода цвета."""
+    convert_image_to_pdf(
+        source_image_path,
+        str(page_path),
+        dpi=dpi_arg,
+        compression="none",
+        ignore_tiff_layers=item.tiff_layer_count == 1,
+        strip_icc=strip_icc_cmyk and (item.colorspace or "").upper() == "CMYK",
+    )
+
+
+def build_raster_source_pdf(source: Path | str, target: Path | str, *, strip_icc_cmyk: bool = False) -> FileCheck:
+    """Одностраничный PDF из растра заказа — ровно как растр попадает в PDF заказа.
+
+    Сведение видимых слоев TIFF, DPI файла по осям, без пересэмплирования и без
+    перевода цвета (``strip_icc_cmyk`` — только снятие тега ICC у CMYK, как
+    ``IMAGE_MAGIC_STRIP_ICC_CMYK``). Нужен исправлению Callas растрового исходника
+    (``PDF/CallasFix/<имя>.source/source.pdf``). Исходный растр не меняется.
+    """
+    source_path = Path(source)
+    target_path = Path(target)
+    check = FileCheck(path=source_path)
+    if not _read_raster_facts(check):
+        raise ValueError(check.errors[-1] if check.errors else "растр не прочитан")
+    if check.errors:
+        raise ValueError("; ".join(check.errors))
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".raster-pdf-", dir=target_path.parent) as temporary_dir:
+        image_path, flattened = _flatten_for_pdf(
+            check, str(source_path), Path(temporary_dir) / "flattened.tif"
+        )
+        _convert_raster_page(check, image_path, target_path, f"{check.dpi_x}x{check.dpi_y}", strip_icc_cmyk)
+        _record_flatten(check, flattened)
+    return check
 
 
 CALLAS_RENDER_UNAVAILABLE_MESSAGE = (
@@ -231,51 +401,10 @@ class BatchProcessor:
         for (_customer_id, order_id), files in sorted_groups:
             for check in files:
                 try:
-                    path = check.path
-                    if path.suffix.lower() == ".pdf":
+                    if _is_pdf_content(check):
                         self._inspect_pdf_file(check)
-                        continue
-                    # One cheap inspection per file (see core.inspector):
-                    # TIFF structure, frame count and metadata share launches.
-                    raster = inspect_raster(str(path))
-                    structure = raster.tiff
-                    if structure is not None:
-                        check.tiff_page_count = structure.page_count
-                        check.has_unflattened_layers = structure.has_unflattened_layers
-                        check.tiff_layer_count = structure.layer_count
-                        check.has_alpha = structure.has_alpha
-                        check.channels = structure.channels
-                        if structure.has_alpha:
-                            check.errors.append(
-                                "TIFF содержит альфа-канал; перед отправкой удалите прозрачность"
-                            )
-                        if structure.has_unflattened_layers and not structure.layer_count:
-                            check.errors.append(
-                                "TIFF содержит несведённые слои, но ImageMagick не смог "
-                                "определить их число; требуется ручное решение"
-                            )
-                        if structure.page_count > 1:
-                            check.errors.append(
-                                f"TIFF содержит {structure.page_count} страниц; "
-                                "разрешён только одностраничный файл"
-                            )
-                    elif raster.frame_count != 1:
-                        check.errors.append(
-                            f"файл содержит {raster.frame_count} страниц/изображений; разрешён только одностраничный файл"
-                        )
-                        continue
-                    meta = raster.metadata
-                    check.actual_width_mm = meta.width_mm
-                    check.actual_height_mm = meta.height_mm
-                    check.width_px = meta.width_px
-                    check.height_px = meta.height_px
-                    check.dpi = meta.dpi
-                    check.dpi_x = meta.dpi_x
-                    check.dpi_y = meta.dpi_y
-                    check.actual_format = meta.format.upper()
-                    check.colorspace = meta.colorspace
-                    check.size_mb = meta.size_mb
-                    self._validate_file(check)
+                    else:
+                        self._inspect_raster_file(check)
                 except Exception as exc:
                     check.errors.append(f"не удалось прочитать файл: {exc}")
 
@@ -287,8 +416,20 @@ class BatchProcessor:
             self._validate_order(order)
             yield order
 
-    def _inspect_pdf_file(self, check: FileCheck) -> None:
-        """Read and validate a PDF without routing it through ImageMagick."""
+    def _inspect_raster_file(self, check: FileCheck, scopes: Collection[str] = ALL_SCOPES) -> None:
+        """Read and validate a raster file (TIFF/JPEG/PNG).
+
+        One cheap inspection per file (see core.inspector): TIFF structure,
+        frame count and metadata share launches.
+        """
+        if _read_raster_facts(check, scopes):
+            self._validate_file(check, scopes)
+
+    def _inspect_pdf_file(self, check: FileCheck, scopes: Collection[str] = ALL_SCOPES) -> None:
+        """Read and validate a PDF without routing it through ImageMagick.
+
+        ``scopes`` — какие проверки записывать (``CHECK_SCOPES``); поля заполняются всегда.
+        """
         inspection = inspect_pdf(check.input_path)
         check.actual_format = "PDF"
         check.page_count = inspection.page_count
@@ -322,8 +463,10 @@ class BatchProcessor:
         check.pdf_min_dpi = check.dpi
         check.colorspace = ", ".join(check.pdf_colorspaces) or None
         check.size_mb = check.input_path.stat().st_size / (1024 * 1024)
-        check.errors.extend(inspection.errors)
-        check.warnings.extend(inspection.warnings)
+        for message in inspection.errors:
+            _report(check, "pdf_structure", "error", message, scopes)
+        for message in inspection.warnings:
+            _report(check, "pdf_structure", "warning", message, scopes)
 
         if not inspection.pages:
             return
@@ -348,26 +491,32 @@ class BatchProcessor:
             ):
                 # PDF не масштабируется и не обрезается автоматически (в отличие от
                 # растровых файлов): подсказываем оператору, что делать.
-                check.errors.append(
+                _report(
+                    check, "pdf_page_size", "error",
                     f"PDF страница {page.page_number} имеет размер "
                     f"{actual[0]:.1f}x{actual[1]:.1f} мм; ожидается "
                     f"{expected[0]:.1f}x{expected[1]:.1f} мм. Автоматическая коррекция "
                     "размера для PDF не выполняется: исправьте размер макета "
                     "(на карточке заказа доступен план Callas «Коррекция размера макета») "
-                    "или пришлите PDF нужного размера"
+                    "или пришлите PDF нужного размера",
+                    scopes,
                 )
             elif self._pdf_page_deviation(actual, expected) > self.profile.metadata_tolerance_mm:
-                check.warnings.append(
+                _report(
+                    check, "pdf_page_size_tolerance", "warning",
                     f"PDF страница {page.page_number} имеет размер "
                     f"{actual[0]:.1f}x{actual[1]:.1f} мм, ожидается "
                     f"{expected[0]:.1f}x{expected[1]:.1f} мм: отклонение в пределах допуска "
                     f"{self.tolerance_mm:.1f} мм принято без коррекции "
-                    "(для PDF коррекция размера не выполняется)"
+                    "(для PDF коррекция размера не выполняется)",
+                    scopes,
                 )
             if page.rotation not in {0, 90, 180, 270}:
-                check.errors.append(
+                _report(
+                    check, "pdf_rotation", "error",
                     f"PDF страница {page.page_number} имеет недопустимый поворот "
-                    f"{page.rotation}°"
+                    f"{page.rotation}°",
+                    scopes,
                 )
 
             for image in page.images:
@@ -380,21 +529,27 @@ class BatchProcessor:
                 # Treat that floating-point noise as the configured boundary,
                 # while still rejecting a materially lower resolution.
                 if dpi_values and min(dpi_values) + DPI_EPSILON < self.min_dpi:
-                    check.errors.append(
+                    _report(
+                        check, "pdf_effective_dpi", "error",
                         f"PDF страница {page.page_number}: effective DPI "
-                        f"{min(dpi_values):.1f}; требуется не менее {self.min_dpi:.0f}"
+                        f"{min(dpi_values):.1f}; требуется не менее {self.min_dpi:.0f}",
+                        scopes,
                     )
                 colorspace = image.colorspace_name or "unknown"
                 if "RGB" in colorspace and "ICCBased" not in colorspace:
-                    check.warnings.append(
+                    _report(
+                        check, "pdf_rgb_image", "warning",
                         f"PDF страница {page.page_number}: растровое изображение "
-                        "имеет RGB colorspace"
+                        "имеет RGB colorspace",
+                        scopes,
                     )
                 elif colorspace == "unknown":
-                    check.errors.append(
-                        f"PDF страница {page.page_number}: неизвестная цветовая модель"
+                    _report(
+                        check, "pdf_unknown_colorspace", "error",
+                        f"PDF страница {page.page_number}: неизвестная цветовая модель",
+                        scopes,
                     )
-        if resize_plans is not None:
+        if resize_plans is not None and CHECK_SCOPES["pdf_size_correction"] in scopes:
             self._record_pdf_resize(check, resize_plans)
 
     def _plan_pdf_resize(
@@ -503,7 +658,15 @@ class BatchProcessor:
     def _pdf_pages(item: FileCheck) -> tuple[object, ...]:
         return item.pdf_pages if item.page_count is not None else ()
 
-    def _validate_file(self, check: FileCheck) -> None:
+    def _validate_file(self, check: FileCheck, scopes: Collection[str] = ALL_SCOPES) -> None:
+        if CHECK_SCOPES["raster_size"] in scopes:
+            correction_has_enough_dpi = self._validate_raster_size(check)
+        else:
+            correction_has_enough_dpi = False
+        self._validate_raster_content(check, correction_has_enough_dpi, scopes)
+
+    def _validate_raster_size(self, check: FileCheck) -> bool:
+        """Решение по размеру растра (геометрия); ``True`` — у коррекции хватает DPI."""
         parsed = check.parsed
         expected = (parsed.width_mm + self.size_extra_mm, parsed.height_mm + self.size_extra_mm)
         actual = (check.actual_width_mm, check.actual_height_mm)
@@ -580,10 +743,16 @@ class BatchProcessor:
 
         self._plan_high_dpi_downsample(check, plan)
 
-        correction_has_enough_dpi = (
+        return (
             plan.decision in {ResampleDecision.AUTO_CORRECT, ResampleDecision.ASK_CONFIRMATION}
             and min(plan.effective_dpi) >= self.min_dpi
         )
+
+    def _validate_raster_content(
+        self, check: FileCheck, correction_has_enough_dpi: bool, scopes: Collection[str] = ALL_SCOPES
+    ) -> None:
+        """Проверки содержимого растра: вес, цветовая модель, DPI, цветность в имени."""
+        parsed = check.parsed
         metadata_rules = evaluate_metadata_rules(
             profile=self.profile,
             size_mb=check.size_mb,
@@ -592,16 +761,20 @@ class BatchProcessor:
             dpi_y=check.dpi_y,
             correction_has_enough_dpi=correction_has_enough_dpi,
         )
-        check.errors.extend(metadata_rules.errors)
-        check.warnings.extend(metadata_rules.warnings)
+        for message in metadata_rules.errors:
+            _report(check, "raster_metadata", "error", message, scopes)
+        for message in metadata_rules.warnings:
+            _report(check, "raster_metadata", "warning", message, scopes)
 
         color_mode = (parsed.front_colors, parsed.back_colors)
         if color_mode not in self.profile.allowed_color_modes:
             allowed = ", ".join(
                 f"{front}-{back}" for front, back in sorted(self.profile.allowed_color_modes)
             )
-            check.errors.append(
-                f"цветность {color_mode[0]}-{color_mode[1]} не поддерживается; разрешены: {allowed}"
+            _report(
+                check, "color_mode", "error",
+                f"цветность {color_mode[0]}-{color_mode[1]} не поддерживается; разрешены: {allowed}",
+                scopes,
             )
 
     def _plan_high_dpi_downsample(self, check: FileCheck, plan) -> None:
@@ -612,7 +785,7 @@ class BatchProcessor:
         """
         if not self.profile.downsample_high_dpi or plan.decision != ResampleDecision.ACCEPT:
             return
-        if check.path.suffix.lower() == ".pdf":
+        if _is_pdf_content(check):
             return
         source_dpi = max(check.dpi_x or 0.0, check.dpi_y or 0.0)
         if source_dpi <= self.profile.max_dpi + DPI_EPSILON:
@@ -641,22 +814,60 @@ class BatchProcessor:
             check.resample_decision = ResampleDecision.REJECT.value
             check.errors.append("пользователь отказался от предложенной коррекции размера")
 
-    def reinspect_pdf_file(self, item: FileCheck, content_path: Path | None) -> FileCheck:
-        """Новая проверка PDF-файла заказа по содержимому ``content_path``.
+    def reinspect_pdf_file(
+        self,
+        item: FileCheck,
+        content_path: Path | None,
+        *,
+        fix: Mapping[str, object] | None = None,
+    ) -> FileCheck:
+        """Новая проверка файла заказа по содержимому ``content_path``.
 
-        ``content_path`` — исправленный PDF (принятое исправление Callas исходника) или
-        ``None`` (снова сам исходник). Возвращается новый ``FileCheck`` с тем же путём и
-        разобранным именем; к нему применяются все обычные правила PDF (размер, боксы,
-        DPI, цвет, политика коррекции). Исходный ``item`` не меняется.
+        ``content_path`` — исправленный PDF (принятое исправление Callas исходного PDF
+        или растра) или ``None`` (снова сам исходник, PDF или растр). Возвращается новый
+        ``FileCheck`` с тем же путём и разобранным именем; к нему применяются все
+        обычные правила (размер, боксы, DPI, цвет, политика коррекции). Исходный
+        ``item`` не меняется.
+
+        ``fix`` — сведения о принятом исправлении (``bleed_only``); без него читаются
+        из ``state.json`` рядом с ``content_path``. Если исправление только дорисовало
+        вылеты, геометрия берётся из исправленного PDF, содержимое — из исходника
+        (``CHECK_SCOPES``); иначе всё проверяется по исправленному PDF.
         """
-        if item.path.suffix.lower() != ".pdf":
-            raise ValueError("повторная проверка доступна только для PDF-файла заказа")
+        if content_path is not None and Path(content_path).suffix.lower() != ".pdf":
+            raise ValueError("исправленный файл стороны должен быть PDF")
         check = FileCheck(path=item.path, parsed=item.parsed, content_path=content_path)
         try:
-            self._inspect_pdf_file(check)
+            if content_path is None:
+                if _is_pdf_content(check):
+                    self._inspect_pdf_file(check)
+                else:
+                    self._inspect_raster_file(check)
+            elif _fix_is_bleed_only(fix if fix is not None else _accepted_fix_state(content_path, item.path)):
+                self._inspect_bleed_only_fix(check)
+            else:
+                self._inspect_pdf_file(check)
         except Exception as exc:
             check.errors.append(f"не удалось прочитать файл: {exc}")
         return check
+
+    def _inspect_bleed_only_fix(self, check: FileCheck) -> None:
+        """Геометрия — из исправленного PDF, содержимое — из исходника клиента.
+
+        Исходный PDF проверяется обычной проверкой PDF, растр — обычной проверкой
+        растра; из них берутся только находки ``SCOPE_CONTENT`` и поля
+        ``CONTENT_FIELDS``. Полосы вылета, дорисованные callas, в содержимое не входят.
+        """
+        self._inspect_pdf_file(check, {SCOPE_GEOMETRY})
+        source = FileCheck(path=check.path, parsed=check.parsed)
+        if source.path.suffix.lower() == ".pdf":
+            self._inspect_pdf_file(source, {SCOPE_CONTENT})
+        else:
+            self._inspect_raster_file(source, {SCOPE_CONTENT})
+        for name in CONTENT_FIELDS:
+            setattr(check, name, getattr(source, name))
+        check.errors.extend(source.errors)
+        check.warnings.extend(source.warnings)
 
     def revalidate_order(self, order: OrderCheck) -> None:
         """Пересчитать проверки уровня заказа после замены файла (ориентация, стороны…).
@@ -814,7 +1025,7 @@ class BatchProcessor:
             page_pdfs: list[str] = []
             for page_number, item in enumerate(ordered_files, start=1):
                 try:
-                    if item.path.suffix.lower() == ".pdf":
+                    if _is_pdf_content(item):
                         with pymupdf.open(item.input_path) as document:
                             if document.page_count == 0:
                                 raise ValueError("в PDF нет страниц")
@@ -1007,7 +1218,8 @@ class BatchProcessor:
         converted: dict[Path, str] = {}
         for page_number, ref in enumerate(page_refs, start=1):
             item = ref.source
-            if item.path.suffix.lower() == ".pdf":
+            if _is_pdf_content(item):
+                # Исходный PDF или принятое исправление Callas (в т. ч. растра).
                 pdf_path = converted.get(item.path)
                 if pdf_path is None:
                     pdf_path = self._resize_pdf_if_needed(item, page_number, temporary_dir)
@@ -1016,14 +1228,9 @@ class BatchProcessor:
                     page_pdfs.append(pdf_path)
                 continue
 
-            source_image_path = str(item.path)
-            flattened = None
-            if item.has_unflattened_layers and item.tiff_layer_count:
-                from core.tiff_flatten import flatten_visible_tiff
-
-                flat_path = temporary_dir / f"flattened_{page_number}.tif"
-                flattened = flatten_visible_tiff(item.path, flat_path)
-                source_image_path = str(flat_path)
+            source_image_path, flattened = _flatten_for_pdf(
+                item, str(item.path), temporary_dir / f"flattened_{page_number}.tif"
+            )
             dpi_arg = f"{item.dpi_x}x{item.dpi_y}"
             if item.needs_resample and item.resample_target_mm:
                 resampled_path = temporary_dir / (
@@ -1042,15 +1249,7 @@ class BatchProcessor:
                 dpi_arg = str(self.profile.target_dpi)
 
             page_path = temporary_dir / f"{page_number}_{ref.expected_side}.pdf"
-            convert_image_to_pdf(
-                source_image_path,
-                str(page_path),
-                dpi=dpi_arg,
-                compression="none",
-                ignore_tiff_layers=item.tiff_layer_count == 1,
-                strip_icc=self.strip_icc_cmyk
-                and (item.colorspace or "").upper() == "CMYK",
-            )
+            _convert_raster_page(item, source_image_path, page_path, dpi_arg, self.strip_icc_cmyk)
             if item.needs_resample and item.resample_target_mm:
                 if item.downsampled_from_dpi is not None:
                     item.processing_actions.append({
@@ -1065,11 +1264,7 @@ class BatchProcessor:
                     })
             if self.strip_icc_cmyk and (item.colorspace or "").upper() == "CMYK":
                 item.processing_actions.append({"kind": "strip_icc"})
-            if flattened is not None:
-                item.tiff_flattened = True
-                item.tiff_visible_layer_count = flattened.visible_layer_count
-                item.tiff_hidden_layer_count = flattened.hidden_layer_count
-                item.tiff_flatten_strategy = flattened.strategy
+            _record_flatten(item, flattened)
             converted[item.path] = str(page_path)
             page_pdfs.append(str(page_path))
         return page_pdfs
@@ -1131,7 +1326,7 @@ class BatchProcessor:
             height_px = getattr(page_meta, "height_px", None)
             source = ref.source
             expected = (ref.expected_width_mm, ref.expected_height_mm)
-            if source.needs_resample and source.resample_target_mm and source.path.suffix.lower() != ".pdf":
+            if source.needs_resample and source.resample_target_mm and not _is_pdf_content(source):
                 expected = source.resample_target_mm
             if width_px and height_px:
                 actual = (width_px * 25.4 / 72.0, height_px * 25.4 / 72.0)
@@ -1329,7 +1524,7 @@ class BatchProcessor:
         def create_one(file_check: FileCheck) -> tuple[FileCheck, list[Path], str | None]:
             try:
                 overlay = self._overlay_for_file(overlays_map.get(file_check.path), file_check)
-                if file_check.path.suffix.lower() == ".pdf":
+                if _is_pdf_content(file_check):
                     page_count = file_check.page_count or 1
                     if page_count == 2 and file_check.parsed.back_colors > 0:
                         # One two-page PDF is a complete duplex layout.  Give

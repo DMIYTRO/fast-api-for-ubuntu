@@ -34,6 +34,7 @@ from tests.test_callas_fix_service import make_pdf
 TRANSPARENCY = (3004, PitStopSeverity.ERROR, "Transparent objects")
 CLIPPING = (2079, PitStopSeverity.WARNING, "Clipping objects")
 RGB = (2078, PitStopSeverity.ERROR, "RGB color is used")
+LOWRES = (1150, PitStopSeverity.ERROR, "Image resolution is below 250 ppi")
 
 
 def report(*items) -> PitStopReport:
@@ -206,6 +207,82 @@ class BaselineFixTests(CallasFixApiTests):
         self.assertEqual(print_blockers(stored), [])
         prepared = self.client.post("/api/orders/prepare-print", json={"run_id": run_id, "order_ids": ["1001"]})
         self.assertEqual(prepared.json()["items"][0]["status"], "prepared", prepared.text)
+
+    def recheck(self, run_id: str, pitstop_report: PitStopReport, **kwargs):
+        run = self.client.app.state.coordinator.get_run(run_id)
+        order = next(iter(run["orders"].values()))
+        candidate = make_pdf(self.root / "PDF" / "callas-candidate.pdf", 103, 214)
+        self.pitstop.reports.append(pitstop_report)
+        return self.workflow.recheck_pdf_revision(run, order, candidate, callas_fix=True, **kwargs)
+
+    def test_bleed_only_fix_of_built_pdf_hides_everything_new(self):
+        self.original_report = report()
+        run_id = self.make_run()
+        order, pitstop, _revision, _sha = self.recheck(
+            run_id, report((LOWRES, 8), (CLIPPING, 8)), bleed_only=True
+        )
+        self.assertEqual(self.pitstop.calls, 1)
+        for action, severity in ((1150, "error"), (2079, "warning")):
+            hidden = self.issue(pitstop, action)
+            self.assertEqual((hidden["hidden_by_baseline"], hidden["original_severity"]), (True, severity))
+        self.assertEqual((pitstop["verdict_raw"], pitstop["verdict"]), ("error", "passed"))
+        self.assertEqual(order["status"], "passed")
+        self.assertEqual(order["pitstop_status"], "passed")
+        self.assertTrue(pitstop_ready(order))
+        self.assertEqual(print_blockers(order), [])
+
+    def test_bleed_only_fix_keeps_client_findings_and_their_severity(self):
+        self.original_report = report((TRANSPARENCY, 90), (LOWRES, 3))
+        run_id = self.make_run()
+        _order, pitstop, _revision, _sha = self.recheck(
+            run_id, report((TRANSPARENCY, 90), (LOWRES, 11), (CLIPPING, 8)), bleed_only=True
+        )
+        self.assertEqual(self.issue(pitstop, 3004)["severity"], "error")
+        self.assertNotIn("introduced_by_fix", self.issue(pitstop, 3004))
+        lowres = self.issue(pitstop, 1150)
+        self.assertEqual(
+            (lowres["severity"], lowres["baseline_occurrences"], lowres["introduced_by_fix"]),
+            ("error", 3, 8),
+        )
+        self.assertTrue(self.issue(pitstop, 2079)["hidden_by_baseline"])
+        self.assertEqual(pitstop["verdict"], "error")
+
+    def test_fix_that_is_not_bleed_only_compares_only_the_configured_actions(self):
+        self.original_report = report()
+        run_id = self.make_run()
+        order, pitstop, _revision, _sha = self.recheck(run_id, report((LOWRES, 8), (CLIPPING, 8)))
+        self.assertEqual(self.issue(pitstop, 1150)["severity"], "error")
+        self.assertNotIn("hidden_by_baseline", self.issue(pitstop, 1150))
+        self.assertTrue(self.issue(pitstop, 2079)["hidden_by_baseline"])
+        self.assertEqual(pitstop["verdict"], "error")
+        self.assertEqual(order["pitstop_status"], "error")
+
+    def test_accepted_bleed_fix_sent_to_print_hides_everything_new(self):
+        import json
+
+        from services.callas_fix import STATE_NAME, fix_dir_for
+
+        self.original_report = report()
+        run_id = self.make_run()
+        pdf = Path(self.stored_order(run_id)["pdf_path"])
+        state_dir = fix_dir_for(pdf)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / STATE_NAME).write_text(
+            json.dumps({"status": "accepted", "plan": "size_correction", "summary": {"bleed_only": True}}),
+            encoding="utf-8",
+        )
+        candidate = make_pdf(self.root / "PDF" / "sample_callas-fixed.pdf", 103, 214)
+        self.workflow.accepted_pdf_provider = lambda _pdf: candidate
+        self.pitstop.reports.append(report((LOWRES, 8), (CLIPPING, 8)))
+        self.client.post("/api/orders/prepare-print", json={"run_id": run_id, "order_ids": ["1001"]})
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and self.stored_order(run_id)["status"] != "accepted_for_print":
+            time.sleep(0.05)
+        order = self.stored_order(run_id)
+        self.assertEqual(order["status"], "accepted_for_print")
+        self.assertEqual(self.pitstop.calls, 1)
+        self.assertTrue(self.issue(order["pitstop"], 1150)["hidden_by_baseline"])
+        self.assertEqual(order["pitstop"]["verdict"], "passed")
 
     def test_disabled_comparison_keeps_raw_pitstop(self):
         self.workflow.pitstop_fix_baseline = FixBaselinePolicy(enabled=False)

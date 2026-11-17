@@ -12,7 +12,14 @@
 * ``compare/original|result|overlay`` — картинки сравнения;
 * ``accepted.pdf`` — только для исходного PDF заказа: копия принятого ``fixed.pdf``,
   из которой собирается заказ, ждущий решения по коррекции (см.
-  ``services/callas_source_fix.py``). Повторный запуск исправления её не трогает.
+  ``services/callas_source_fix.py``). Повторный запуск исправления её не трогает;
+* ``source.pdf`` — только для растрового исходника (TIFF/JPEG/PNG): одностраничный PDF,
+  собранный из растра так же, как при обычной сборке заказа (ImageMagick, то же DPI,
+  без пересэмплирования и перевода цвета). План callas и сравнение работают с ним.
+
+Для каждого исправления в ``summary`` пишется вердикт ``bleed_only`` (поля вылета
+дорисованы, макет внутри формата не изменён) и его причины ``bleed_only_reasons``
+(``services/callas_bleed.py``).
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ from uuid import uuid4
 from config.callas_plans import CALLAS_PLANS, CallasPlan
 from core.fix_compare import FixCompareError, build_fix_comparison
 from services.callas.errors import CallasError
+from services.callas_bleed import BLEED_PLAN_KEY, bleed_only_verdict, profile_bleed_mm
 from services.pdf_routing import STATUS_FOLDERS
 
 logger = logging.getLogger(__name__)
@@ -40,6 +48,9 @@ logger = logging.getLogger(__name__)
 STATE_NAME = "state.json"
 FIXED_PDF_NAME = "fixed.pdf"
 ACCEPTED_SOURCE_PDF_NAME = "accepted.pdf"
+SOURCE_PDF_NAME = "source.pdf"
+#: Растровые исходники, которые перед планом callas собираются в ``source.pdf``.
+RASTER_SOURCE_SUFFIXES = frozenset({".tif", ".tiff", ".jpg", ".jpeg", ".png"})
 COMPARE_DIR = "compare"
 IMAGE_KINDS = ("original", "result", "overlay")
 
@@ -74,6 +85,22 @@ def fix_dir_for(pdf_path: Path | str) -> Path:
         # Собранный PDF, разложенный по папке статуса (Print/Rework/Failed).
         return pdf.parent.parent / "CallasFix" / pdf.stem
     return pdf.parent / "PDF" / "CallasFix" / f"{pdf.stem}.source"
+
+
+def is_raster_source(path: Path | str) -> bool:
+    return Path(path).suffix.lower() in RASTER_SOURCE_SUFFIXES
+
+
+def baseline_pdf_for(source: Path | str) -> Path:
+    """PDF стороны ДО исправления: сам исходный PDF или ``source.pdf`` растра."""
+    path = Path(source)
+    return fix_dir_for(path) / SOURCE_PDF_NAME if is_raster_source(path) else path
+
+
+def _default_raster_to_pdf(raster: Path, target: Path, *, strip_icc_cmyk: bool = False) -> Any:
+    from processing.batch_processor import build_raster_source_pdf
+
+    return build_raster_source_pdf(raster, target, strip_icc_cmyk=strip_icc_cmyk)
 
 
 def _now() -> str:
@@ -113,6 +140,19 @@ def _write_state(directory: Path, state: dict[str, Any]) -> None:
     os.replace(temporary, directory / STATE_NAME)
 
 
+LEGACY_BLEED_REASON = "исправление выполнено до проверки вылетов: запустите его заново"
+
+
+def _summary_with_bleed_verdict(summary: Any) -> dict[str, Any]:
+    """Сводка для интерфейса: ``bleed_only``/``bleed_only_reasons`` есть всегда."""
+    result = dict(summary) if isinstance(summary, Mapping) else {}
+    if "bleed_only" not in result:
+        result["bleed_only"] = False
+        result["bleed_only_reasons"] = [LEGACY_BLEED_REASON] if result else []
+    result.setdefault("bleed_only_reasons", [])
+    return result
+
+
 def comparison_payload(
     state: dict[str, Any] | None,
     base_url: str,
@@ -143,7 +183,7 @@ def comparison_payload(
         "decision": state.get("decision"),
         "started_at": state.get("started_at"),
         "finished_at": state.get("finished_at"),
-        "summary": state.get("summary") or {},
+        "summary": _summary_with_bleed_verdict(state.get("summary")),
         "original_url": f"{base_url}/files/original{version}" if "original" in images else None,
         "result_url": f"{base_url}/files/result{version}" if "result" in images else None,
         "overlay_url": f"{base_url}/files/overlay{version}" if "overlay" in images else None,
@@ -159,8 +199,11 @@ class CallasFixService:
         *,
         compare: Callable[..., Any] = build_fix_comparison,
         post_checks: Mapping[str, Callable[[Path, Path, dict[str, Any]], dict[str, Any]]] | None = None,
+        raster_to_pdf: Callable[..., Any] | None = None,
     ) -> None:
         self._client = client
+        # Растр → одностраничный PDF (как при обычной сборке заказа); шов для тестов.
+        self._raster_to_pdf = raster_to_pdf or _default_raster_to_pdf
         self._post_checks = dict(post_checks or {})
         self._plans = plans if plans is not None else CALLAS_PLANS
         self._compare = compare
@@ -207,7 +250,8 @@ class CallasFixService:
             raise CallasFixError("План недоступен для выбранного направления.", code="callas_plan_direction")
         if not pdf.is_file():
             raise CallasFixError("PDF заказа не найден.", status_code=404, code="pdf_not_found")
-        if plan.requires_cmyk:
+        if plan.requires_cmyk and not is_raster_source(pdf):
+            # Растр сначала собирается в PDF (в ``execute``); там же проверяется RGB.
             self._require_no_rgb(pdf)
         key = str(fix_dir_for(pdf))
         with self._lock:
@@ -258,8 +302,21 @@ class CallasFixService:
                 code="rgb_not_converted",
             )
 
-    def execute(self, pdf_path: Path | str, plan_key: str) -> dict[str, Any]:
-        """Выполняет исправление. Исключения не выпускает: ошибка попадает в состояние ``failed``."""
+    def execute(
+        self,
+        pdf_path: Path | str,
+        plan_key: str,
+        *,
+        format_mm: tuple[float, float] | None = None,
+        bleed_mm: float | None = None,
+        strip_icc_cmyk: bool = False,
+    ) -> dict[str, Any]:
+        """Выполняет исправление. Исключения не выпускает: ошибка попадает в состояние ``failed``.
+
+        ``format_mm`` (формат из имени файла, без вылетов) и ``bleed_mm`` (вылет профиля)
+        нужны вердикту ``bleed_only``; без формата размер результата не сверяется.
+        ``strip_icc_cmyk`` — как ``IMAGE_MAGIC_STRIP_ICC_CMYK`` обычной сборки, для растра.
+        """
         pdf = Path(pdf_path)
         directory = fix_dir_for(pdf)
         key = str(directory)
@@ -267,8 +324,14 @@ class CallasFixService:
         state = read_state_file(pdf) or {}
         job_id = f"fix-{uuid4().hex[:16]}"
         try:
+            source_pdf = pdf
+            if is_raster_source(pdf):
+                source_pdf = self._build_source_pdf(pdf, directory, strip_icc_cmyk=strip_icc_cmyk)
+                state["source_pdf"] = SOURCE_PDF_NAME
+                if plan.requires_cmyk:
+                    self._require_no_rgb(source_pdf)
             result = self._client.process(
-                pdf, plan.profile, "fix", job_id=job_id, report=("xml",), keep_name=True
+                source_pdf, plan.profile, "fix", job_id=job_id, report=("xml",), keep_name=True
             )
             callas_summary = dict(result.summary)
             applied = int(callas_summary.get("fixups_applied") or 0)
@@ -288,7 +351,7 @@ class CallasFixService:
             compare_dir = directory / COMPARE_DIR
             if compare_dir.exists():
                 shutil.rmtree(compare_dir, ignore_errors=True)
-            comparison = self._compare(pdf, fixed, compare_dir)
+            comparison = self._compare(source_pdf, fixed, compare_dir)
             images = {
                 kind: Path(getattr(comparison, f"{kind}_image")).name for kind in IMAGE_KINDS
             }
@@ -299,6 +362,19 @@ class CallasFixService:
                 summary[field] = [described.get("page_width_mm"), described.get("page_height_mm")]
             summary["callas"] = callas_summary
             summary["callas_status"] = result.status
+            summary["plan_key"] = plan.key
+            if plan.key == BLEED_PLAN_KEY:
+                extra_pages = self._compare_extra_pages(source_pdf, fixed, compare_dir, summary)
+                if extra_pages:
+                    summary["pages"] = extra_pages
+            bleed = profile_bleed_mm(None) if bleed_mm is None else float(bleed_mm)
+            bleed_only, bleed_reasons = bleed_only_verdict(summary, format_mm=format_mm, bleed_mm=bleed)
+            summary["bleed_only"] = bleed_only
+            summary["bleed_only_reasons"] = bleed_reasons
+            summary["bleed_check"] = {
+                "format_mm": list(format_mm) if format_mm else None,
+                "bleed_mm": bleed,
+            }
             if plan.warning:
                 summary["plan_warning"] = plan.warning
             if failed > 0:
@@ -336,6 +412,49 @@ class CallasFixService:
                 self._active.discard(key)
             self._cleanup_job(job_id)
         return state
+
+    def _build_source_pdf(self, raster: Path, directory: Path, *, strip_icc_cmyk: bool) -> Path:
+        """``source.pdf`` из растрового исходника; сам растр не меняется."""
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / SOURCE_PDF_NAME
+        temporary = directory / f".source.{uuid4().hex[:8]}.tmp.pdf"
+        try:
+            self._raster_to_pdf(raster, temporary, strip_icc_cmyk=strip_icc_cmyk)
+            if not temporary.is_file() or temporary.stat().st_size == 0:
+                raise CallasFixError(
+                    f"Не удалось собрать PDF из растра {raster.name}: ImageMagick не вернул файл.",
+                    code="raster_to_pdf_failed",
+                )
+            os.replace(temporary, target)
+        except CallasFixError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise CallasFixError(
+                f"Не удалось собрать PDF из растра {raster.name}: {str(exc).strip() or type(exc).__name__}",
+                code="raster_to_pdf_failed",
+            ) from exc
+        finally:
+            temporary.unlink(missing_ok=True)
+        return target
+
+    def _compare_extra_pages(
+        self, source_pdf: Path, fixed: Path, compare_dir: Path, summary: Mapping[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Сводки страниц 2…N (для вердикта ``bleed_only`` нужна каждая страница)."""
+        count = summary.get("original_page_count")
+        if not isinstance(count, int) or count < 2 or summary.get("result_page_count") != count:
+            return []
+        pages = []
+        for number in range(2, count + 1):
+            try:
+                comparison = self._compare(source_pdf, fixed, compare_dir / f"page-{number}", page=number)
+            except Exception:  # noqa: BLE001 — несравнённая страница даёт bleed_only = False
+                logger.warning("callas_fix.page_compare_failed pdf=%s page=%s", source_pdf.name, number, exc_info=True)
+                continue
+            described = dict(comparison.summary)
+            described["page"] = number
+            pages.append(described)
+        return pages
 
     def _cleanup_job(self, job_id: str) -> None:
         job_dir = getattr(self._client, "job_dir", None)
@@ -425,12 +544,18 @@ class CallasFixService:
             temporary.unlink(missing_ok=True)
         plan = state.get("plan") or {}
         source = state.get("source") or {}
+        summary = state.get("summary") or {}
         info = {
             "status": STATUS_ACCEPTED,
             "plan": plan.get("key"),
             "plan_title": plan.get("title"),
             "accepted_at": state.get("decided_at"),
             "source": {"size": source.get("size"), "mtime_ns": source.get("mtime_ns")},
+            # Контракт для повторной проверки и PitStop: только поля дорисованы →
+            # содержимое проверяется по ``baseline_pdf`` (PDF стороны до исправления).
+            "bleed_only": summary.get("bleed_only") is True,
+            "bleed_only_reasons": [str(reason) for reason in summary.get("bleed_only_reasons") or ()],
+            "baseline_pdf": str(baseline_pdf_for(pdf)),
         }
         return target, info
 

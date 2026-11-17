@@ -156,7 +156,7 @@ describe("FixComparison", () => {
 
   it.each([
     ["accepted", "Принято: этот файл будет собран из исправленного PDF"],
-    ["rejected", "Исправление отклонено: файл проверяется по исходному PDF"],
+    ["rejected", "Исправление отклонено: файл проверяется по исходному файлу"],
   ])("shows the decided %s state of a source PDF fix", async (status, text) => {
     setup();
     const host = mount({ comparison: { ...base, status, source_only: true, applied: status === "accepted", can_accept: false, pdf_url: "/p.pdf" } });
@@ -164,6 +164,47 @@ describe("FixComparison", () => {
     expect(host.textContent).toContain(text);
     expect(host.querySelector(".fix-actions")).toBeNull();
     expect(host.querySelector("a[href='/p.pdf']")).toBeNull();
+  });
+
+  describe("bleed-only note for the size correction plan", () => {
+    const sizePlan = { key: "size_correction", title: "Коррекция размера" };
+    const withSummary = (extra, plan = sizePlan) => ({ ...base, plan, status: "ready", summary: { ...base.summary, ...extra } });
+
+    it("shows a status note when only the bleed changed", async () => {
+      setup();
+      const host = mount({ comparison: withSummary({ bleed_only: true, bleed_only_reasons: [] }) });
+      await nextTick();
+      const note = host.querySelector(".fix-bleed-only");
+      expect(note.getAttribute("role")).toBe("status");
+      expect(note.textContent).toContain("Только поля: макет внутри обрезного формата не изменён");
+      expect(host.querySelector(".fix-bleed-changed")).toBeNull();
+    });
+
+    it("warns and lists the reasons when the layout changed beyond the bleed", async () => {
+      setup();
+      const host = mount({ comparison: withSummary({ bleed_only: false, bleed_only_reasons: ["масштаб макета изменён", "обрезной формат сдвинут"] }) });
+      await nextTick();
+      const note = host.querySelector(".fix-bleed-changed");
+      expect(note.getAttribute("role")).toBe("status");
+      expect(note.classList.contains("fix-plan-warning")).toBe(true);
+      expect(note.textContent).toContain("Фикс изменил макет, не только поля:");
+      expect([...note.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["масштаб макета изменён", "обрезной формат сдвинут"]);
+      expect(host.querySelector(".fix-bleed-only")).toBeNull();
+    });
+
+    it("shows nothing for old payloads without the field or for other plans", async () => {
+      setup();
+      const absent = mount({ comparison: withSummary({}) });
+      await nextTick();
+      expect(absent.querySelector(".fix-bleed-only")).toBeNull();
+      expect(absent.querySelector(".fix-bleed-changed")).toBeNull();
+      expect(absent.textContent).not.toContain("Только поля");
+
+      const other = mount({ comparison: withSummary({ bleed_only: true }, { key: "fonts_to_outlines", title: "Шрифты в кривые" }) });
+      await nextTick();
+      expect(other.querySelector(".fix-bleed-only")).toBeNull();
+      expect(other.querySelector(".fix-bleed-changed")).toBeNull();
+    });
   });
 
   it("opens a keyboard-accessible lightbox for a tile and closes it with Escape", async () => {

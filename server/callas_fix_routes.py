@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from core.preview_cache import preview_media_type
 from server.errors import APIError
+from services.callas_bleed import order_fix_context, summary_bleed_only
 from services.callas_fix import (
     CallasFixError,
     CallasFixService,
@@ -94,10 +95,27 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
             **details,
         })
 
-    def execute_recorded(request: Request, run_id: str, order: dict[str, Any], pdf: Path, plan: str, file_id: str | None) -> None:
+    def execute_recorded(
+        request: Request,
+        run_id: str,
+        run: dict[str, Any],
+        order: dict[str, Any],
+        pdf: Path,
+        plan: str,
+        file_id: str | None,
+    ) -> None:
         service = _service(request)
+        # Формат из имени файла и вылет профиля — для вердикта «только вылеты».
+        entry = source_entry_for(order, pdf) if file_id else None
+        format_mm, bleed_mm = order_fix_context(run, order, entry)
+        settings = getattr(request.app.state, "settings", None)
         try:
-            service.execute(pdf, plan)
+            service.execute(
+                pdf, plan,
+                format_mm=format_mm,
+                bleed_mm=bleed_mm,
+                strip_icc_cmyk=bool(getattr(settings, "strip_icc_cmyk", False)),
+            )
         finally:
             state = service.read_state(pdf) or {}
             record(request, run_id, order, "order.callas_fix.finished",
@@ -169,7 +187,7 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
                 logger.warning("callas_fix.source_reset_failed run_id=%s file_id=%s", run_id, file_id, exc_info=True)
             else:
                 record(request, run_id, _order, "order.callas_fix.reset", file_id=file_id, file=pdf.name, status="processing")
-        background_tasks.add_task(execute_recorded, request, run_id, _order, pdf, body.plan, file_id)
+        background_tasks.add_task(execute_recorded, request, run_id, run, _order, pdf, body.plan, file_id)
         run, _order = fresh_order(request, run_id, order_id, file_id)
         return {"comparison": payload(state, run_id, order_id, file_id, run, _order, pdf)}
 
@@ -203,7 +221,8 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
                         if candidate is not None:
                             _updated, _pitstop, revision, sha256 = (
                                 request.app.state.order_workflow.recheck_pdf_revision(
-                                    run, order, candidate, callas_fix=True
+                                    run, order, candidate, callas_fix=True,
+                                    bleed_only=summary_bleed_only(state),
                                 )
                             )
                             service.mark_published(pdf, sha256=sha256, revision=revision)

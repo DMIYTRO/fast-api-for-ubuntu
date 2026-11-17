@@ -68,12 +68,20 @@ const decisionText = computed(() => {
   if (sourceOnly.value) {
     return status.value === "accepted"
       ? "Принято: этот файл будет собран из исправленного PDF. Исходный файл не изменён."
-      : "Исправление отклонено: файл проверяется по исходному PDF.";
+      : "Исправление отклонено: файл проверяется по исходному файлу.";
   }
   return status.value === "accepted"
     ? "Исправление принято: результат станет новой ревизией печатного PDF."
     : "Исправление отклонено: в печать уходит исходный PDF.";
 });
+// Только для коррекции размера: бэкенд сообщает, изменились ли только поля (вылеты) или макет внутри обреза.
+// Старые ответы без поля: ничего не показываем.
+const bleedOnly = computed(() => {
+  if (props.comparison.plan?.key !== "size_correction") return null;
+  const value = summary.value.bleed_only;
+  return typeof value === "boolean" ? value : null;
+});
+const bleedReasons = computed(() => (Array.isArray(summary.value.bleed_only_reasons) ? summary.value.bleed_only_reasons.filter(Boolean) : []));
 const statusText = computed(() => ({
   processing: "Обрабатывается",
   ready: "Ждёт решения",
@@ -142,6 +150,11 @@ function close() {
         <span v-if="changedText">{{ changedText }}</span>
       </p>
 
+      <p v-if="bleedOnly === true" class="fix-note fix-bleed-only" role="status"><i aria-hidden="true">✓</i> Только поля: макет внутри обрезного формата не изменён</p>
+      <div v-else-if="bleedOnly === false" class="fix-plan-warning fix-bleed-changed" role="status">
+        <i aria-hidden="true">!</i>
+        <span>Фикс изменил макет, не только поля:<template v-if="bleedReasons.length"><ul class="fix-bleed-reasons"><li v-for="(reason, index) in bleedReasons" :key="index">{{ reason }}</li></ul></template></span>
+      </div>
       <p v-if="summary.plan_warning" class="fix-plan-warning" role="note"><i aria-hidden="true">!</i><span>{{ summary.plan_warning }}</span></p>
       <p v-if="summary.partial_failure" class="fix-plan-warning fix-partial" role="alert"><i aria-hidden="true">!</i><span>{{ summary.partial_failure }}</span></p>
       <ul v-if="summary.post_check?.messages?.length" class="fix-post-check" :class="`post-${summary.post_check.level}`" aria-label="Повторная проверка результата">

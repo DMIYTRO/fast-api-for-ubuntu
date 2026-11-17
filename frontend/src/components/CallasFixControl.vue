@@ -14,7 +14,7 @@ const props = defineProps({
   initial: { type: Object, default: null },
   // Show the "Исправить" button (an order has a production PDF); the block with a result is shown regardless.
   canStart: { type: Boolean, default: true },
-  // Исходный PDF-файл заказа без собранного PDF: результат только для просмотра и скачивания.
+  // Исходный файл заказа (PDF или растр) без собранного PDF: результат только для просмотра и скачивания.
   fileId: { type: String, default: "" },
   fileLabel: { type: String, default: "" },
   // Ключи дополнительных планов, применимых к заказу (шрифты, плашка K100, обтравка).
@@ -88,7 +88,7 @@ watch(() => props.initial?.comparison, (value) => {
 
 // Ключ плана коррекции размера — единственное действие, доступное одной кнопкой.
 const SIZE_PLAN_KEY = "size_correction";
-const SIZE_BUTTON_TITLE = "Скорректировать размер макета через Callas. Будет создана исправленная копия PDF и сравнение «до / после»; исходный PDF не меняется, результат нужно принять или отклонить.";
+const SIZE_BUTTON_TITLE = "Скорректировать размер макета через Callas. Будет создана исправленная копия PDF и сравнение «до / после»; исходный файл не меняется, результат нужно принять или отклонить.";
 
 async function loadPlans() {
   if (plans.value.length || loadingPlans.value) return plans.value;
@@ -171,7 +171,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div v-if="showBlock || canStart || unavailable" class="callas-fix">
-    <p v-if="fileLabel" class="callas-fix-file muted">Исходный PDF: <b>{{ fileLabel }}</b></p>
+    <p v-if="fileLabel" class="callas-fix-file muted">Исходный файл: <b>{{ fileLabel }}</b></p>
     <FixComparison
       v-if="showBlock"
       :comparison="comparison"

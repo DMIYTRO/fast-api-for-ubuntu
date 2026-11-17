@@ -146,8 +146,10 @@ def build_fix_comparison(
         layer_r = _render_layer(fixed_pdf, page_r, geo_r, scale, canvas_w, canvas_h, out_path)
 
         scale_info = _estimate_scale(page_o, page_r, geo_o, geo_r)
+        page_counts = (int(doc_o.page_count), int(doc_r.page_count))
 
     changed_percent, changed_content_percent = _measure_difference(layer_o, layer_r)
+    trim_changed_percent = _measure_trim_difference(layer_o, layer_r)
     overlay, overlay_changed_percent = _build_overlay(layer_o, layer_r, scale, canvas_w, canvas_h)
 
     summary = _build_summary(
@@ -156,6 +158,12 @@ def build_fix_comparison(
     )
     # Доля площади, подсвеченной на наложении (учитывает и смену цвета без смены яркости).
     summary["overlay_changed_percent"] = round(overlay_changed_percent, 2)
+    # Изменения строго внутри TrimBox (по формату): то, что видно после реза.
+    # ``None`` — общей области TrimBox нет (сравнить нечего).
+    summary["trim_changed_percent"] = (
+        None if trim_changed_percent is None else round(trim_changed_percent, 3)
+    )
+    summary["original_page_count"], summary["result_page_count"] = page_counts
 
     try:
         out_path.mkdir(parents=True, exist_ok=True)
@@ -365,6 +373,42 @@ def _measure_difference(layer_o: _Layer, layer_r: _Layer) -> tuple[float, float]
     changed = 100.0 * differing / page_area if page_area else 0.0
     changed_content = 100.0 * differing / ink_union if ink_union else 0.0
     return float(min(100.0, changed)), float(min(100.0, changed_content))
+
+
+def _measure_trim_difference(layer_o: _Layer, layer_r: _Layer) -> float | None:
+    """Доля пикселей, отличающихся внутри общей области TrimBox оригинала и результата.
+
+    Слои выровнены по центру TrimBox, поэтому одинаковая картинка внутри формата даёт
+    0 %, сколько бы полей ни дорисовал callas снаружи. Отличие — любой канал RGB
+    больше ``OVERLAY_COLOR_THRESHOLD`` (как подсветка наложения: ловит и смену цвета
+    при той же яркости). Край области сжимается на 1 px: граница страницы при
+    округлении координат может попасть в серый фон холста. ``None`` — общей области нет.
+    """
+    width = layer_o.canvas_w
+    x0 = max(layer_o.trim[0], layer_r.trim[0], layer_o.box[0], layer_r.box[0], 0) + 1
+    y0 = max(layer_o.trim[1], layer_r.trim[1], layer_o.box[1], layer_r.box[1], 0) + 1
+    x1 = min(layer_o.trim[2], layer_r.trim[2], layer_o.box[2], layer_r.box[2], width) - 1
+    y1 = min(layer_o.trim[3], layer_r.trim[3], layer_o.box[3], layer_r.box[3], layer_o.canvas_h) - 1
+    if x1 <= x0 or y1 <= y0:
+        return None
+    rgb_o, rgb_r = layer_o.rgb, layer_r.rgb
+    differing = 0
+    for y in range(y0, y1):
+        row = y * width
+        for chunk_start in range(x0, x1, _OVERLAY_CHUNK):
+            chunk_end = min(x1, chunk_start + _OVERLAY_CHUNK)
+            a, b = (row + chunk_start) * 3, (row + chunk_end) * 3
+            if rgb_o[a:b] == rgb_r[a:b]:
+                continue
+            for i in range(a, b, 3):
+                if max(
+                    abs(rgb_o[i] - rgb_r[i]),
+                    abs(rgb_o[i + 1] - rgb_r[i + 1]),
+                    abs(rgb_o[i + 2] - rgb_r[i + 2]),
+                ) > OVERLAY_COLOR_THRESHOLD:
+                    differing += 1
+    area = (x1 - x0) * (y1 - y0)
+    return float(min(100.0, 100.0 * differing / area))
 
 
 def _build_overlay(
