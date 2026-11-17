@@ -46,6 +46,9 @@ class PitStopIssue:
     message: str
     action_id: int | str | None = None
     locations: tuple[PitStopLocation, ...] = ()
+    # Реальное число вхождений из текста сообщения ("(1670x on pages 1-2)"):
+    # в отчёте перечислено не более 100 локаций, поэтому len(locations) занижает его.
+    total_occurrences: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

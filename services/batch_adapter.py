@@ -593,7 +593,12 @@ def _pitstop_result_to_dto(
                 "severity": issue.severity.value,
                 "action_id": issue.action_id,
                 "message": issue.message,
-                "occurrences": max(1, len(locations)),
+                # Отчёт содержит не более 100 локаций, точное число — в тексте сообщения.
+                "occurrences": (
+                    issue.total_occurrences
+                    if issue.total_occurrences is not None
+                    else max(1, len(locations))
+                ),
                 "locations": locations,
             }
         )

@@ -16,6 +16,7 @@ from .models import (
 from .parser import (
     PitStopReportError,
     PitStopReportUnreadableError,
+    parse_occurrences,
     parse_pitstop_payload,
     parse_pitstop_report,
 )
@@ -59,6 +60,7 @@ __all__ = [
     "SharedPathError",
     "TransportResult",
     "mac_shared_path_to_windows",
+    "parse_occurrences",
     "parse_pitstop_payload",
     "parse_pitstop_report",
 ]

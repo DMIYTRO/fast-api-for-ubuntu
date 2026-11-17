@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -14,6 +15,40 @@ from .models import (
     PitStopReport,
     PitStopSeverity,
 )
+
+
+_OCCURRENCES_RE = re.compile(
+    r"\(\s*(?P<count>\d+)\s*x\s+on\s+pages?\s+(?P<pages>[^()]*?)\s*\)\s*\.?\s*$",
+    re.IGNORECASE,
+)
+_PAGE_PART_RE = re.compile(r"^(?P<start>\d+)(?:\s*-\s*(?P<end>\d+))?$")
+# Защита от абсурдного диапазона вроде "1-999999999" в испорченном сообщении.
+_MAX_PAGE_RANGE = 100_000
+
+
+def parse_occurrences(message: str) -> tuple[int, tuple[int, ...]] | None:
+    """Parse a trailing "(Nx on page(s) ...)" group of a PitStop message.
+
+    Returns ``(count, pages)`` where pages are sorted, unique, one-based and
+    ranges are expanded, or ``None`` when the suffix is absent or malformed.
+    """
+    if not isinstance(message, str):
+        return None
+    match = _OCCURRENCES_RE.search(message)
+    if match is None:
+        return None
+    count = int(match.group("count"))
+    pages: set[int] = set()
+    for part in match.group("pages").split(","):
+        part_match = _PAGE_PART_RE.match(part.strip())
+        if part_match is None:
+            return None
+        start = int(part_match.group("start"))
+        end = int(part_match.group("end")) if part_match.group("end") else start
+        if start < 1 or end < start or end - start > _MAX_PAGE_RANGE:
+            return None
+        pages.update(range(start, end + 1))
+    return count, tuple(sorted(pages))
 
 
 class PitStopReportError(ValueError):
@@ -102,15 +137,18 @@ def _parse_issue_section(
             locations = [locations]
         if not isinstance(locations, list):
             raise PitStopReportError(f"location в {severity.value}[{index}] некорректен")
+        message = _optional_text(item.get("message")) or "PitStop: сообщение отсутствует"
+        occurrences = parse_occurrences(message)
         parsed.append(
             PitStopIssue(
                 severity=severity,
                 action_id=_action_id(item.get("actionID")),
-                message=_optional_text(item.get("message")) or "PitStop: сообщение отсутствует",
+                message=message,
                 locations=tuple(
                     _parse_location(location, severity, index)
                     for location in locations
                 ),
+                total_occurrences=occurrences[0] if occurrences else None,
             )
         )
     return parsed
