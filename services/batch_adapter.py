@@ -19,6 +19,13 @@ from services.pitstop import (
     PitStopExecutionStatus,
     PitStopService,
 )
+from services.pitstop.baseline import (
+    FixBaselinePolicy,
+    apply_fix_baseline,
+    merge_source_checks,
+)
+from services.callas_fix import source_signature_matches
+from services.callas_source_fix import STALE_SOURCE_WARNING
 from services.pdf_routing import FAILED_FOLDER, completed_status, route_pdf
 from services.postpress import normalize_postpress
 
@@ -64,6 +71,9 @@ class OrderArtifacts:
     pdf_kind: str | None = None
     # Operator-visible reason when PitStop could not run (Russian).
     pitstop_skipped_reason: str | None = None
+    # Проверка исходных PDF клиента, если сторона собрана из принятого исправления
+    # Callas исходника (services/pitstop/baseline.py); хранится как order["pitstop_baseline"].
+    pitstop_baseline: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         self.preview_paths = list(self.preview_paths or [])
@@ -86,8 +96,11 @@ class BatchProcessorAdapter:
         correction_confirm_max_mm: float | None = None,
         max_dpi: float | None = None,
         downsample_high_dpi: bool | None = None,
+        pitstop_fix_baseline: FixBaselinePolicy | None = None,
     ) -> None:
         self.options = options
+        # None — сравнение с проверкой исходников не подключено (тесты, CLI).
+        self.pitstop_fix_baseline = pitstop_fix_baseline
         self.input_dir = Path(options.input_path)
         self.pdf_dir = self.input_dir / "PDF"
         self.preview_dir = self.input_dir / "Previews"
@@ -265,6 +278,40 @@ class BatchProcessorAdapter:
         for item in self.pending_files(order):
             self.processor.confirm_resample(item, approved)
 
+    def reinspect_file(self, item: FileCheck, content_path: Path | None) -> FileCheck:
+        """Проверить PDF-файл заказа заново по ``content_path`` (``None`` — по исходнику)."""
+        return self.processor.reinspect_pdf_file(item, content_path)
+
+    def revalidate_order(self, order: OrderCheck) -> None:
+        self.processor.revalidate_order(order)
+
+    def _drop_stale_source_fixes(self, order: OrderCheck) -> None:
+        """Не собирать из исправления Callas, если исходник изменился после него.
+
+        Такой файл проверяется заново по исходнику со всеми обычными правилами
+        (обычно ему снова нужно решение по коррекции, и заказ не собирается).
+        """
+        changed = False
+        for index, item in enumerate(order.files):
+            fix = item.callas_source_fix
+            if fix is None or item.content_path is None:
+                continue
+            if item.content_path.is_file() and source_signature_matches(
+                item.path, fix.get("source")  # type: ignore[arg-type]
+            ):
+                continue
+            logger.warning(
+                "order.callas_source_fix_stale order_id=%s file=%s",
+                order.order_id,
+                item.path.name,
+            )
+            replacement = self.processor.reinspect_pdf_file(item, None)
+            replacement.warnings.insert(0, STALE_SOURCE_WARNING)
+            order.files[index] = replacement
+            changed = True
+        if changed:
+            self.processor.revalidate_order(order)
+
     def process_order(self, order: OrderCheck) -> OrderArtifacts:
         result = self._process_order_unrouted(order)
         self._route_production_pdf(order, result)
@@ -359,6 +406,7 @@ class BatchProcessorAdapter:
         # Fold overlays and previews depend on postpress; wait for Sborka here
         # (bounded) rather than when the order is first shown.
         self._apply_postpress(order, wait=True)
+        self._drop_stale_source_fixes(order)
         result = OrderArtifacts()
         source_previews_created = False
 
@@ -456,6 +504,9 @@ class BatchProcessorAdapter:
                 )
                 result.current_pdf_revision = 1
                 result.current_pdf_sha256 = pitstop_result.input_sha256
+                # До итогового статуса и превью: вердикт без находок, добавленных
+                # принятым исправлением Callas исходника.
+                self._apply_source_fix_baseline(order, result)
 
                 # The operator must review the exact production PDF checked by
                 # PitStop. Replace source previews with revision-bound previews
@@ -518,6 +569,88 @@ class BatchProcessorAdapter:
                     f"Превью исходников: {type(preview_exc).__name__}: {preview_exc}"
                 )
         return result
+
+    def _apply_source_fix_baseline(self, order: OrderCheck, result: OrderArtifacts) -> None:
+        """Сравнить PitStop собранного PDF с проверкой исходных PDF клиента.
+
+        Только если хотя бы одна сторона собрана из принятого исправления Callas
+        исходника и профиль входит в ``IMAGE_MAGIC_PITSTOP_FIX_BASELINE_PROFILES``;
+        остальные заказы не получают ни одного лишнего запуска PitStop.
+
+        Baseline — проверки исходников ВСЕХ файлов заказа (и исправленных, и нет):
+        сравнение идёт по суммам вхождений на ``action_id``, а находки стороны без
+        исправления попадают в собранный PDF без изменений, поэтому они всегда есть в
+        baseline и не могут быть скрыты. Скрывается только то, чего у клиента не было
+        ни в одном исходнике.
+
+        Сбой baseline (ошибка, таймаут, растровый файл, который PitStop не проверяет)
+        ничего не вычитает (``baseline_status`` = ``failed``/``missing``) и не роняет
+        заказ. PDF заказа, превью и отчёты основной проверки не меняются.
+        """
+        policy = self.pitstop_fix_baseline
+        pitstop = result.pitstop
+        direction = self.options.direction
+        if policy is None or self.pitstop_service is None or not pitstop:
+            return
+        if not any(
+            item.callas_source_fix is not None and item.content_path is not None
+            for item in order.files
+        ):
+            return
+        if not policy.applies_to(direction):
+            return
+        if pitstop.get("execution_status") != "completed":
+            return
+        sources: list[Path] = []
+        ordered = sorted(
+            order.files,
+            key=lambda item: 0 if item.parsed and item.parsed.side == "face" else 1,
+        )
+        for item in ordered:
+            if item.path not in sources:
+                sources.append(item.path)
+        if any(path.suffix.lower() != ".pdf" for path in sources):
+            # Растровый исходник PitStop не проверяет: сравнить не с чем.
+            logger.info(
+                "order.pitstop_source_baseline_skipped order_id=%s reason=raster_source",
+                order.order_id,
+            )
+            result.pitstop = apply_fix_baseline(pitstop, None, policy, profile_key=direction)
+            return
+        checks: list[tuple[str, dict[str, Any]]] = []
+        for path in sources:
+            try:
+                check_result = self.pitstop_service.check_pdf(path, profile_id=direction)
+                check = _pitstop_result_to_dto(check_result, checked_revision=1)
+            except Exception as exc:  # noqa: BLE001 - baseline никогда не роняет заказ
+                logger.warning(
+                    "order.pitstop_source_baseline_failed order_id=%s file=%s error=%s",
+                    order.order_id,
+                    path.name,
+                    exc,
+                )
+                check = {
+                    "execution_status": "failed",
+                    "verdict": "error",
+                    "technical_error": f"Проверка PitStop исходника: {type(exc).__name__}: {exc}",
+                    "issues": [],
+                }
+            checks.append((str(path), check))
+            if check.get("execution_status") != "completed":
+                break  # Неполный baseline всё равно не используется.
+        baseline = merge_source_checks(checks)
+        adjusted = apply_fix_baseline(pitstop, baseline, policy, profile_key=direction)
+        logger.info(
+            "order.pitstop_source_baseline order_id=%s status=%s checks=%s verdict=%s->%s",
+            order.order_id,
+            adjusted.get("baseline_status") if adjusted else None,
+            ",".join(str(check.get("check_id")) for _, check in checks),
+            pitstop.get("verdict"),
+            adjusted.get("verdict") if adjusted else None,
+        )
+        result.pitstop = adjusted
+        if baseline.get("execution_status") == "completed":
+            result.pitstop_baseline = baseline
 
     def _check_ink_coverage(self, order: OrderCheck, pdf_path: Path) -> dict[str, Any]:
         try:

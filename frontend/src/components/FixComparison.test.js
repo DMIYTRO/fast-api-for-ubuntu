@@ -132,6 +132,40 @@ describe("FixComparison", () => {
     expect(host.querySelectorAll(".fix-tile").length).toBe(3);
   });
 
+  it("offers accept and reject for a source PDF fix only when the backend allows it", async () => {
+    setup();
+    const onAccept = vi.fn();
+    const onReject = vi.fn();
+    const acceptable = mount({ comparison: { ...base, status: "ready", source_only: true, can_accept: true, pdf_url: "/p.pdf" } }, { onAccept, onReject });
+    await nextTick();
+    byText(acceptable, "Принять").click();
+    byText(acceptable, "Отклонить").click();
+    expect(onAccept).toHaveBeenCalledTimes(1);
+    expect(onReject).toHaveBeenCalledTimes(1);
+    expect(acceptable.querySelector("a[href='/p.pdf']")).toBeNull();
+    expect(acceptable.textContent).not.toContain("принять исправление в печать отсюда нельзя");
+    expect(acceptable.textContent).toContain("этот файл будет собран из исправленного PDF");
+
+    const previewOnly = mount({ comparison: { ...base, status: "ready", source_only: true, can_accept: false, pdf_url: "/p.pdf" } });
+    await nextTick();
+    expect(byText(previewOnly, "Принять")).toBeUndefined();
+    expect(byText(previewOnly, "Отклонить")).toBeUndefined();
+    expect(previewOnly.querySelector("a[href='/p.pdf']")).not.toBeNull();
+    expect(previewOnly.textContent).toContain("принять исправление в печать отсюда нельзя");
+  });
+
+  it.each([
+    ["accepted", "Принято: этот файл будет собран из исправленного PDF"],
+    ["rejected", "Исправление отклонено: файл проверяется по исходному PDF"],
+  ])("shows the decided %s state of a source PDF fix", async (status, text) => {
+    setup();
+    const host = mount({ comparison: { ...base, status, source_only: true, applied: status === "accepted", can_accept: false, pdf_url: "/p.pdf" } });
+    await nextTick();
+    expect(host.textContent).toContain(text);
+    expect(host.querySelector(".fix-actions")).toBeNull();
+    expect(host.querySelector("a[href='/p.pdf']")).toBeNull();
+  });
+
   it("opens a keyboard-accessible lightbox for a tile and closes it with Escape", async () => {
     setup();
     const host = mount({ comparison: { ...base, status: "ready" } });

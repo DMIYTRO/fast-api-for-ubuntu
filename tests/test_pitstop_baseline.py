@@ -21,6 +21,7 @@ from services.pitstop.baseline import (
     apply_fix_baseline,
     diff_against_baseline,
     is_original_check,
+    merge_source_checks,
 )
 
 
@@ -194,6 +195,34 @@ class DiffAgainstBaselineTests(unittest.TestCase):
         restored = diff_against_baseline(hidden, None, ACTIONS)
         restored.pop("baseline_status")
         self.assertEqual(restored, current)
+
+
+class MergeSourceChecksTests(unittest.TestCase):
+    def test_counts_of_all_sources_are_summed_per_action(self):
+        merged = merge_source_checks([
+            ("face.pdf", dto((CLIPPING, 168), (TRANSPARENCY, 90))),
+            ("back.pdf", dto((TRANSPARENCY, 30))),
+        ])
+        self.assertEqual(merged["execution_status"], "completed")
+        self.assertEqual(merged["kind"], "source_pdfs")
+        self.assertEqual(merged["profile"]["key"], "digital")
+        self.assertEqual([item["path"] for item in merged["sources"]], ["face.pdf", "back.pdf"])
+        result = diff_against_baseline(
+            dto((TRANSPARENCY, 120), (CLIPPING, 1670), revision=1), merged, ACTIONS
+        )
+        self.assertNotIn("introduced_by_fix", issue_for(result, 3004))
+        self.assertEqual(issue_for(result, 2079)["introduced_by_fix"], 1502)
+
+    def test_any_failed_source_fails_the_baseline(self):
+        merged = merge_source_checks([
+            ("face.pdf", dto((CLIPPING, 168))),
+            ("back.pdf", dto(status=PitStopExecutionStatus.FAILED)),
+        ])
+        self.assertEqual(merged["execution_status"], "failed")
+        self.assertEqual(merged["technical_error"], "SSH недоступен")
+        result = diff_against_baseline(dto((CLIPPING, 1670)), merged, ACTIONS)
+        self.assertEqual(result["baseline_status"], "failed")
+        self.assertEqual(merge_source_checks([])["execution_status"], "failed")
 
 
 class PolicyTests(unittest.TestCase):

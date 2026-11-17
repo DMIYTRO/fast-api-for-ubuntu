@@ -30,6 +30,8 @@ _LOCAL_RULES: tuple[tuple[str, re.Pattern[str], str], ...] = tuple(
     (code, re.compile(pattern, re.IGNORECASE), label)
     for code, pattern, label in (
         ("size_corrected", r"^размер автоматически скорректирован", "Размер автоматически скорректирован"),
+        ("callas_source_fix", r"использован исправленный PDF$", "Использован PDF, исправленный Callas"),
+        ("callas_source_fix_stale", r"^Исходный файл изменился после принятия исправления Callas", "Исправление Callas не использовано: исходный файл изменился"),
         ("size_confirmation_required", r"^требуется подтверждение коррекции", "Требуется подтверждение коррекции размера"),
         ("size_mismatch", r"^размер \d", "Размер не соответствует ожидаемому"),
         ("file_too_large", r"^размер файла .*превышает лимит", "Размер файла превышает лимит"),

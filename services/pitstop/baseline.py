@@ -6,7 +6,12 @@
 (``baseline``): объекты клиента остаются ошибкой, добавленное исправлением — нет.
 
 Функции чистые: входные DTO не меняются, результат — новый словарь. Отчёты PitStop
-(JSON/XML) не трогаются, повторных запусков PitStop нет.
+(JSON/XML) не трогаются.
+
+Исходная проверка — либо проверка первой ревизии собранного PDF заказа (исправление
+Callas собранного PDF), либо сумма проверок исходных PDF клиента
+(``merge_source_checks``), если сторона заказа собрана из принятого исправления
+исходника (``BatchProcessorAdapter``).
 """
 
 from __future__ import annotations
@@ -164,6 +169,76 @@ def diff_against_baseline(
     result["counts"] = counts
     result["verdict"] = verdict_from_counts(counts)
     result["baseline_status"] = BASELINE_APPLIED
+    return result
+
+
+SOURCE_BASELINE_KIND = "source_pdfs"
+
+
+def merge_source_checks(
+    checks: Iterable[tuple[str, Mapping[str, Any]]],
+) -> dict[str, Any]:
+    """Baseline из проверок исходных PDF клиента (по одной на файл заказа).
+
+    Нужен, когда сторона заказа собрана из принятого исправления Callas исходника:
+    проверки исходного собранного PDF нет, есть только проверки самих исходников.
+    Сравнение идёт по суммам вхождений на ``action_id``, поэтому вхождения всех
+    файлов просто складываются. Baseline считается выполненным, только если
+    выполнены все проверки; иначе ``execution_status = "failed"`` и сравнение ничего
+    не вычитает. Локации не сохраняются: для сравнения они не нужны.
+    """
+    checks = list(checks)
+    completed = bool(checks) and all(
+        check.get("execution_status") == "completed" for _, check in checks
+    )
+    counts: dict[str, int] = {}
+    issues: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    profile: Any = None
+    for path, check in checks:
+        if profile is None and isinstance(check.get("profile"), Mapping):
+            profile = dict(check["profile"])
+        for key, value in (check.get("counts") or {}).items():
+            try:
+                counts[key] = counts.get(key, 0) + int(value or 0)
+            except (TypeError, ValueError):
+                continue
+        for issue in check.get("issues") or ():
+            if not isinstance(issue, Mapping):
+                continue
+            item = {key: value for key, value in issue.items() if key != "locations"}
+            item["source_path"] = path
+            issues.append(item)
+        sources.append({
+            "path": path,
+            "check_id": check.get("check_id"),
+            "execution_status": check.get("execution_status"),
+            "verdict": check.get("verdict"),
+            "input_sha256": check.get("input_sha256"),
+            "checked_at": check.get("checked_at"),
+            "technical_error": check.get("technical_error"),
+        })
+    result: dict[str, Any] = {
+        "kind": SOURCE_BASELINE_KIND,
+        "check_id": None,
+        "execution_status": "completed" if completed else "failed",
+        "verdict": verdict_from_counts(counts) if completed else "error",
+        "checked_revision": None,
+        "profile": profile,
+        "counts": counts,
+        "issues": issues,
+        "reports": {"json_url": None, "xml_url": None},
+        "sources": sources,
+    }
+    if not completed:
+        result["technical_error"] = next(
+            (
+                str(source["technical_error"])
+                for source in sources
+                if source.get("technical_error")
+            ),
+            "Проверка PitStop исходного PDF не выполнена.",
+        )
     return result
 
 
