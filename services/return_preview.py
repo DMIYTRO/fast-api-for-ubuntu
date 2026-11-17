@@ -14,7 +14,7 @@ import re
 from typing import Iterable, Iterator
 import shutil
 import subprocess
-from tempfile import NamedTemporaryFile
+from uuid import uuid4
 
 try:
     import fcntl
@@ -58,7 +58,7 @@ def _custom_return_preview_base(order_id: str, input_path: Path) -> Path:
 @contextmanager
 def _custom_preview_lock(
     base: Path, *, writing: bool = False, legacy_exists: bool = False
-) -> Iterator[None]:
+) -> Iterator[bool]:
     lock_path = base.parent / f".{base.name}.lock"
     if writing:
         base.parent.mkdir(parents=True, exist_ok=True)
@@ -68,7 +68,7 @@ def _custom_preview_lock(
             lock = lock_path.open("rb")
         except FileNotFoundError:
             if not legacy_exists:
-                yield
+                yield False
                 return
             try:
                 lock = lock_path.open("ab")
@@ -79,14 +79,14 @@ def _custom_preview_lock(
                 try:
                     lock = lock_path.open("rb")
                 except FileNotFoundError:
-                    yield
+                    yield True
                     return
     with lock:
         if fcntl is None:
             msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
         else:
             fcntl.flock(lock, fcntl.LOCK_EX if writing else fcntl.LOCK_SH)
-        yield
+        yield True
 
 
 @contextmanager
@@ -96,11 +96,14 @@ def selected_custom_return_preview(
     """Keep the selected preview available while a consumer opens or uploads it."""
     base = _custom_return_preview_base(order_id, input_path)
     candidates = [base.parent / f"{base.name}{suffix}" for suffix in (".png", ".jpg")]
-    with _custom_preview_lock(base, legacy_exists=any(path.is_file() for path in candidates)):
-        for candidate in candidates:
-            if candidate.is_file():
-                yield candidate
-                return
+    with _custom_preview_lock(
+        base, legacy_exists=any(path.is_file() for path in candidates)
+    ) as may_have_preview:
+        if may_have_preview:
+            for candidate in candidates:
+                if candidate.is_file():
+                    yield candidate
+                    return
         yield None
 
 
@@ -120,9 +123,11 @@ def publish_custom_return_preview(
     alternate = base.parent / f"{base.name}{alternate_suffix}"
     with _custom_preview_lock(base, writing=True):
         temporary = None
+        staged_path = base.parent / f".upload-{uuid4().hex}"
         try:
-            with NamedTemporaryFile(dir=base.parent, prefix=".upload-", delete=False) as staged:
-                temporary = Path(staged.name)
+            # Exclusive creation keeps the file's normal umask and directory defaults.
+            with staged_path.open("xb") as staged:
+                temporary = staged_path
                 staged.write(content)
             os.replace(temporary, target)
         finally:
