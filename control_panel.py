@@ -721,7 +721,11 @@ def _callas_processor_factory(settings: Settings):
             "callas pdfToolbox не настроен (IMAGE_MAGIC_CALLAS_URL пуст): "
             "создание PDF заказов будет завершаться ошибкой"
         )
-        return partial(BatchProcessor, strip_icc_cmyk=settings.strip_icc_cmyk)
+        return partial(
+            BatchProcessor,
+            strip_icc_cmyk=settings.strip_icc_cmyk,
+            auto_bleed_max_concurrent=settings.callas_auto_bleed_max_concurrent,
+        )
     client = _shared_callas_client(settings)
     return partial(
         BatchProcessor,
@@ -731,6 +735,7 @@ def _callas_processor_factory(settings: Settings):
         pdf_resizer=_callas_pdf_resizer(settings, client),
         callas_render=settings.callas_render_enabled,
         strip_icc_cmyk=settings.strip_icc_cmyk,
+        auto_bleed_max_concurrent=settings.callas_auto_bleed_max_concurrent,
     )
 
 
