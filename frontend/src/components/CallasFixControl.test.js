@@ -71,6 +71,25 @@ describe("CallasFixControl for a source PDF of an order without a built PDF", ()
   });
 });
 
+describe("CallasFixControl for a raster source file", () => {
+  it("uses a neutral source label (the source is not necessarily a PDF) and keeps the result as PDF", async () => {
+    vi.spyOn(api, "callasPlans").mockResolvedValue({ plans: [plan] });
+    const start = vi.spyOn(api, "startCallasFix").mockResolvedValue({
+      comparison: { status: "ready", source_only: true, can_accept: true, plan, original_url: "/o", result_url: "/r", overlay_url: "/v", pdf_url: "/p", summary: { bleed_only: true, bleed_only_reasons: [] } },
+    });
+    const { host } = mount({ fileId: "f-2", fileLabel: "face.tif" });
+    await nextTick();
+    expect(host.querySelector(".callas-fix-file").textContent).toContain("Исходный файл: face.tif");
+    expect(host.textContent).not.toContain("Исходный PDF");
+    expect(sizeButton(host).getAttribute("title")).not.toContain("исходный PDF");
+    sizeButton(host).click();
+    await flush();
+    expect(start).toHaveBeenCalledWith("run-1", "agg-1", "size_correction", "f-2");
+    expect(byText(host, "Принять")).toBeDefined();
+    expect(host.textContent).toContain("Только поля: макет внутри обрезного формата не изменён");
+  });
+});
+
 describe("CallasFixControl for a source PDF of an order waiting for a correction decision", () => {
   const sourceReady = { comparison: { ...ready.comparison, source_only: true, can_accept: true, pdf_url: "/p" } };
 
