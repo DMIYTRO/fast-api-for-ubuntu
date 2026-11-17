@@ -43,6 +43,65 @@ export function callasSourceFixTitle(order) {
   return parts.join("; ");
 }
 
+const SIZE_FIX_LABELS = {
+  bleed: "Поля Callas",
+  reveal: "Поля открыты",
+  stretch: "Растянуто",
+  shrink: "Уменьшено",
+  fill: "Подогнано",
+  callas: "Исправлено Callas",
+};
+const SIZE_FIX_MIXED_LABEL = "Размер скорректирован";
+
+function fileName(file) {
+  return file.name || file.filename || String(file.path || "").split("/").pop() || "файл";
+}
+
+function formatMm(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? String(Math.round(number * 100) / 100) : "?";
+}
+
+function formatSize(size) {
+  return Array.isArray(size) && size.length >= 2 ? `${formatMm(size[0])}×${formatMm(size[1])}` : "";
+}
+
+function fileSizeFixPart(file) {
+  const fix = file.size_fix;
+  const callas = file.callas_source_fix?.status === "accepted"
+    ? callasSourceFixTitle({ files: [file] }).replace(`${fileName(file)}: `, "")
+    : "";
+  if (!fix?.method) return callas ? `${fileName(file)}: ${callas}` : "";
+  const sizes = [formatSize(fix.from_mm), formatSize(fix.to_mm)].filter(Boolean);
+  const detail = fix.detail || SIZE_FIX_LABELS[fix.method] || "размер скорректирован";
+  const range = sizes.length === 2 ? `, ${sizes[0]}→${sizes[1]} мм` : "";
+  const mode = fix.auto === false ? "подтверждено" : "автоматически";
+  return `${fileName(file)}: ${detail}${range} (${mode})${callas ? `; ${callas}` : ""}`;
+}
+
+// Единственный значок размера на заказ: объединяет file.size_fix (лестница коррекции размера)
+// и принятое исправление Callas (callas_source_fix). Принятое вручную исправление без size_fix
+// по-прежнему даёт «Поля Callas». Возвращает { label, title } или null.
+export function sizeFixBadge(order) {
+  const files = order?.files || order?.file_results || [];
+  const methods = new Set();
+  const parts = [];
+  for (const file of files) {
+    if (!file) continue;
+    const accepted = file.callas_source_fix?.status === "accepted" ? file.callas_source_fix : null;
+    // Принятое исправление другого плана (не размера) — просто «Callas».
+    const method = file.size_fix?.method
+      || (accepted ? (accepted.plan === "size_correction" ? "bleed" : "callas") : null);
+    if (!method) continue;
+    methods.add(method);
+    const part = fileSizeFixPart(file);
+    if (part) parts.push(part);
+  }
+  if (!methods.size) return null;
+  const label = methods.size === 1 ? (SIZE_FIX_LABELS[[...methods][0]] || SIZE_FIX_MIXED_LABEL) : SIZE_FIX_MIXED_LABEL;
+  return { label, title: parts.join("; ") };
+}
+
 // Значок «ICC off»: бэкенд ставит icc_removed только если ICC/выходной профиль был и из результата
 // исчез. Неудавшаяся конвертация оставляет PDF как был, поэтому для неё значка нет.
 export function iccOff(order) {

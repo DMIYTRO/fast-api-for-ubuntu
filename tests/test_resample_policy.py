@@ -21,8 +21,15 @@ class ResamplePolicyTests(unittest.TestCase):
         self.assertEqual(plan.decision, ResampleDecision.ASK_CONFIRMATION)
 
     def test_default_limit_auto_corrects_up_to_four_mm(self):
-        plan = analyze_resample((960.0, 560.0), (94.0, 54.0), (300.0, 300.0))
+        # Large downscale: automatic only when it raises a low source resolution.
+        plan = analyze_resample((960.0, 560.0), (94.0, 54.0), (30.0, 30.0))
         self.assertEqual(plan.decision, ResampleDecision.AUTO_CORRECT)
+        self.assertLessEqual(max(plan.crop_mm), 4.0)
+
+    def test_large_high_dpi_downscale_needs_confirmation(self):
+        plan = analyze_resample((960.0, 560.0), (94.0, 54.0), (300.0, 300.0))
+        self.assertEqual(plan.decision, ResampleDecision.ASK_CONFIRMATION)
+        self.assertIn("предела авто 2.0 мм", plan.reason)
 
     def test_bad_orientation_and_proportions_are_rejected(self):
         plan = analyze_resample((202.0, 214.0), (214.0, 152.0), (300.0, 300.0))

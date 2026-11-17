@@ -13,6 +13,7 @@ from processing.pdf_resize_policy import (
     MAX_VARIABLE_LENGTH,
     METHOD_FILL,
     METHOD_REVEAL,
+    METHOD_SHRINK,
     METHOD_STRETCH,
     PdfResizeLimits,
     build_resize_quickfix,
@@ -54,9 +55,10 @@ def _fill(target=(94.0, 54.0)):
 # --- политика ---------------------------------------------------------------
 
 def test_small_deviation_is_auto_corrected_proportionally() -> None:
+    # Больше формата на 2 мм (предел авто уменьшения): пропорциональное уменьшение.
     plan = _plan((96.0, 56.0))
     assert plan.decision == ResampleDecision.AUTO_CORRECT
-    assert plan.method == METHOD_FILL
+    assert plan.method == METHOD_SHRINK
     assert plan.target_mm == (94.0, 54.0)
     assert plan.scale == pytest.approx((94 / 96, 94 / 96))
     assert max(plan.crop_mm) < 4.0
@@ -90,9 +92,16 @@ def test_reveal_is_not_used_when_page_is_larger_on_one_side() -> None:
     assert _plan((95.0, 50.0), hidden=[(5.0, 5.0)]).method == METHOD_FILL
 
 
-def test_small_format_prefers_fill_because_crop_is_tiny() -> None:
-    # 89x51 → 94x54: обрезка 0.24 мм проходит автоматически, вытягивание не нужно.
+def test_small_distortion_stretch_comes_before_fill_with_crop() -> None:
+    # 89x51 → 94x54: обрезка 0.24 мм проходит автоматически, но вытягивание 0.25% —
+    # тоже авто и по лестнице идёт раньше заполнения с обрезкой.
     plan = _plan((89.0, 51.0))
+    assert plan.method == METHOD_STRETCH and plan.decision == ResampleDecision.AUTO_CORRECT
+
+
+def test_fill_is_used_when_stretch_distortion_is_too_big() -> None:
+    # 89x52 → 94x54: искажение 1.7% (> 1% авто) — авто-заполнение с обрезкой лучше.
+    plan = _plan((89.0, 52.0))
     assert plan.method == METHOD_FILL and plan.decision == ResampleDecision.AUTO_CORRECT
 
 
@@ -275,7 +284,12 @@ def test_pdf_with_small_size_deviation_is_planned_for_quickfix(tmp_path: Path) -
     assert item.needs_resample
     assert item.resample_decision == "auto_correct"
     assert {n: p.target_mm for n, p in item.pdf_resize_plans.items()} == {1: (94.0, 54.0)}
-    assert any("скорректирован callas" in warning for warning in item.warnings)
+    assert not any("скорректирован" in warning for warning in item.warnings)
+    assert item.size_fix == {
+        "method": "shrink", "auto": True, "from_mm": [96.0, 56.0], "to_mm": [94.0, 54.0],
+        "detail": item.size_fix["detail"],
+    }
+    assert "уменьшение" in item.size_fix["detail"]
 
 
 def test_pdf_size_error_is_kept_when_quickfix_is_disabled(tmp_path: Path) -> None:
@@ -299,8 +313,13 @@ def test_ask_policy_requires_confirmation_before_pdf_resize(tmp_path: Path) -> N
     assert item.resample_decision == "ask_confirmation"
     assert not item.needs_resample
 
+    assert item.size_fix is None
+    assert any("требуется подтверждение коррекции" in warning for warning in item.warnings)
+
     BatchProcessor.confirm_resample(item, True)
     assert item.needs_resample and item.pdf_resize_plans
+    assert item.size_fix["method"] == "shrink" and item.size_fix["auto"] is False
+    assert not any("подтверждена" in warning for warning in item.warnings)
 
 
 def test_prepare_page_pdfs_uses_resized_copy_and_page_refs_expect_target(tmp_path: Path) -> None:
@@ -317,13 +336,13 @@ def test_prepare_page_pdfs_uses_resized_copy_and_page_refs_expect_target(tmp_pat
     work.mkdir()
     page_pdfs = processor._prepare_page_pdfs(refs, work)
 
-    assert calls == [(pdf.name, {1: (94.0, 54.0), 2: (94.0, 54.0)}, {1: "fill", 2: "fill"}, 2.0)]
+    assert calls == [(pdf.name, {1: (94.0, 54.0), 2: (94.0, 54.0)}, {1: "shrink", 2: "shrink"}, 2.0)]
     assert len(page_pdfs) == 1 and Path(page_pdfs[0]).parent == work
     assert [(r.expected_width_mm, r.expected_height_mm) for r in refs] == [(94.0, 54.0)] * 2
     assert pdf.stat().st_size > 0  # исходник не тронут
     action = order.files[0].processing_actions[-1]
     assert action["method"] == "callas_quickfix"
-    assert [page["method"] for page in action["pages"]] == ["fill", "fill"]
+    assert [page["method"] for page in action["pages"]] == ["shrink", "shrink"]
 
 
 def test_rotated_pdf_page_is_not_resized(tmp_path: Path) -> None:
@@ -352,4 +371,6 @@ def test_pdf_with_hidden_bleed_is_planned_as_reveal(tmp_path: Path) -> None:
 
     assert item.needs_resample, item.errors
     assert item.pdf_resize_plans[1].method == "reveal"
-    assert any("скрытые вылеты" in warning for warning in item.warnings)
+    assert item.size_fix["method"] == "reveal" and item.size_fix["auto"] is True
+    assert "скрытые вылеты" in item.size_fix["detail"]
+    assert item.warnings == []

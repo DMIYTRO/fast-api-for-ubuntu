@@ -4,7 +4,7 @@ import OrderCard from "./OrderCard.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import FixComparison from "./FixComparison.vue";
 import { api } from "../services/api.js";
-import { ALL_FIXES, NOT_DETECTED_NOTE, availableFixes, blackFixAvailable, callasSourceFixTitle, fontLabel, iccOff, prepressNotices, recommendedFixes } from "./prepress.js";
+import { ALL_FIXES, NOT_DETECTED_NOTE, availableFixes, blackFixAvailable, callasSourceFixTitle, fontLabel, iccOff, prepressNotices, recommendedFixes, sizeFixBadge } from "./prepress.js";
 
 const mounted = [];
 function mountComponent(component, props) {
@@ -295,5 +295,71 @@ describe("callasSourceFixTitle", () => {
     const badge = host.querySelector(".callas-source-fix-indicator");
     expect(badge?.textContent).toBe("Поля Callas");
     expect(badge?.getAttribute("title")).toContain("face.pdf");
+  });
+});
+
+describe("sizeFixBadge", () => {
+  const fix = (method, extra = {}) => ({ method, auto: true, from_mm: [100, 50], to_mm: [102, 52], detail: "деталь", ...extra });
+  it("is null without any size correction", () => {
+    expect(sizeFixBadge({ files: [{ name: "a.pdf" }, { name: "b.pdf", callas_source_fix: { status: "ready" } }] })).toBeNull();
+    expect(sizeFixBadge(null)).toBeNull();
+  });
+  it.each([
+    ["bleed", "Поля Callas"], ["reveal", "Поля открыты"], ["stretch", "Растянуто"], ["shrink", "Уменьшено"], ["fill", "Подогнано"],
+  ])("labels method %s", (method, label) => {
+    expect(sizeFixBadge({ files: [{ name: "a.pdf", size_fix: fix(method) }] }).label).toBe(label);
+  });
+  it("keeps one label when several files share a method", () => {
+    const badge = sizeFixBadge({ files: [{ name: "a.pdf", size_fix: fix("fill") }, { name: "b.pdf", size_fix: fix("fill") }] });
+    expect(badge.label).toBe("Подогнано");
+    expect(badge.title).toContain("a.pdf");
+    expect(badge.title).toContain("b.pdf");
+  });
+  it("uses a generic label for mixed methods", () => {
+    expect(sizeFixBadge({ files: [{ name: "a.pdf", size_fix: fix("reveal") }, { name: "b.tif", size_fix: fix("fill") }] }).label).toBe("Размер скорректирован");
+  });
+  it("describes each file with sizes and who decided", () => {
+    const badge = sizeFixBadge({ files: [
+      { name: "a.pdf", size_fix: fix("stretch", { detail: "растянуто на 0,8%", from_mm: [100, 50.5], to_mm: [100.6, 51] }) },
+      { name: "b.pdf", size_fix: fix("shrink", { auto: false, detail: "сжато до формата" }) },
+    ] });
+    expect(badge.title).toContain("a.pdf: растянуто на 0,8%, 100×50.5→100.6×51 мм (автоматически)");
+    expect(badge.title).toContain("b.pdf: сжато до формата, 100×50→102×52 мм (подтверждено)");
+  });
+  it("merges an accepted callas fix with size_fix bleed into one badge", () => {
+    const badge = sizeFixBadge({ files: [{ name: "face.pdf", size_fix: fix("bleed"), callas_source_fix: { status: "accepted", plan: "size_correction", bleed_only: true } }] });
+    expect(badge.label).toBe("Поля Callas");
+    expect(badge.title).toContain("face.pdf: деталь, 100×50→102×52 мм (автоматически)");
+    expect(badge.title).toContain("Callas дорисовал поля вылета, макет не изменён");
+    expect(badge.title.match(/face\.pdf/g)).toHaveLength(1);
+  });
+  it("still shows «Поля Callas» for a manually accepted fix without size_fix", () => {
+    const badge = sizeFixBadge({ files: [{ name: "face.pdf", callas_source_fix: { status: "accepted", plan: "size_correction", bleed_only: true } }] });
+    expect(badge.label).toBe("Поля Callas");
+    expect(badge.title).toContain("face.pdf: Callas дорисовал поля вылета");
+  });
+  it("renders a single badge on the order card", async () => {
+    const host = card({ files: [
+      { id: "f", name: "face.pdf", side: "face", size_fix: fix("reveal", { detail: "открыты скрытые поля" }) },
+      { id: "b", name: "back.pdf", side: "back", size_fix: fix("reveal") },
+    ] });
+    await flush();
+    const badges = host.querySelectorAll(".callas-source-fix-indicator");
+    expect(badges).toHaveLength(1);
+    expect(badges[0].textContent).toBe("Поля открыты");
+    expect(badges[0].getAttribute("aria-label")).toContain("face.pdf: открыты скрытые поля");
+  });
+  it("renders no duplicate badge for bleed size_fix plus accepted callas fix", async () => {
+    const host = card({ files: [{ id: "f", name: "face.pdf", side: "face", size_fix: fix("bleed"), callas_source_fix: { status: "accepted", plan: "size_correction", bleed_only: true } }] });
+    await flush();
+    expect(host.querySelectorAll(".callas-source-fix-indicator")).toHaveLength(1);
+  });
+});
+
+describe("sizeFixBadge for other Callas plans", () => {
+  it("does not call a fonts fix «Поля Callas»", () => {
+    const badge = sizeFixBadge({ files: [{ name: "face.pdf", callas_source_fix: { status: "accepted", plan: "fonts_to_outlines", plan_title: "Перевод шрифтов в кривые" } }] });
+    expect(badge.label).toBe("Исправлено Callas");
+    expect(badge.title).toContain("Перевод шрифтов в кривые");
   });
 });

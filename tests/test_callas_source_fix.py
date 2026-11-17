@@ -262,8 +262,11 @@ class SourceFixTests(SourceFixCase):
         self.assertTrue(parts[1].startswith("resized_2_"), parts)
         face, back = self.entry(order, FACE), self.entry(order, BACK)
         self.assertNotIn(NOTE, face["warnings"])
-        self.assertNotIn("коррекция размера подтверждена пользователем", face["warnings"])
-        self.assertIn("коррекция размера подтверждена пользователем", back["warnings"])
+        # Подтверждение коррекции — пометка size_fix (auto=False), а не строка предупреждения.
+        self.assertNotIn("подтверждено оператором", (face.get("size_fix") or {}).get("detail", ""))
+        self.assertIs(back["size_fix"]["auto"], False)
+        self.assertIn("подтверждено оператором", back["size_fix"]["detail"])
+        self.assertNotIn("коррекция размера подтверждена пользователем", back["warnings"])
         with self.client.app.state.database.session_factory() as session:
             decisions = session.scalars(select(CorrectionDecision.decision)).all()
         self.assertEqual(sorted(decisions), ["callas_source_fix", "confirmed"])

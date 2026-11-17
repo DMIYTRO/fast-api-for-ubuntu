@@ -784,7 +784,18 @@ def _pitstop_fix_baseline_policy(settings: Settings) -> FixBaselinePolicy:
     )
 
 
-def _pitstop_adapter_factory(settings: Settings):
+def _callas_auto_bleed(settings: Settings, callas_fix_service=None):
+    """Поля вылета Callas в режиме «Автоматически»; None — выключено или Callas нет."""
+    if callas_fix_service is None or not settings.callas_auto_bleed_enabled:
+        return None
+    from services.callas_auto_bleed import CallasAutoBleed
+
+    return CallasAutoBleed(
+        callas_fix_service, max_concurrent=settings.callas_auto_bleed_max_concurrent
+    )
+
+
+def _pitstop_adapter_factory(settings: Settings, callas_fix_service=None):
     required = {
         "IMAGE_MAGIC_PITSTOP_HOST": settings.pitstop_host,
         "IMAGE_MAGIC_PITSTOP_USERNAME": settings.pitstop_username,
@@ -845,6 +856,7 @@ def _pitstop_adapter_factory(settings: Settings):
 
     processor_factory = _callas_processor_factory(settings)
     ink_checker = _ink_coverage_checker(settings)
+    auto_bleed = _callas_auto_bleed(settings, callas_fix_service)
 
     def factory(options: ProcessingOptions) -> BatchProcessorAdapter:
         service = service_for(Path(options.input_path), options.direction)
@@ -854,6 +866,7 @@ def _pitstop_adapter_factory(settings: Settings):
             pitstop_service=service,
             ink_coverage_checker=ink_checker,
             pitstop_fix_baseline=_pitstop_fix_baseline_policy(settings),
+            auto_bleed=auto_bleed,
             correction_limit_mm=settings.auto_correct_max_mm,
             correction_confirm_max_mm=settings.correction_confirm_max_mm,
             max_dpi=settings.max_dpi,
@@ -872,7 +885,7 @@ def _pitstop_adapter_factory(settings: Settings):
     return factory
 
 
-def _default_adapter_factory(settings: Settings):
+def _default_adapter_factory(settings: Settings, callas_fix_service=None):
     """Construct the regular adapter with optional Sborka metadata enrichment."""
     fetcher = (
         build_order_info_fetcher(
@@ -883,11 +896,13 @@ def _default_adapter_factory(settings: Settings):
     )
     processor_factory = _callas_processor_factory(settings)
     ink_checker = _ink_coverage_checker(settings)
+    auto_bleed = _callas_auto_bleed(settings, callas_fix_service)
     return lambda options: BatchProcessorAdapter(
         options,
         processor_factory=processor_factory,
         order_info_fetcher=fetcher,
         ink_coverage_checker=ink_checker,
+        auto_bleed=auto_bleed,
         correction_limit_mm=settings.auto_correct_max_mm,
         correction_confirm_max_mm=settings.correction_confirm_max_mm,
         max_dpi=settings.max_dpi,
@@ -915,12 +930,17 @@ def create_app(
         database.create_schema()
     repository = repository or _default_repository(database)
     coordinator_options: dict[str, Any] = {"autostart": False}
+    callas_fix_service = (
+        callas_fix_service
+        if callas_fix_service is not None
+        else _callas_fix_service(settings)
+    )
     if adapter_factory is not None:
         processor_factory = adapter_factory
     elif settings.pitstop_enabled:
-        processor_factory = _pitstop_adapter_factory(settings)
+        processor_factory = _pitstop_adapter_factory(settings, callas_fix_service)
     else:
-        processor_factory = _default_adapter_factory(settings)
+        processor_factory = _default_adapter_factory(settings, callas_fix_service)
     coordinator_options["adapter_factory"] = processor_factory
     coordinator = RunCoordinator(repository, **coordinator_options)
     auth_service = AuthService(settings)
@@ -1004,11 +1024,6 @@ def create_app(
     application.state.database = database
     _configure_callas_pdf_renderer(settings)
     application.state.coordinator = coordinator
-    callas_fix_service = (
-        callas_fix_service
-        if callas_fix_service is not None
-        else _callas_fix_service(settings)
-    )
     application.state.order_workflow = OrderWorkflowService(
         coordinator,
         database.session_factory,

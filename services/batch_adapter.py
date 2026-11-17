@@ -97,6 +97,7 @@ class BatchProcessorAdapter:
         max_dpi: float | None = None,
         downsample_high_dpi: bool | None = None,
         pitstop_fix_baseline: FixBaselinePolicy | None = None,
+        auto_bleed: Callable[[FileCheck, BatchProcessor], FileCheck | None] | None = None,
     ) -> None:
         self.options = options
         # None — сравнение с проверкой исходников не подключено (тесты, CLI).
@@ -130,11 +131,17 @@ class BatchProcessorAdapter:
         correction_policy = (
             "auto" if options.approve_corrections else options.correction_policy
         )
+        processor_options: dict[str, Any] = {}
+        if auto_bleed is not None and correction_policy == "auto":
+            # Поля вылета Callas (services/callas_auto_bleed.py) — только в режиме
+            # «Автоматически»; в остальных режимах «Размер» запускает оператор.
+            processor_options["auto_bleed"] = auto_bleed
         self.processor = processor_factory(
             self.input_dir,
             self.pdf_dir,
             profile=profile,
             correction_policy=correction_policy,
+            **processor_options,
         )
         # Sborka is queried once, in the background, as soon as the processor
         # knows all order ids (before the slow artwork inspection).

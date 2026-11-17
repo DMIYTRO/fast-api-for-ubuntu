@@ -1,6 +1,32 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
+
+#: Способы коррекции размера в пометке ``FileCheck.size_fix`` (лестница по порядку).
+SIZE_FIX_METHODS = ("reveal", "bleed", "stretch", "shrink", "fill")
+
+
+def make_size_fix(
+    method: str,
+    auto: bool,
+    from_mm: Sequence[float],
+    to_mm: Sequence[float],
+    detail: str,
+) -> dict[str, object]:
+    """Пометка коррекции размера для ``FileCheck.size_fix`` (JSON-совместимая).
+
+    ``auto`` — коррекция применена автоматически; ``False`` — подтверждена оператором
+    или принята вручную.
+    """
+    if method not in SIZE_FIX_METHODS:
+        raise ValueError(f"неизвестный способ коррекции размера: {method!r}")
+    return {
+        "method": method,
+        "auto": bool(auto),
+        "from_mm": [round(float(value), 2) for value in from_mm],
+        "to_mm": [round(float(value), 2) for value in to_mm],
+        "detail": str(detail),
+    }
 
 
 @dataclass(frozen=True)
@@ -68,6 +94,9 @@ class FileCheck:
     # ``callas_source_fix`` — сведения о принятом исправлении (план, подпись исходника).
     content_path: Optional[Path] = None
     callas_source_fix: Optional[dict[str, object]] = None
+    # Пометка коррекции размера (``make_size_fix``): способ лестницы, авто/подтверждено,
+    # размер до и после, пояснение. Заменяет строки предупреждений о коррекции.
+    size_fix: Optional[dict[str, object]] = None
 
     @property
     def input_path(self) -> Path:
