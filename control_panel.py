@@ -21,10 +21,11 @@ from uuid import uuid4
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import desc, func, select
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy import desc, func, select, tuple_
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from config.profiles import DEFAULT_DIRECTION, PROFILES
 from core.return_reasons import load_return_reasons
@@ -68,7 +69,9 @@ from services.callas_fix import comparison_payload as callas_fix_payload, read_s
 from services.callas_source_fix import fixable_source_path, source_comparison as source_fix_comparison
 from services.print_readiness import print_blockers, print_mode
 from services.ftp_preview_uploader import build_ftp_preview_uploader
-from services.return_preview import CUSTOM_PREVIEWS_RELATIVE_PATH, custom_return_preview_path
+from services.return_preview import (
+    custom_return_preview_path, publish_custom_return_preview, selected_custom_return_preview,
+)
 from core.preview_cache import full_preview_cache_path, preview_media_type, preview_variants
 from services.repository import InMemoryRunRepository, RunRepository
 from services.event_retention import run_event_retention
@@ -448,17 +451,45 @@ def _safe_history_preview_path(root_path: str, raw_path: str | None) -> Path | N
     return target
 
 
-def _safe_rework_history_preview_path(root_path: str, order_id: str) -> Path | None:
-    """Find the exact local preview selected for rework, confined to its run."""
-    if not order_id or Path(order_id).name != order_id:
+def _history_preview_collisions(
+    session: Session, order_keys: set[tuple[str, str]]
+) -> set[tuple[str, str]]:
+    if not order_keys:
+        return set()
+    customer = func.coalesce(OrderResult.customer_id, "")
+    duplicate_orders = (
+        select(OrderResult.run_id, OrderResult.order_id)
+        .where(tuple_(OrderResult.run_id, OrderResult.order_id).in_(order_keys))
+        .group_by(OrderResult.run_id, OrderResult.order_id)
+        .having(func.count(func.distinct(customer)) > 1)
+    )
+    return set(session.execute(duplicate_orders).tuples())
+
+
+def _safe_rework_history_preview_path(
+    root_path: str,
+    preview_id: str,
+    *,
+    include_custom: bool = True,
+    include_collage: bool = True,
+) -> Path | None:
+    """Find the return preview confined to its run."""
+    if not preview_id or Path(preview_id).name != preview_id:
         return None
     root = Path(root_path)
-    custom = custom_return_preview_path(order_id, input_path=root)
+    custom = custom_return_preview_path(preview_id, input_path=root) if include_custom else None
     if custom is not None:
         return _safe_history_preview_path(root_path, str(custom))
-    # The return collage is JPEG or (historically) PNG; use the newest one.
-    collages = preview_variants(root / "Previews" / "Return" / f"{order_id}_return-preview")
+    if not include_collage:
+        return None
+    collages = preview_variants(root / "Previews" / "Return" / f"{preview_id}_return-preview")
     return _safe_history_preview_path(root_path, str(collages[0]) if collages else None)
+
+
+def _history_custom_preview_id(order: OrderResult, collision: bool) -> str:
+    if collision and order.customer_id:
+        return f"{order.customer_id}:{order.order_id}"
+    return order.order_id
 
 
 def _find_order(
@@ -690,7 +721,11 @@ def _callas_processor_factory(settings: Settings):
             "callas pdfToolbox не настроен (IMAGE_MAGIC_CALLAS_URL пуст): "
             "создание PDF заказов будет завершаться ошибкой"
         )
-        return partial(BatchProcessor, strip_icc_cmyk=settings.strip_icc_cmyk)
+        return partial(
+            BatchProcessor,
+            strip_icc_cmyk=settings.strip_icc_cmyk,
+            auto_bleed_max_concurrent=settings.callas_auto_bleed_max_concurrent,
+        )
     client = _shared_callas_client(settings)
     return partial(
         BatchProcessor,
@@ -700,6 +735,7 @@ def _callas_processor_factory(settings: Settings):
         pdf_resizer=_callas_pdf_resizer(settings, client),
         callas_render=settings.callas_render_enabled,
         strip_icc_cmyk=settings.strip_icc_cmyk,
+        auto_bleed_max_concurrent=settings.callas_auto_bleed_max_concurrent,
     )
 
 
@@ -1317,6 +1353,46 @@ def create_app(
         except InvalidRunStateError as exc:
             raise APIError(409, "invalid_run_state", str(exc)) from exc
 
+    event_polls: dict[
+        tuple[asyncio.AbstractEventLoop, str, int],
+        asyncio.Task[tuple[list[Any], bool, float | None]],
+    ] = {}
+
+    async def poll_events(
+        coordinator: RunCoordinator, run_id: str, cursor: int,
+    ) -> tuple[list[Any], bool, float | None]:
+        events = await asyncio.to_thread(
+            _list_events_batch, coordinator, run_id, cursor, SSE_EVENT_BATCH,
+        )
+        if events:
+            return events, False, None
+        summary = await asyncio.to_thread(coordinator.get_run_summary, run_id)
+        terminal = summary["status"] in SSE_TERMINAL_STATUSES
+        return events, terminal, None if terminal else asyncio.get_running_loop().time() + 1
+
+    async def shared_event_poll(
+        coordinator: RunCoordinator, run_id: str, cursor: int,
+    ) -> tuple[list[Any], bool, float | None]:
+        loop = asyncio.get_running_loop()
+        key = (loop, run_id, cursor)
+        task = event_polls.get(key)
+        if task is None:
+            task = loop.create_task(poll_events(coordinator, run_id, cursor))
+            event_polls[key] = task
+
+            def finished(result: asyncio.Task[tuple[list[Any], bool, float | None]]) -> None:
+                if not result.cancelled() and result.exception() is None:
+                    _, _, idle_until = result.result()
+                    # Keep empty active polls until the next poll is due, so
+                    # clients at the same cursor converge on a shared cadence.
+                    if idle_until is not None:
+                        loop.call_at(idle_until, event_polls.pop, key, None)
+                        return
+                event_polls.pop(key, None)
+
+            task.add_done_callback(finished)
+        return await asyncio.shield(task)
+
     @application.get(
         "/api/checks/{run_id}/events", dependencies=[Depends(protected)]
     )
@@ -1338,10 +1414,11 @@ def create_app(
             idle_polls = 0
             drained_after_terminal = False
             while not await request.is_disconnected():
-                events = await asyncio.to_thread(
-                    _list_events_batch,
-                    coordinator_value, run_id, cursor, SSE_EVENT_BATCH,
-                )
+                poll = poll_events if drained_after_terminal else shared_event_poll
+                try:
+                    events, terminal, idle_until = await poll(coordinator_value, run_id, cursor)
+                except RunNotFoundError:
+                    break
                 if events:
                     idle_polls = 0
                     for position, event in enumerate(events, start=1):
@@ -1357,20 +1434,17 @@ def create_app(
                     if idle_polls >= 15:
                         yield ": keep-alive\n\n"
                         idle_polls = 0
-                    try:
-                        summary = await asyncio.to_thread(
-                            coordinator_value.get_run_summary, run_id
-                        )
-                    except RunNotFoundError:
-                        break
-                    if summary["status"] in SSE_TERMINAL_STATUSES:
+                    if terminal:
                         if drained_after_terminal:
                             break
                         # Read once more so an event written just before the
                         # status flipped is not lost, then finish.
                         drained_after_terminal = True
                         continue
-                await asyncio.sleep(1)
+                if idle_until is not None:
+                    await asyncio.sleep(max(0, idle_until - asyncio.get_running_loop().time()))
+                else:
+                    await asyncio.sleep(1)
 
         return StreamingResponse(
             generate(),
@@ -1456,19 +1530,19 @@ def create_app(
     )
     def uploaded_return_preview(
         request: Request, run_id: str, order_id: str
-    ) -> FileResponse:
+    ) -> Response:
         run, order = _find_order(_get_coordinator(request), order_id, run_id)
         preview_storage_id = _custom_preview_storage_id(run, order)
-        preview = custom_return_preview_path(
+        with selected_custom_return_preview(
             preview_storage_id, input_path=Path(run["options"]["input_path"])
-        )
-        if preview is None:
-            raise APIError(
-                404,
-                "preview_not_found",
-                "Пользовательское превью не загружено.",
-            )
-        return FileResponse(preview)
+        ) as preview:
+            if preview is None:
+                raise APIError(
+                    404,
+                    "preview_not_found",
+                    "Пользовательское превью не загружено.",
+                )
+            return Response(preview.read_bytes(), media_type=preview_media_type(preview))
 
     @application.post(
         "/api/checks/{run_id}/orders/{order_id}/return-preview",
@@ -1478,7 +1552,9 @@ def create_app(
         request: Request, run_id: str, order_id: str
     ) -> dict[str, str]:
         """Store a small operator preview that takes precedence on FTP return."""
-        run, order = _find_order(_get_coordinator(request), order_id, run_id)
+        run, order = await run_in_threadpool(
+            _find_order, _get_coordinator(request), order_id, run_id
+        )
         preview_storage_id = _custom_preview_storage_id(run, order)
         maximum_size = 1024 * 1024
         try:
@@ -1510,16 +1586,13 @@ def create_app(
                 "preview_invalid_format",
                 "Можно загрузить только JPEG или PNG-превью.",
             )
-        directory = Path(run["options"]["input_path"]) / CUSTOM_PREVIEWS_RELATIVE_PATH
-        directory.mkdir(parents=True, exist_ok=True)
-        for other_suffix in (".png", ".jpg"):
-            (directory / f"{preview_storage_id}_return-preview{other_suffix}").unlink(
-                missing_ok=True
-            )
-        target = directory / f"{preview_storage_id}_return-preview{suffix}"
-        temporary = target.with_suffix(f"{suffix}.uploading")
-        temporary.write_bytes(content)
-        os.replace(temporary, target)
+        target = await run_in_threadpool(
+            publish_custom_return_preview,
+            preview_storage_id,
+            input_path=Path(run["options"]["input_path"]),
+            suffix=suffix,
+            content=content,
+        )
         return {
             "filename": target.name,
             "url": f"/api/checks/{run_id}/orders/{order_id}/return-preview",
@@ -1741,13 +1814,20 @@ def create_app(
                 statement.options(*page_loading)
                 .order_by(desc(OrderAction.created_at)).offset((page - 1) * limit).limit(limit)
             ).unique().all()
+            collisions = _history_preview_collisions(session, {
+                (item.order_result.run_id, item.order_result.order_id)
+                for item in actions if item.action == "reject"
+            })
             items = []
             for item in actions:
                 order = item.order_result
                 previews = []
+                collision = (order.run_id, order.order_id) in collisions
                 rework_preview = (
                     _safe_rework_history_preview_path(
-                        order.run.input_path, order.order_id
+                        order.run.input_path,
+                        _history_custom_preview_id(order, collision),
+                        include_collage=not collision,
                     )
                     if item.action == "reject"
                     else None
@@ -1801,19 +1881,33 @@ def create_app(
     )
     def order_history_preview(
         request: Request, action_id: int, file_index: int
-    ) -> FileResponse:
+    ) -> Response:
         with request.app.state.database.session_factory() as session:
             action = session.get(OrderAction, action_id)
             if action is None:
                 raise APIError(404, "history_not_found", "Запись истории не найдена.")
-            files = list(action.order_result.files)
+            order = action.order_result
+            files = list(order.files)
             if file_index == len(files) and action.action == "reject":
-                target = _safe_rework_history_preview_path(
-                    action.order_result.run.input_path,
-                    action.order_result.order_id,
-                )
-                if target is not None:
-                    return FileResponse(target)
+                root_path = order.run.input_path
+                order_key = (order.run_id, order.order_id)
+                collision = bool(_history_preview_collisions(session, {order_key}))
+                preview_id = _history_custom_preview_id(order, collision)
+                if preview_id and Path(preview_id).name == preview_id:
+                    with selected_custom_return_preview(
+                        preview_id, input_path=Path(root_path)
+                    ) as custom:
+                        target = _safe_history_preview_path(root_path, str(custom)) if custom else None
+                        if target is not None:
+                            return Response(
+                                target.read_bytes(), media_type=preview_media_type(target)
+                            )
+                if not collision:
+                    target = _safe_rework_history_preview_path(
+                        root_path, preview_id, include_custom=False
+                    )
+                    if target is not None:
+                        return FileResponse(target)
             if file_index < 0 or file_index >= len(files):
                 raise APIError(404, "preview_not_found", "Превью не найдено.")
             target = _safe_history_preview_path(

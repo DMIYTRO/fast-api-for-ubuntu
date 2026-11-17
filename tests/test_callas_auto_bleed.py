@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -306,13 +307,19 @@ def test_adapter_passes_the_hook_only_in_auto_mode(tmp_path):
 
 
 def test_control_panel_wires_the_fix_service_into_the_adapter(tmp_path):
-    settings = Settings(database_url=f"sqlite:///{tmp_path / 'x.db'}", password_hash="x", log_dir=tmp_path / "logs")
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'x.db'}",
+        password_hash="x",
+        log_dir=tmp_path / "logs",
+        callas_auto_bleed_max_concurrent=3,
+    )
     service = CallasFixService(BleedClient(tmp_path / "jobs"))
     adapter = control_panel._default_adapter_factory(settings, service)(
         ProcessingOptions(input_path=str(tmp_path), direction="digital", correction_policy="auto")
     )
     assert isinstance(adapter.processor.auto_bleed, CallasAutoBleed)
     assert adapter.processor.auto_bleed.service is service
+    assert adapter.processor.auto_bleed_max_concurrent == 3
 
     manual = control_panel._default_adapter_factory(settings, service)(
         ProcessingOptions(input_path=str(tmp_path), direction="digital", correction_policy="ask")
@@ -517,3 +524,40 @@ def test_orders_are_fixed_in_parallel_and_yielded_in_order(env):
     assert ids == sorted(ids) and len(ids) == 7
     assert all(order.files[0].size_fix and order.files[0].size_fix["method"] == "bleed" for order in orders)
     assert len(env.client.inputs) == 7
+
+
+def test_auto_bleed_pool_prioritizes_first_order_while_later_inspection_overlaps(tmp_path, monkeypatch):
+    for number in range(1, 7):
+        sides = ("face", "back") if number == 1 else ("face",)
+        for side in sides:
+            (tmp_path / f"T_(97x97)_4-{4 if number == 1 else 0}_(5-{number})_{side}.tif").touch()
+
+    first_bleed_started = threading.Event()
+    next_order_inspected = threading.Event()
+    submissions = []
+
+    class RecordingExecutor(ThreadPoolExecutor):
+        def submit(self, fn, check):
+            submissions.append(check.parsed.order_id)
+            return super().submit(fn, check)
+
+    monkeypatch.setattr("processing.batch_processor.ThreadPoolExecutor", RecordingExecutor)
+
+    def inspect(check):
+        if check.parsed.order_id == "2" and first_bleed_started.wait(2):
+            next_order_inspected.set()
+
+    def hook(check, _processor):
+        if check.parsed.order_id == "1":
+            first_bleed_started.set()
+            check.warnings.append("overlap" if next_order_inspected.wait(2) else "no overlap")
+
+    processor = BatchProcessor(
+        tmp_path, tmp_path / "PDF", auto_bleed=hook, auto_bleed_max_concurrent=1,
+    )
+    monkeypatch.setattr(processor, "_inspect_raster_file", inspect)
+    orders = list(processor.iter_inspect_orders())
+
+    assert [order.order_id for order in orders] == ["1", "2", "3", "4", "5", "6"]
+    assert submissions == ["1", "1", "2", "3", "4", "5", "6"]
+    assert all("overlap" in check.warnings for check in orders[0].files)

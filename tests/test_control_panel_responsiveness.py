@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
-from sqlalchemy import event
+from sqlalchemy import event, update
 
 os.environ.setdefault(
     "IMAGE_MAGIC_PASSWORD_HASH", PasswordHasher().hash("test-only-password")
@@ -133,6 +133,81 @@ class ControlPanelResponsivenessTests(unittest.TestCase):
         # Garbage cursors fall back to a full replay instead of failing.
         self.assertEqual(parse_sse(self._stream(run_id, params={"last_event_id": "abc"})), full)
         self.assertEqual(parse_sse(self._stream(run_id, headers={"Last-Event-ID": "-5"})), full)
+
+    def test_idle_sse_shares_reads_at_the_same_cursor_and_delivers_each_tail(self):
+        import httpx
+
+        run_id = self._finished_run()
+        database = self.app.state.database
+        repository = self.app.state.coordinator.repository
+        initial = repository.list_events(run_id)
+        previous, latest = initial[-2:]
+        original_list = repository.list_events
+        original_summary = repository.get_run_summary
+        event_reads = []
+        summary_reads = []
+
+        def set_status(status):
+            with database.engine.begin() as connection:
+                connection.execute(update(CheckRun).where(
+                    CheckRun.id == run_id
+                ).values(status=status))
+
+        def record_events(run_id, after_id=0, limit=None):
+            event_reads.append(after_id)
+            return original_list(run_id, after_id, limit=limit)
+
+        def record_summary(run_id):
+            summary_reads.append(run_id)
+            return original_summary(run_id)
+
+        set_status("running")
+
+        async def scenario():
+            transport = httpx.ASGITransport(app=self.app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://testserver",
+                cookies=dict(self.client.cookies),
+            ) as client:
+                async def stream(cursor):
+                    return await client.get(
+                        f"/api/checks/{run_id}/events", params={"last_event_id": cursor},
+                    )
+
+                readers = [asyncio.create_task(stream(latest.id)) for _ in range(5)]
+                readers.append(asyncio.create_task(stream(previous.id)))
+                try:
+                    async with asyncio.timeout(3):
+                        while (
+                            not {latest.id, previous.id}.issubset(event_reads)
+                            or len(summary_reads) < 7
+                        ):
+                            await asyncio.sleep(0.01)
+                    # Allow requests that have validated the run to reach the same poll.
+                    await asyncio.sleep(0.05)
+                    self.assertEqual(event_reads.count(latest.id), 1)
+                    self.assertEqual(event_reads.count(previous.id), 1)
+                    probe = repository.append_event(run_id, "run.probe", {})
+                    set_status("completed")
+                    responses = await asyncio.wait_for(asyncio.gather(*readers), 5)
+                finally:
+                    for reader in readers:
+                        reader.cancel()
+                    await asyncio.gather(*readers, return_exceptions=True)
+
+            for response in responses:
+                self.assertEqual(response.status_code, 200)
+            for response in responses[:-1]:
+                self.assertEqual(parse_sse(response.text), [(probe.id, probe.type)])
+            self.assertEqual(
+                parse_sse(responses[-1].text),
+                [(latest.id, latest.type), (probe.id, probe.type)],
+            )
+
+        with patch.object(repository, "list_events", record_events), patch.object(
+            repository, "get_run_summary", record_summary,
+        ):
+            asyncio.run(scenario())
 
     def test_sse_unknown_run_is_404(self):
         response = self.client.get("/api/checks/missing/events")

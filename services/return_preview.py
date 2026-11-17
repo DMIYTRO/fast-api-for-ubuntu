@@ -6,11 +6,22 @@ file to Sborka's ``inbox/press/`` will be added later.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import errno
+import os
 from pathlib import Path
 import re
-from typing import Iterable
+from typing import Iterable, Iterator
 import shutil
 import subprocess
+from uuid import uuid4
+
+try:
+    import fcntl
+except ImportError:
+    import msvcrt
+
+    fcntl = None
 
 from core.preview_cache import (
     PREVIEW_SUFFIXES,
@@ -37,17 +48,93 @@ RETURN_PREVIEWS_RELATIVE_PATH = Path("Previews") / "Return"
 CUSTOM_PREVIEWS_RELATIVE_PATH = Path("Previews") / "Custom"
 
 
-def custom_return_preview_path(order_id: str, *, input_path: Path) -> Path | None:
-    """Return an operator-provided preview, which always wins over generated ones."""
+def _custom_return_preview_base(order_id: str, input_path: Path) -> Path:
     normalized_order_id = str(order_id).strip()
     if not normalized_order_id or Path(normalized_order_id).name != normalized_order_id:
         raise ValueError("Номер заказа не должен быть пустым или содержать путь.")
-    directory = Path(input_path) / CUSTOM_PREVIEWS_RELATIVE_PATH
-    for suffix in (".png", ".jpg"):
-        candidate = directory / f"{normalized_order_id}_return-preview{suffix}"
-        if candidate.is_file():
-            return candidate
-    return None
+    return Path(input_path) / CUSTOM_PREVIEWS_RELATIVE_PATH / f"{normalized_order_id}_return-preview"
+
+
+@contextmanager
+def _custom_preview_lock(
+    base: Path, *, writing: bool = False, legacy_exists: bool = False
+) -> Iterator[bool]:
+    lock_path = base.parent / f".{base.name}.lock"
+    if writing:
+        base.parent.mkdir(parents=True, exist_ok=True)
+        lock = lock_path.open("ab")
+    else:
+        try:
+            lock = lock_path.open("rb")
+        except FileNotFoundError:
+            if not legacy_exists:
+                yield False
+                return
+            try:
+                lock = lock_path.open("ab")
+            except OSError as exc:
+                # Previously uploaded previews can live on read-only storage.
+                if exc.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+                    raise
+                try:
+                    lock = lock_path.open("rb")
+                except FileNotFoundError:
+                    yield True
+                    return
+    with lock:
+        if fcntl is None:
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            fcntl.flock(lock, fcntl.LOCK_EX if writing else fcntl.LOCK_SH)
+        yield True
+
+
+@contextmanager
+def selected_custom_return_preview(
+    order_id: str, *, input_path: Path
+) -> Iterator[Path | None]:
+    """Keep the selected preview available while a consumer opens or uploads it."""
+    base = _custom_return_preview_base(order_id, input_path)
+    candidates = [base.parent / f"{base.name}{suffix}" for suffix in (".png", ".jpg")]
+    with _custom_preview_lock(
+        base, legacy_exists=any(path.is_file() for path in candidates)
+    ) as may_have_preview:
+        if may_have_preview:
+            for candidate in candidates:
+                if candidate.is_file():
+                    yield candidate
+                    return
+        yield None
+
+
+def custom_return_preview_path(order_id: str, *, input_path: Path) -> Path | None:
+    """Return an operator-provided preview, which always wins over generated ones."""
+    with selected_custom_return_preview(order_id, input_path=input_path) as preview:
+        return preview
+
+
+def publish_custom_return_preview(
+    order_id: str, *, input_path: Path, suffix: str, content: bytes | bytearray
+) -> Path:
+    """Replace an operator preview only after the upload is fully staged."""
+    base = _custom_return_preview_base(order_id, input_path)
+    target = base.parent / f"{base.name}{suffix}"
+    alternate_suffix = ".jpg" if suffix == ".png" else ".png"
+    alternate = base.parent / f"{base.name}{alternate_suffix}"
+    with _custom_preview_lock(base, writing=True):
+        temporary = None
+        staged_path = base.parent / f".upload-{uuid4().hex}"
+        try:
+            # Exclusive creation keeps the file's normal umask and directory defaults.
+            with staged_path.open("xb") as staged:
+                temporary = staged_path
+                staged.write(content)
+            os.replace(temporary, target)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        alternate.unlink(missing_ok=True)
+    return target
 
 
 class ReturnPreviewCollageError(RuntimeError):

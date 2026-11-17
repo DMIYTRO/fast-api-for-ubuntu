@@ -387,28 +387,28 @@ class SqlRunRepository:
                 select(OrderResult.status, func.count(OrderResult.id))
                 .where(*base).group_by(OrderResult.status)
             ).all()
-            status_counts = {str(key or "detected"): int(count) for key, count in grouped}
+            status_counts = dict(grouped)
+            aliases = {
+                "passed": ("passed", "completed"),
+                "error": ("error", "failed", "technical_error"),
+            }
             counts = {
                 "all": sum(status_counts.values()),
-                "passed": sum(status_counts.get(value, 0) for value in ("passed", "completed")),
                 "warning": status_counts.get("warning", 0),
-                "error": sum(status_counts.get(value, 0) for value in ("error", "failed", "technical_error")),
                 "waiting_confirmation": status_counts.get("waiting_confirmation", 0),
+                **{
+                    name: sum(status_counts.get(value, 0) for value in values)
+                    for name, values in aliases.items()
+                },
             }
             filtered = list(base)
-            if status == "passed":
-                filtered.append(OrderResult.status.in_(("passed", "completed")))
-            elif status == "error":
-                filtered.append(OrderResult.status.in_(("error", "failed", "technical_error")))
-            elif status != "all":
-                filtered.append(OrderResult.status == status)
-            total = int(session.scalar(
-                select(func.count(OrderResult.id)).where(*filtered)
-            ) or 0)
+            if status != "all":
+                filtered.append(OrderResult.status.in_(aliases.get(status, (status,))))
+            total = counts.get(status, status_counts.get(status, 0))
             options = (
                 selectinload(OrderResult.files),
                 selectinload(OrderResult.actions),
-                selectinload(OrderResult.pdf_revisions)
+                selectinload(OrderResult.pdf_revisions.and_(PdfRevision.is_current.is_(True)))
                 .selectinload(PdfRevision.checks)
                 .selectinload(PitstopCheck.issues),
             )

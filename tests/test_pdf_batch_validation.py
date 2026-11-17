@@ -180,7 +180,7 @@ def test_real_pdf_fixture_has_expected_one_and_two_page_documents() -> None:
     # ``input_files/PDF/`` is git-ignored: this real-world corpus exists only
     # on machines where it was copied by hand.  Skip instead of failing there.
     fixture_dir = Path(__file__).parents[1] / "input_files" / "PDF" / "Print"
-    if not fixture_dir.is_dir():
+    if not fixture_dir.is_dir() or not any(path.is_file() for path in fixture_dir.iterdir()):
         pytest.skip(f"локальный набор PDF отсутствует: {fixture_dir}")
     processor = BatchProcessor(fixture_dir, fixture_dir / "_unused_output")
     orders = processor.inspect_orders()
