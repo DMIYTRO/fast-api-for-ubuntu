@@ -762,6 +762,53 @@ class ControlPanelTests(unittest.TestCase):
         self.assertEqual(preview["side"], "return")
         self.assertEqual(self.client.get(preview["url"]).content, b"uploaded-return-preview")
 
+    def test_rework_history_uses_customer_preview_for_duplicate_order_numbers(self):
+        self.login()
+        run_id = "run-colliding-previews"
+        repository = self.client.app.state.coordinator.repository
+        repository.create_run({
+            "id": run_id,
+            "status": "completed",
+            "options": {"input_path": str(self.root), "direction": "digital"},
+            "orders": {
+                f"{customer_id}:1001": {
+                    "aggregate_id": f"{customer_id}:1001",
+                    "order_id": "1001",
+                    "customer_id": customer_id,
+                    "status": "passed",
+                    "files": [],
+                }
+                for customer_id in ("42", "99")
+            },
+        })
+        uploads = {}
+        for customer_id, content in (("42", b"first"), ("99", b"second")):
+            upload = self.client.post(
+                f"/api/checks/{run_id}/orders/{customer_id}:1001/return-preview",
+                content=b"\x89PNG\r\n\x1a\n" + content,
+            )
+            self.assertEqual(upload.status_code, 200)
+            uploads[customer_id] = self.client.get(upload.json()["url"]).content
+
+        custom = self.root / "Previews" / "Custom"
+        (custom / "1001_return-preview.png").write_bytes(b"ambiguous legacy preview")
+        with self.client.app.state.database.session_factory() as session:
+            for order in session.scalars(select(OrderResult).where(OrderResult.run_id == run_id)):
+                session.add(OrderAction(order_result_id=order.id, action="reject", status="prepared"))
+            session.commit()
+
+        history = self.client.get("/api/order-history", params={"action": "reject"})
+        self.assertEqual(history.status_code, 200)
+        by_customer = {item["customer_id"]: item for item in history.json()["items"]}
+        for customer_id, content in uploads.items():
+            preview = by_customer[customer_id]["previews"][0]
+            self.assertEqual(preview["side"], "return")
+            self.assertEqual(self.client.get(preview["url"]).content, content)
+
+        (custom / "99:1001_return-preview.png").unlink()
+        missing = self.client.get(by_customer["99"]["previews"][0]["url"])
+        self.assertEqual(missing.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,8 +24,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import desc, func, select
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy import desc, func, select, tuple_
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from config.profiles import DEFAULT_DIRECTION, PROFILES
 from core.return_reasons import load_return_reasons
@@ -451,19 +451,45 @@ def _safe_history_preview_path(root_path: str, raw_path: str | None) -> Path | N
     return target
 
 
+def _history_preview_collisions(
+    session: Session, order_keys: set[tuple[str, str]]
+) -> set[tuple[str, str]]:
+    if not order_keys:
+        return set()
+    customer = func.coalesce(OrderResult.customer_id, "")
+    duplicate_orders = (
+        select(OrderResult.run_id, OrderResult.order_id)
+        .where(tuple_(OrderResult.run_id, OrderResult.order_id).in_(order_keys))
+        .group_by(OrderResult.run_id, OrderResult.order_id)
+        .having(func.count(func.distinct(customer)) > 1)
+    )
+    return set(session.execute(duplicate_orders).tuples())
+
+
 def _safe_rework_history_preview_path(
-    root_path: str, order_id: str, *, include_custom: bool = True
+    root_path: str,
+    preview_id: str,
+    *,
+    include_custom: bool = True,
+    include_collage: bool = True,
 ) -> Path | None:
-    """Find the exact local preview selected for rework, confined to its run."""
-    if not order_id or Path(order_id).name != order_id:
+    """Find the return preview confined to its run."""
+    if not preview_id or Path(preview_id).name != preview_id:
         return None
     root = Path(root_path)
-    custom = custom_return_preview_path(order_id, input_path=root) if include_custom else None
+    custom = custom_return_preview_path(preview_id, input_path=root) if include_custom else None
     if custom is not None:
         return _safe_history_preview_path(root_path, str(custom))
-    # The return collage is JPEG or (historically) PNG; use the newest one.
-    collages = preview_variants(root / "Previews" / "Return" / f"{order_id}_return-preview")
+    if not include_collage:
+        return None
+    collages = preview_variants(root / "Previews" / "Return" / f"{preview_id}_return-preview")
     return _safe_history_preview_path(root_path, str(collages[0]) if collages else None)
+
+
+def _history_custom_preview_id(order: OrderResult, collision: bool) -> str:
+    if collision and order.customer_id:
+        return f"{order.customer_id}:{order.order_id}"
+    return order.order_id
 
 
 def _find_order(
@@ -1783,13 +1809,20 @@ def create_app(
                 statement.options(*page_loading)
                 .order_by(desc(OrderAction.created_at)).offset((page - 1) * limit).limit(limit)
             ).unique().all()
+            collisions = _history_preview_collisions(session, {
+                (item.order_result.run_id, item.order_result.order_id)
+                for item in actions if item.action == "reject"
+            })
             items = []
             for item in actions:
                 order = item.order_result
                 previews = []
+                collision = (order.run_id, order.order_id) in collisions
                 rework_preview = (
                     _safe_rework_history_preview_path(
-                        order.run.input_path, order.order_id
+                        order.run.input_path,
+                        _history_custom_preview_id(order, collision),
+                        include_collage=not collision,
                     )
                     if item.action == "reject"
                     else None
@@ -1848,24 +1881,28 @@ def create_app(
             action = session.get(OrderAction, action_id)
             if action is None:
                 raise APIError(404, "history_not_found", "Запись истории не найдена.")
-            files = list(action.order_result.files)
-            order_id = action.order_result.order_id
-            if (
-                file_index == len(files) and action.action == "reject"
-                and order_id and Path(order_id).name == order_id
-            ):
-                root_path = action.order_result.run.input_path
-                with selected_custom_return_preview(
-                    order_id, input_path=Path(root_path)
-                ) as custom:
-                    target = _safe_history_preview_path(root_path, str(custom)) if custom else None
+            order = action.order_result
+            files = list(order.files)
+            if file_index == len(files) and action.action == "reject":
+                root_path = order.run.input_path
+                order_key = (order.run_id, order.order_id)
+                collision = bool(_history_preview_collisions(session, {order_key}))
+                preview_id = _history_custom_preview_id(order, collision)
+                if preview_id and Path(preview_id).name == preview_id:
+                    with selected_custom_return_preview(
+                        preview_id, input_path=Path(root_path)
+                    ) as custom:
+                        target = _safe_history_preview_path(root_path, str(custom)) if custom else None
+                        if target is not None:
+                            return Response(
+                                target.read_bytes(), media_type=preview_media_type(target)
+                            )
+                if not collision:
+                    target = _safe_rework_history_preview_path(
+                        root_path, preview_id, include_custom=False
+                    )
                     if target is not None:
-                        return Response(target.read_bytes(), media_type=preview_media_type(target))
-                target = _safe_rework_history_preview_path(
-                    root_path, order_id, include_custom=False
-                )
-                if target is not None:
-                    return FileResponse(target)
+                        return FileResponse(target)
             if file_index < 0 or file_index >= len(files):
                 raise APIError(404, "preview_not_found", "Превью не найдено.")
             target = _safe_history_preview_path(
