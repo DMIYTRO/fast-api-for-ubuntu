@@ -35,8 +35,14 @@ describe("StartCheckPanel correction policy", () => {
     mount({ config: { default_input_path: "/in", auto_correct_max_mm: 2.5, correction_confirm_max_mm: 7 } });
     const auto = radios().find((r) => r.value === "auto");
     expect(labelOf(auto)).toContain("Автоматически принимать малые коррекции");
-    expect(labelOf(auto)).toContain("до 2,5 мм обрезки");
+    expect(labelOf(auto)).toContain("(поля, до 2,5 мм обрезки");
     expect(labelOf(auto)).toContain("до 7 мм — с подтверждением");
+  });
+
+  it("hints the correction order in the auto label tooltip", () => {
+    mount();
+    const title = radios().find((r) => r.value === "auto").closest("label").getAttribute("title");
+    expect(title).toContain("открыть скрытые поля → дорисовать поля Callas → растянуть (PDF) → сжать → подогнать");
   });
 
   it("falls back to 4 mm when the server does not report a limit", () => {
