@@ -352,6 +352,30 @@ class SqlRunRepositoryTests(unittest.TestCase):
             self.assertEqual([item.revision_number for item in revisions], [1, 2])
             self.assertEqual([item.is_current for item in revisions], [False, True])
 
+        page = self.repository.list_orders_page(
+            "run-1", page=1, page_size=10, status="all", search=""
+        )
+        self.assertEqual(page["items"][0], self.repository.get_run("run-1")["orders"]["25506185"])
+
+    def test_orders_page_counts_legacy_statuses_and_empty_results(self):
+        run = sample_run()
+        template = next(iter(run["orders"].values()))
+        statuses = ("completed", "passed", "technical_error", "failed", "error", "detected",
+                    "returned_for_rework")
+        run["orders"] = {
+            status: {**deepcopy(template), "order_id": status, "status": status}
+            for status in statuses
+        }
+        self.repository.create_run(run)
+        for status, total in (("all", 6), ("passed", 2), ("error", 3),
+                              ("detected", 1), ("warning", 0)):
+            with self.subTest(status=status):
+                page = self.repository.list_orders_page(
+                    run["id"], page=1, page_size=10, status=status, search=""
+                )
+                self.assertEqual(page["total"], total)
+                self.assertEqual(len(page["items"]), total)
+
     def test_pending_pitstop_fields_round_trip_without_a_pdf(self):
         expected = sample_run()
         expected["orders"]["25506185"].update(
