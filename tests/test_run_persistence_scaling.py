@@ -399,7 +399,13 @@ class RestartRecoveryTests(SqlTestCase):
             ProcessingOptions(input_path="/orders", direction="digital")
         )["id"]
         deadline = time.monotonic() + 10
-        while coordinator.get_run_summary(run_id).get("processed_orders", 0) < 3:
+        # Recovery can only restore orders that were committed before the crash.
+        # The third completion can race ahead of the fifth detection commit.
+        while True:
+            stored = repository.get_run(run_id)
+            orders = stored["orders"].values()
+            if len(orders) == 5 and sum(order["status"] == "warning" for order in orders) == 3:
+                break
             self.assertLess(time.monotonic(), deadline)
             time.sleep(0.02)
         # Simulated crash: a new process opens the same database while the
