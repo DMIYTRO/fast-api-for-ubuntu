@@ -1,9 +1,17 @@
 """Общие фейки: рендер PDF в тестах идёт через фейковый callas, без сети и Ghostscript."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shutil
 import tempfile
+
+# Импорт control_panel выполняет create_app(): миграции и восстановление прерванных
+# запусков на настроенной базе. Тесты никогда не должны открывать рабочую
+# image_magic.db и писать в logs/, поэтому база и журнал подменяются до любых импортов.
+_TEST_STATE_DIR = Path(tempfile.mkdtemp(prefix="image-magic-tests-"))
+os.environ["IMAGE_MAGIC_DATABASE_URL"] = f"sqlite:///{_TEST_STATE_DIR / 'image_magic.db'}"
+os.environ["IMAGE_MAGIC_LOG_DIR"] = str(_TEST_STATE_DIR / "logs")
 
 import pymupdf
 import pytest

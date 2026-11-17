@@ -66,6 +66,7 @@ def upgrade_database(settings: Settings | None = None) -> None:
     config_path = PROJECT_DIR / "alembic.ini"
     config = Config(str(config_path))
     config.set_main_option("sqlalchemy.url", resolved.database_url)
+    config.attributes["explicit_database_url"] = True
     probe = create_engine(resolved.database_url)
     try:
         tables = set(inspect(probe).get_table_names())

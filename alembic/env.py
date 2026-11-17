@@ -12,8 +12,10 @@ if config.config_file_name is not None:
     # Database migrations must not disable the application's persistent journal.
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
+# upgrade_database() передаёт адрес явно; переменная окружения нужна только для
+# запуска `alembic` из командной строки и не должна перебивать явный адрес.
 database_url = os.environ.get("IMAGE_MAGIC_DATABASE_URL")
-if database_url:
+if database_url and not config.attributes.get("explicit_database_url"):
     config.set_main_option("sqlalchemy.url", database_url)
 
 target_metadata = Base.metadata
