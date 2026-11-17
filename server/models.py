@@ -196,6 +196,11 @@ class PitstopCheck(Base):
     report_json_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     report_xml_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     technical_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Сравнение с проверкой исходного PDF после исправления Callas
+    # (services/pitstop/baseline.py); NULL — сравнения не было.
+    verdict_raw: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    baseline_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    counts_raw_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
@@ -220,6 +225,10 @@ class PitstopIssue(Base):
     message: Mapped[str] = mapped_column(Text)
     occurrences: Mapped[int] = mapped_column(Integer, default=1)
     locations_json: Mapped[str] = mapped_column(Text, default="[]")
+    baseline_occurrences: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    introduced_by_fix: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    hidden_by_baseline: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    original_severity: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
     check: Mapped[PitstopCheck] = relationship(back_populates="issues")
 

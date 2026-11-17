@@ -259,6 +259,73 @@ class SqlRunRepositoryTests(unittest.TestCase):
             self.assertEqual(issue.issue_id, "issue-1")
             self.assertEqual(json.loads(issue.locations_json)[0]["page"], 1)
 
+    def test_round_trip_persists_fix_baseline_comparison(self):
+        expected = sample_run(status="completed")
+        order = expected["orders"]["25506185"]
+
+        def issue(issue_id, action_id, severity, occurrences, **extra):
+            return {
+                "id": issue_id, "fingerprint": f"fp-{issue_id}", "severity": severity,
+                "action_id": action_id, "message": f"Action {action_id} ({occurrences}x on page 1)",
+                "occurrences": occurrences, "locations": [], **extra,
+            }
+
+        counts = {"errors": 0, "warnings": 1, "fixes": 0, "critical_failures": 0,
+                  "noncritical_failures": 0, "informations": 1}
+        baseline = {
+            "check_id": "original-check", "execution_status": "completed", "verdict": "warning",
+            "checked_revision": 1, "profile": {"key": "digital", "name": None, "version": None},
+            "counts": {**counts, "informations": 0},
+            "issues": [issue("clip-1", 2079, "warning", 168)],
+            "reports": {"json_url": "/r/original.json", "xml_url": None},
+        }
+        order.update({
+            "pdf_path": "/orders/input/PDF/order.pdf",
+            "current_pdf_revision": 2,
+            "current_pdf_sha256": "b" * 64,
+            "pitstop_baseline": baseline,
+            "pitstop": {
+                "check_id": "fix-check", "execution_status": "completed",
+                "verdict": "warning", "verdict_raw": "error", "baseline_status": "applied",
+                "checked_at": "2026-11-17T10:00:00+00:00", "checked_revision": 2,
+                "input_sha256": "b" * 64,
+                "profile": {"key": "digital", "name": "Sborka", "version": None},
+                "pages": 1,
+                "counts": counts,
+                "counts_raw": {**counts, "errors": 1, "informations": 0},
+                "issues": [
+                    issue("transp-1", "3004", "information", 40, hidden_by_baseline=True,
+                          original_severity="error", baseline_occurrences=0, introduced_by_fix=40),
+                    issue("clip-2", "2079", "warning", 1670,
+                          baseline_occurrences=168, introduced_by_fix=1502),
+                ],
+                "reports": {"json_url": "/r/fix.json", "xml_url": None},
+            },
+        })
+
+        self.repository.create_run(expected)
+        actual = self.repository.get_run("run-1")
+        actual["orders"]["25506185"]["files"][0].pop("file_result_id")
+        # action_id хранится строкой, как и у любой проверки PitStop.
+        self.assertEqual(actual["orders"]["25506185"]["pitstop_baseline"], baseline)
+        self.assertEqual(actual, expected)
+
+        # Изменение только полей сравнения тоже записывается (не считается «без изменений»).
+        changed = self.repository.get_run("run-1")
+        restored = changed["orders"]["25506185"]["pitstop"]["issues"][0]
+        restored["severity"] = "error"
+        for key in ("hidden_by_baseline", "original_severity", "baseline_occurrences", "introduced_by_fix"):
+            restored.pop(key)
+        self.repository.save_order_with_event(changed, "25506185", "order.test", {})
+        stored = self.repository.get_run("run-1")["orders"]["25506185"]["pitstop"]["issues"][0]
+        self.assertEqual(stored["severity"], "error")
+        self.assertNotIn("hidden_by_baseline", stored)
+
+        with self.database.session_factory() as session:
+            check = session.get(PitstopCheck, "fix-check")
+            self.assertEqual((check.verdict_raw, check.baseline_status), ("error", "applied"))
+            self.assertEqual(json.loads(check.counts_raw_json)["errors"], 1)
+
     def test_new_pdf_revision_preserves_history_and_switches_current(self):
         run = sample_run(status="completed")
         order = run["orders"]["25506185"]

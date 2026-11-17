@@ -61,7 +61,7 @@ class ServerDatabaseTests(unittest.TestCase):
             with database.engine.connect() as connection:
                 self.assertEqual(
                     connection.scalar(text("SELECT version_num FROM alembic_version")),
-                    "0005_archive_run_events",
+                    "0006_pitstop_fix_baseline",
                 )
             database.dispose()
 
@@ -79,7 +79,7 @@ class ServerDatabaseTests(unittest.TestCase):
             with reopened.engine.connect() as connection:
                 self.assertEqual(
                     connection.scalar(text("SELECT version_num FROM alembic_version")),
-                    "0005_archive_run_events",
+                    "0006_pitstop_fix_baseline",
                 )
             reopened.dispose()
 

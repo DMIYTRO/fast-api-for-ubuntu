@@ -1026,6 +1026,12 @@ class SqlRunRepository:
         check.report_json_path = _optional_str(reports.get("json_url"))
         check.report_xml_path = _optional_str(reports.get("xml_url"))
         check.technical_error = _optional_str(pitstop.get("technical_error"))
+        check.verdict_raw = _optional_str(pitstop.get("verdict_raw"))
+        check.baseline_status = _optional_str(pitstop.get("baseline_status"))
+        counts_raw = pitstop.get("counts_raw")
+        check.counts_raw_json = (
+            _json_dump(counts_raw) if isinstance(counts_raw, dict) else None
+        )
         session.flush()
 
         incoming_issues = list(pitstop.get("issues") or [])
@@ -1042,6 +1048,7 @@ class SqlRunRepository:
                     message=str(issue.get("message") or ""),
                     occurrences=int(issue.get("occurrences") or 1),
                     locations_json=_json_dump(list(issue.get("locations") or [])),
+                    **_issue_baseline_values(issue),
                 )
             )
 
@@ -1423,6 +1430,7 @@ def _issues_unchanged(
             record.message,
             record.occurrences,
             record.locations_json,
+            *(getattr(record, name) for name in _ISSUE_BASELINE_COLUMNS),
         ) != (
             _optional_str(issue.get("fingerprint")),
             str(issue.get("severity") or "information"),
@@ -1430,9 +1438,46 @@ def _issues_unchanged(
             str(issue.get("message") or ""),
             int(issue.get("occurrences") or 1),
             _json_dump(list(issue.get("locations") or [])),
+            *_issue_baseline_values(issue).values(),
         ):
             return False
     return True
+
+
+# Поля сравнения с исходной проверкой (services/pitstop/baseline.py); NULL — не было.
+_ISSUE_BASELINE_COLUMNS = (
+    "baseline_occurrences",
+    "introduced_by_fix",
+    "hidden_by_baseline",
+    "original_severity",
+)
+
+
+def _issue_baseline_values(issue: dict[str, Any]) -> dict[str, Any]:
+    hidden = issue.get("hidden_by_baseline")
+    return {
+        "baseline_occurrences": _optional_int(issue.get("baseline_occurrences")),
+        "introduced_by_fix": _optional_int(issue.get("introduced_by_fix")),
+        "hidden_by_baseline": None if hidden is None else bool(hidden),
+        "original_severity": _optional_str(issue.get("original_severity")),
+    }
+
+
+def _issue_to_dto(issue: PitstopIssue) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "id": issue.issue_id,
+        "fingerprint": issue.fingerprint,
+        "severity": issue.severity,
+        "action_id": issue.action_id,
+        "message": issue.message,
+        "occurrences": issue.occurrences,
+        "locations": _json_load(issue.locations_json, []),
+    }
+    for name in _ISSUE_BASELINE_COLUMNS:
+        value = getattr(issue, name)
+        if value is not None:
+            result[name] = value
+    return result
 
 
 def _file_status(value: dict[str, Any]) -> str:
@@ -1495,15 +1540,7 @@ def _pitstop_check_to_dto(
             "informations": check.informations_count,
         },
         "issues": [
-            {
-                "id": issue.issue_id,
-                "fingerprint": issue.fingerprint,
-                "severity": issue.severity,
-                "action_id": issue.action_id,
-                "message": issue.message,
-                "occurrences": issue.occurrences,
-                "locations": _json_load(issue.locations_json, []),
-            }
+            _issue_to_dto(issue)
             for issue in sorted(check.issues, key=lambda item: item.id)
         ],
         "reports": {
@@ -1515,6 +1552,14 @@ def _pitstop_check_to_dto(
         result["input_sha256"] = input_sha256
     if check.technical_error is not None:
         result["technical_error"] = check.technical_error
+    if check.baseline_status is not None:
+        result["baseline_status"] = check.baseline_status
+    if check.verdict_raw is not None:
+        result["verdict_raw"] = check.verdict_raw
+    if check.counts_raw_json is not None:
+        counts_raw = _json_load(check.counts_raw_json, None)
+        if isinstance(counts_raw, dict):
+            result["counts_raw"] = counts_raw
     return result
 
 

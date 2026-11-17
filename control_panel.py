@@ -50,6 +50,7 @@ from services import (
     RunNotFoundError,
     BatchProcessorAdapter,
 )
+from services.pitstop.baseline import FixBaselinePolicy
 from services.pitstop import (
     PitStopProfile,
     PitStopProfileCatalog,
@@ -252,22 +253,24 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
             order["custom_preview_url"] = (
                 f"/api/checks/{run_id}/orders/{order_ref}/return-preview"
             )
-        pitstop = order.get("pitstop") or {}
-        check_id = str(pitstop.get("check_id") or "")
-        if check_id:
-            reports = pitstop.get("reports") or {}
-            pitstop["reports"] = {
-                "json_url": (
-                    f"/api/pitstop-checks/{check_id}/reports/json"
-                    if reports.get("json_url")
-                    else None
-                ),
-                "xml_url": (
-                    f"/api/pitstop-checks/{check_id}/reports/xml"
-                    if reports.get("xml_url")
-                    else None
-                ),
-            }
+        # pitstop_baseline — проверка исходного PDF (ревизия 1), её строка в БД сохраняется.
+        for pitstop_key in ("pitstop", "pitstop_baseline"):
+            pitstop = order.get(pitstop_key) or {}
+            check_id = str(pitstop.get("check_id") or "")
+            if check_id:
+                reports = pitstop.get("reports") or {}
+                pitstop["reports"] = {
+                    "json_url": (
+                        f"/api/pitstop-checks/{check_id}/reports/json"
+                        if reports.get("json_url")
+                        else None
+                    ),
+                    "xml_url": (
+                        f"/api/pitstop-checks/{check_id}/reports/xml"
+                        if reports.get("xml_url")
+                        else None
+                    ),
+                }
         for index, item in enumerate(order.get("files") or []):
             file_id = str(item.get("file_result_id") or item.get("id") or f"{run_id}:{order_id}:{index}")
             item["id"] = file_id
@@ -1011,6 +1014,11 @@ def create_app(
         pdf_color_converter=_callas_rgb_to_cmyk_converter(settings),
         pdf_prepress_checker=_callas_prepress_checker(settings),
         pdf_page_extractor=_callas_page_extractor(settings),
+        pitstop_fix_baseline=FixBaselinePolicy(
+            enabled=settings.pitstop_fix_baseline_enabled,
+            actions=settings.pitstop_fix_baseline_actions,
+            profiles=settings.pitstop_fix_baseline_profiles,
+        ),
         accepted_pdf_provider=(
             callas_fix_service.publish_accepted if callas_fix_service else None
         ),
