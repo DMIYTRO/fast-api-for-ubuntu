@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 import logging
@@ -25,10 +25,12 @@ from core.preview_cache import full_preview_cache_path, preview_work_dir
 from core.resampler import resample_image
 from core.tool_runner import run_command
 from config.profiles import DEFAULT_PROFILE, PrePressProfile
-from .resample_policy import ResampleDecision, analyze_resample
+from .resample_policy import ResampleDecision, analyze_resample, is_shrink
 from .pdf_resize_policy import (
     METHOD_FILL,
     METHOD_REVEAL,
+    METHOD_SHRINK,
+    METHOD_STRETCH,
     PdfResizeLimits,
     page_min_dpi,
     plan_pdf_page_resize,
@@ -37,10 +39,12 @@ from .pdf_resize_policy import (
 from .profile_rules import evaluate_metadata_rules
 
 from .filename_parser import parse_filename
-from .models import FileCheck, OrderCheck
+from .models import FileCheck, OrderCheck, make_size_fix
 
 
 logger = logging.getLogger("image_magic.callas")
+# Сколько заказов одновременно ждут полей Callas при осмотре (см. iter_inspect_orders).
+AUTO_BLEED_ORDER_WINDOW = 4
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".pdf"}
 REJECTED_EXTENSIONS = {".psd", ".bmp", ".heic", ".heif"}
@@ -285,7 +289,12 @@ class BatchProcessor:
         pdf_prepress_checker: "Callable[..., dict[str, object]] | None" = None,
         correction_policy: str = "auto",
         pdf_resizer: "Callable[[Path, Path, dict[int, tuple[float, float]], float, str], object] | None" = None,
+        auto_bleed: "Callable[[FileCheck, BatchProcessor], FileCheck | None] | None" = None,
     ):
+        # Поля вылета Callas при осмотре файла (services/callas_auto_bleed.py): хук
+        # возвращает новую проверку файла из принятого исправления или None. Только
+        # при correction_policy == "auto"; None — шаг не выполняется (CLI, тесты).
+        self.auto_bleed = auto_bleed
         # "auto" — малые коррекции применяются сами (CLI, тесты); "ask" и "reject" —
         # любая коррекция размера требует решения оператора (подтверждение или отказ).
         self.correction_policy = correction_policy
@@ -398,7 +407,17 @@ class BatchProcessor:
                 self.on_orders_grouped(list(dict.fromkeys(oid for (_c, oid), _f in sorted_groups)))
             except Exception:
                 logger.exception("orders_grouped hook failed")
-        for (_customer_id, order_id), files in sorted_groups:
+        def finish(order_id: str, files: list[FileCheck]) -> OrderCheck:
+            self._apply_auto_bleed(files)
+            order = OrderCheck(
+                order_id=order_id,
+                customer_id=files[0].parsed.customer_id,
+                files=files,
+            )
+            self._validate_order(order)
+            return order
+
+        def inspect(files: list[FileCheck]) -> None:
             for check in files:
                 try:
                     if _is_pdf_content(check):
@@ -408,13 +427,54 @@ class BatchProcessor:
                 except Exception as exc:
                     check.errors.append(f"не удалось прочитать файл: {exc}")
 
-            order = OrderCheck(
-                order_id=order_id,
-                customer_id=files[0].parsed.customer_id,
-                files=files,
-            )
-            self._validate_order(order)
-            yield order
+        if self.auto_bleed is None or self.correction_policy != "auto":
+            for (_customer_id, order_id), files in sorted_groups:
+                inspect(files)
+                yield finish(order_id, files)
+            return
+
+        # Поля Callas занимают секунды на файл: пока Callas дорисовывает поля одного
+        # заказа, следующие уже осматриваются. Порядок выдачи заказов сохраняется,
+        # число одновременных исправлений ограничивает сам хук (семафор).
+        window: deque = deque()
+        with ThreadPoolExecutor(
+            max_workers=AUTO_BLEED_ORDER_WINDOW, thread_name_prefix="callas-auto-bleed-order"
+        ) as pool:
+            for (_customer_id, order_id), files in sorted_groups:
+                inspect(files)
+                window.append(pool.submit(finish, order_id, files))
+                while len(window) >= AUTO_BLEED_ORDER_WINDOW:
+                    yield window.popleft().result()
+            while window:
+                yield window.popleft().result()
+
+    def _apply_auto_bleed(self, files: list[FileCheck]) -> None:
+        """Заменить проверки файлов, которым Callas автоматически дорисовал вылеты.
+
+        Файлы одного заказа отдаются хуку параллельно (сам хук ограничивает число
+        одновременных исправлений). Сбой хука оставляет исходную проверку.
+        """
+        hook = self.auto_bleed
+        if hook is None or self.correction_policy != "auto" or not files:
+            return
+
+        def run(check: FileCheck) -> FileCheck | None:
+            try:
+                return hook(check, self)
+            except Exception:  # noqa: BLE001 — осмотр заказа не должен падать
+                logger.exception("order.callas_auto_bleed_failed file=%s", check.path.name)
+                return None
+
+        if len(files) == 1:
+            results = [run(files[0])]
+        else:
+            with ThreadPoolExecutor(
+                max_workers=min(len(files), 4), thread_name_prefix="callas-auto-bleed"
+            ) as pool:
+                results = list(pool.map(run, files))
+        for index, replacement in enumerate(results):
+            if replacement is not None:
+                files[index] = replacement
 
     def _inspect_raster_file(self, check: FileCheck, scopes: Collection[str] = ALL_SCOPES) -> None:
         """Read and validate a raster file (TIFF/JPEG/PNG).
@@ -578,6 +638,7 @@ class BatchProcessor:
             confirm_mm=self.profile.confirm_crop_mm,
             stretch_auto_pct=self.profile.pdf_stretch_auto_pct,
             stretch_confirm_pct=self.profile.pdf_stretch_confirm_pct,
+            shrink_auto_mm=self.profile.shrink_auto_mm,
         )
         return {
             page.page_number: plan_pdf_page_resize(
@@ -618,15 +679,49 @@ class BatchProcessor:
             return
         check.pdf_resize_plans = dict(plans)
         check.resample_target_mm = target
-        methods = {value.method for value in plans.values() if value.decision != ResampleDecision.ACCEPT}
-        details = "; ".join(self._pdf_resize_detail(value) for value in plans.values()
-                            if value.method in methods and value.decision != ResampleDecision.ACCEPT)
-        change = f"{actual[0]:.1f}x{actual[1]:.1f} → {target[0]:.1f}x{target[1]:.1f} мм"
         if decision == ResampleDecision.AUTO_CORRECT:
+            # Вместо строки предупреждения — пометка коррекции (интерфейс показывает её значком).
             check.needs_resample = True
-            check.warnings.append(f"PDF: размер будет скорректирован callas {change}; {details}")
+            check.size_fix = self._pdf_size_fix(check, auto=True)
         else:
+            details = self._pdf_resize_details(plans)
+            change = f"{actual[0]:.1f}x{actual[1]:.1f} → {target[0]:.1f}x{target[1]:.1f} мм"
             check.warnings.append(f"PDF: требуется подтверждение коррекции {change}; {details}")
+
+    @classmethod
+    def _pdf_resize_details(cls, plans: "Mapping[int, object]") -> str:
+        """Пояснения по всем страницам, которые меняются (у многостраничного — с номером)."""
+        changed = [
+            (number, plan) for number, plan in sorted(plans.items())
+            if plan.decision != ResampleDecision.ACCEPT
+        ]
+        prefix = len(plans) > 1
+        return "; ".join(
+            (f"стр. {number}: " if prefix else "") + cls._pdf_resize_detail(plan)
+            for number, plan in changed
+        )
+
+    @classmethod
+    def _pdf_size_fix(cls, check: FileCheck, *, auto: bool) -> "dict[str, object] | None":
+        """Пометка ``size_fix`` по планам QuickFix: способ и размеры — худшей страницы."""
+        plans = check.pdf_resize_plans
+        if not plans:
+            return None
+        plan = worst_plan(plans.values())
+        number = next(key for key, value in plans.items() if value is plan)
+        page = next((p for p in check.pdf_pages if p.page_number == number), None)
+        actual = (
+            (page.width_mm, page.height_mm) if page is not None
+            else (check.actual_width_mm or 0.0, check.actual_height_mm or 0.0)
+        )
+        target = plan.target_mm
+        detail = (
+            f"PDF {actual[0]:.1f}x{actual[1]:.1f} → {target[0]:.1f}x{target[1]:.1f} мм "
+            f"(callas): {cls._pdf_resize_details(plans)}"
+        )
+        if not auto:
+            detail += "; подтверждено оператором"
+        return make_size_fix(plan.method, auto, actual, target, detail)
 
     @staticmethod
     def _pdf_resize_detail(plan) -> str:
@@ -635,14 +730,17 @@ class BatchProcessor:
                 f"показаны скрытые вылеты: +{plan.enlarge_mm[0]:.2f}/{plan.enlarge_mm[1]:.2f} мм "
                 "с каждой стороны, без масштабирования"
             )
-        if plan.method == METHOD_FILL:
+        if plan.method == METHOD_STRETCH:
             return (
-                f"пропорции сохранены, обрезка {plan.crop_mm[0]:.2f}x{plan.crop_mm[1]:.2f} мм"
+                f"вытягивание {plan.scale[0] * 100:.1f}% × {plan.scale[1] * 100:.1f}%, "
+                f"искажение пропорций {plan.distortion_pct:.2f}%"
             )
-        return (
-            f"вытягивание {plan.scale[0] * 100:.1f}% × {plan.scale[1] * 100:.1f}%, "
-            f"искажение пропорций {plan.distortion_pct:.2f}%"
-        )
+        crop = f"обрезка {plan.crop_mm[0]:.2f}x{plan.crop_mm[1]:.2f} мм"
+        if plan.method == METHOD_SHRINK:
+            return f"пропорциональное уменьшение до {plan.scale[0] * 100:.1f}%, {crop}"
+        if plan.scale[0] > 1.0005:
+            return f"пропорциональное увеличение до {plan.scale[0] * 100:.1f}%, {crop}"
+        return f"пропорции сохранены, {crop}"
 
     @staticmethod
     def _pdf_page_deviation(
@@ -683,6 +781,7 @@ class BatchProcessor:
                 auto_crop_mm=self.profile.auto_crop_mm,
                 confirm_crop_mm=self.profile.confirm_crop_mm,
                 allow_rotation=False,
+                shrink_auto_mm=self.profile.shrink_auto_mm,
             )
             for target in (expected, (expected[1], expected[0]))
         ]
@@ -719,10 +818,8 @@ class BatchProcessor:
         if plan.decision == ResampleDecision.AUTO_CORRECT:
             check.needs_resample = True
             check.resample_target_mm = expected
-            check.warnings.append(
-                f"размер автоматически скорректирован: {actual[0]:.1f}x{actual[1]:.1f} → "
-                f"{expected[0]:.1f}x{expected[1]:.1f} мм; пропорции сохранены, {crop_text}{rotation_text}"
-            )
+            # Вместо строки предупреждения — пометка коррекции (интерфейс показывает её значком).
+            check.size_fix = self._raster_size_fix(check, auto=True)
         elif plan.decision == ResampleDecision.ASK_CONFIRMATION:
             check.resample_target_mm = expected
             check.warnings.append(
@@ -802,6 +899,32 @@ class BatchProcessor:
         return all(abs(a - e) <= self.tolerance_mm for a, e in zip(actual, expected))
 
     @staticmethod
+    def _raster_size_fix(check: FileCheck, *, auto: bool) -> "dict[str, object] | None":
+        """Пометка ``size_fix`` растра: уменьшение (масштаб < 1) или заполнение с обрезкой."""
+        target = check.resample_target_mm
+        if target is None or check.actual_width_mm is None or check.actual_height_mm is None:
+            return None
+        actual = (check.actual_width_mm, check.actual_height_mm)
+        scale = check.resample_scale
+        method = METHOD_SHRINK if is_shrink(actual, target) else METHOD_FILL
+        crop = check.resample_crop_mm
+        if method == METHOD_SHRINK:
+            how = f"пропорциональное уменьшение до {scale * 100:.1f}%"
+        elif scale > 1.0005:
+            how = f"пропорциональное увеличение до {scale * 100:.1f}%"
+        else:
+            how = "пропорции сохранены"
+        detail = (
+            f"{actual[0]:.1f}x{actual[1]:.1f} → {target[0]:.1f}x{target[1]:.1f} мм: "
+            f"{how}, обрезка {crop[0]:.2f}x{crop[1]:.2f} мм"
+        )
+        if check.rotation_degrees:
+            detail += f", поворот на {check.rotation_degrees}°"
+        if not auto:
+            detail += "; подтверждено оператором"
+        return make_size_fix(method, auto, actual, target, detail)
+
+    @staticmethod
     def confirm_resample(check: FileCheck, approved: bool) -> None:
         if check.resample_decision != ResampleDecision.ASK_CONFIRMATION.value:
             return
@@ -809,7 +932,13 @@ class BatchProcessor:
         if approved:
             check.resample_decision = ResampleDecision.AUTO_CORRECT.value
             check.needs_resample = True
-            check.warnings.append("коррекция размера подтверждена пользователем")
+            # Пометка вместо строки «коррекция размера подтверждена пользователем».
+            confirmed = (
+                BatchProcessor._pdf_size_fix(check, auto=False)
+                if check.pdf_resize_plans
+                else BatchProcessor._raster_size_fix(check, auto=False)
+            )
+            check.size_fix = confirmed or check.size_fix
         else:
             check.resample_decision = ResampleDecision.REJECT.value
             check.errors.append("пользователь отказался от предложенной коррекции размера")

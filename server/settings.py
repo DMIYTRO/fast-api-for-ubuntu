@@ -191,6 +191,11 @@ class Settings:
     # Коррекция размера PDF QuickFix callas (те же правила, что у растра); выключена по умолчанию.
     callas_pdf_resize_enabled: bool = False
     callas_pdf_resize_profile: str = DEFAULT_PDF_RESIZE_PROFILE
+    # Режим «Автоматически»: поля вылета дорисовываются планом Callas size_correction при
+    # осмотре файла и принимаются сами, если сравнение подтвердило «только вылеты»
+    # (services/callas_auto_bleed.py). Нужен IMAGE_MAGIC_CALLAS_PROCESS_ENABLED.
+    callas_auto_bleed_enabled: bool = True
+    callas_auto_bleed_max_concurrent: int = 2
     # Автоматические допечатные проверки callas на итоговом PDF: шрифты (Warn Fonts),
     # растры выше предела ppi, крупная плашка 100% K (цветоделения).
     callas_prepress_enabled: bool = True
@@ -420,6 +425,11 @@ class Settings:
                 "IMAGE_MAGIC_CALLAS_PDF_RESIZE_PROFILE", ""
             ).strip()
             or DEFAULT_PDF_RESIZE_PROFILE,
+            callas_auto_bleed_enabled=_env_bool("IMAGE_MAGIC_CALLAS_AUTO_BLEED_ENABLED", True),
+            callas_auto_bleed_max_concurrent=max(
+                1,
+                min(8, int(os.environ.get("IMAGE_MAGIC_CALLAS_AUTO_BLEED_MAX_CONCURRENT", "2").strip() or "2")),
+            ),
             callas_prepress_enabled=_env_bool("IMAGE_MAGIC_CALLAS_PREPRESS_ENABLED", True),
             black_solid_area_threshold=_env_float(
                 "IMAGE_MAGIC_BLACK_SOLID_AREA_THRESHOLD",
