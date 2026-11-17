@@ -23,6 +23,7 @@ _LABELS = {
     "order.callas_fix.finished": "Исправление Callas завершено",
     "order.callas_fix.accepted": "Исправление Callas принято",
     "order.callas_fix.rejected": "Исправление Callas отклонено",
+    "order.callas_fix.reset": "Исправление Callas запущено заново: файл снова проверяется по исходнику",
     "pdf.created": "PDF создан",
 }
 
@@ -41,7 +42,7 @@ def order_actions(events: Iterable[RunEvent], order: dict[str, Any], *, legacy_u
         if event.type not in _LABELS and not event.type.startswith("pitstop."):
             continue
         snapshot = data.get("order") or {}
-        details = {key: data[key] for key in ("plan", "decision", "file_id", "error", "forced") if data.get(key) is not None}
+        details = {key: data[key] for key in ("plan", "decision", "file_id", "file", "error", "forced") if data.get(key) is not None}
         if event.type == "order.completed":
             details["operations"] = [
                 {"file": item.get("name"), **operation}
@@ -54,7 +55,11 @@ def order_actions(events: Iterable[RunEvent], order: dict[str, Any], *, legacy_u
             ]
         result.append({
             "id": f"{event.run_id}:{event.id}", "kind": event.type,
-            "label": _LABELS.get(event.type, "Проверка PitStop"),
+            "label": (
+                "Заказ продолжен: размер исправлен Callas"
+                if event.type == "order.correction_confirmed" and data.get("callas_source_fix")
+                else _LABELS.get(event.type, "Проверка PitStop")
+            ),
             "created_at": event.created_at,
             "status": data.get("status") or snapshot.get("status"),
             "pdf_revision": snapshot.get("current_pdf_revision"),

@@ -65,6 +65,7 @@ from services.sborka_integration import (
     build_sender,
 )
 from services.callas_fix import comparison_payload as callas_fix_payload, read_state_file as read_callas_fix_state
+from services.callas_source_fix import source_comparison as source_fix_comparison
 from services.print_readiness import print_blockers, print_mode
 from services.ftp_preview_uploader import build_ftp_preview_uploader
 from services.return_preview import CUSTOM_PREVIEWS_RELATIVE_PATH, custom_return_preview_path
@@ -240,13 +241,13 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
                 entry["callas_fix_file_id"] = file_id
                 fix_state = read_callas_fix_state(source)
                 entry["callas_fix"] = {
-                    "comparison": callas_fix_payload(
+                    "comparison": source_fix_comparison(
                         fix_state,
                         f"{fix_base}/source/{quote(file_id, safe='')}",
-                        source_only=True,
+                        run,
+                        order,
+                        entry,
                     )
-                    if fix_state
-                    else None
                 }
         preview_storage_id = order_ref
         if input_path and custom_return_preview_path(preview_storage_id, input_path=input_path):
@@ -1246,6 +1247,7 @@ def create_app(
             raise APIError(404, "run_not_found", "Запуск проверки не найден.") from exc
         result["items"] = _orders_from_run({
             "id": run_id,
+            "status": result["run"].get("status"),
             "options": result["run"].get("options") or {},
             "orders": result["run"].get("orders") or {},
         })

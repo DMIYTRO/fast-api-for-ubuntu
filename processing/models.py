@@ -62,6 +62,17 @@ class FileCheck:
     # Коррекция размера PDF (callas QuickFix): номер страницы → PdfPagePlan
     # (способ, формат с вылетами в ориентации страницы). Пусто — PDF не меняется.
     pdf_resize_plans: dict[int, object] = field(default_factory=dict)
+    # Принятое оператором исправление Callas исходного PDF: содержимое читается из
+    # ``content_path`` (копия ``fixed.pdf`` в ``PDF/CallasFix/<имя>.source/``), а имя,
+    # сторона, перемещения и идентификатор файла остаются за исходным ``path``.
+    # ``callas_source_fix`` — сведения о принятом исправлении (план, подпись исходника).
+    content_path: Optional[Path] = None
+    callas_source_fix: Optional[dict[str, object]] = None
+
+    @property
+    def input_path(self) -> Path:
+        """Файл, из которого читается содержимое: исправленный PDF или сам исходник."""
+        return self.content_path or self.path
 
     @property
     def passed(self) -> bool:

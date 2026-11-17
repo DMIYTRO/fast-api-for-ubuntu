@@ -12,12 +12,14 @@ import queue
 import threading
 import time
 import traceback
+from pathlib import Path
 from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from processing.models import OrderCheck
 
 from .batch_adapter import BatchProcessorAdapter, OrderArtifacts, ProcessingOptions
+from .callas_source_fix import ORDER_CHANGED_MESSAGE, mark_applied
 from .pdf_routing import completed_status
 from .domain import OrderStatus, RunStatus, validate_operator_transition
 from .dto import order_check_to_dto
@@ -600,6 +602,145 @@ class RunCoordinator:
     def reject_correction(self, run_id: str, order_id: str) -> dict[str, Any]:
         return self._decide(run_id, order_id, approved=False)
 
+    def apply_source_fix(
+        self,
+        run_id: str,
+        order_id: str,
+        *,
+        source_path: Path | str,
+        content_path: Path | None,
+        fix: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Use (or stop using) an accepted Callas fix of one source PDF of a waiting order.
+
+        The file is re-inspected from ``content_path`` (``None`` — the source
+        itself again) with all normal PDF rules; the inspection runs outside
+        the coordinator lock and is applied only if the order did not change
+        meanwhile.  When no file of the order waits for a size decision any
+        more, the order resumes exactly like a confirmed correction.
+        """
+        with self._lock:
+            context, stored_key, order, index, item = self._waiting_source_file_locked(
+                run_id, order_id, source_path
+            )
+            reinspect = getattr(context.adapter, "reinspect_file", None)
+            revalidate = getattr(context.adapter, "revalidate_order", None)
+            if reinspect is None or revalidate is None:
+                raise InvalidRunStateError(
+                    "этот режим проверки не поддерживает исправленный PDF исходника"
+                )
+        replacement = reinspect(item, content_path)
+        if content_path is not None:
+            mark_applied(replacement, fix or {})
+        with self._lock:
+            current = self._waiting_source_file_locked(run_id, order_id, source_path)
+            if current[0] is not context or current[2] is not order or current[4] is not item:
+                raise InvalidRunStateError(ORDER_CHANGED_MESSAGE)
+            run = context.run
+            order.files[index] = replacement
+            revalidate(order)
+            pending = context.adapter.pending_files(order)
+            file_data = {
+                "aggregate_id": order.aggregate_id,
+                "order_id": order.order_id,
+                "customer_id": order.customer_id,
+                "file": item.path.name,
+                "applied": content_path is not None,
+            }
+            if pending or content_path is None:
+                self._commit_order_locked(
+                    run,
+                    stored_key,
+                    order_check_to_dto(order, status="waiting_confirmation"),
+                    "order.callas_source_fix",
+                    lambda dto: {**file_data, "order": dto},
+                    envelope=ENVELOPE_PATCH,
+                )
+                self._changed.notify_all()
+                return self.get_run(run_id)
+            # Ни один файл больше не ждёт решения: заказ продолжается сам.
+            audit = self._source_fix_audit(run, stored_key, order)
+            previous_status = (run["status"], run["stage"])
+            run["status"] = "running"
+            run["stage"] = "processing"
+            try:
+                self._commit_order_locked(
+                    run,
+                    stored_key,
+                    order_check_to_dto(order, status="correction_confirmed"),
+                    "order.correction_confirmed",
+                    lambda _dto: {
+                        **file_data,
+                        "callas_source_fix": True,
+                        "decisions": audit,
+                    },
+                    update_counts=False,
+                    envelope=ENVELOPE_PATCH,
+                )
+            except Exception:
+                run["status"], run["stage"] = previous_status
+                raise
+            self._pending_resumes.append((run_id, stored_key))
+            self._schedule_next_locked()
+            self._changed.notify_all()
+            return self.get_run(run_id)
+
+    def _waiting_source_file_locked(
+        self, run_id: str, order_id: str, source_path: Path | str
+    ) -> tuple[_RunContext, str, OrderCheck, int, Any]:
+        run = self._load_run_locked(run_id)
+        context = self._contexts.get(run_id)
+        if run["status"] in TERMINAL_RUN_STATUSES or context is None:
+            raise InvalidRunStateError(
+                "Проверка уже завершена или прервана перезапуском сервиса: "
+                "запустите проверку заново и примите исправление в новой проверке."
+            )
+        stored_key = _stored_order_key(run, order_id)
+        order = context.orders.get(stored_key) if stored_key else None
+        stored_order = run["orders"].get(stored_key) if stored_key else None
+        if order is None or not stored_order:
+            raise RunNotFoundError(f"{run_id}/{order_id}")
+        if stored_order["status"] != "waiting_confirmation" or stored_order.get("pdf_path"):
+            raise InvalidRunStateError(
+                "Заказ уже не ждёт решения по коррекции: исправленный PDF исходника "
+                "можно принять только до сборки PDF заказа."
+            )
+        target = Path(source_path).resolve()
+        for index, item in enumerate(order.files):
+            if Path(item.path).resolve() == target:
+                return context, stored_key, order, index, item
+        raise RunNotFoundError(f"{run_id}/{order_id}/{target.name}")
+
+    @staticmethod
+    def _source_fix_audit(
+        run: dict[str, Any], stored_key: str, order: OrderCheck
+    ) -> list[dict[str, Any]]:
+        """Correction audit rows for files built from an accepted Callas source fix."""
+        stored_files = (run["orders"].get(stored_key) or {}).get("files") or []
+        ids = {
+            str(item.get("path") or ""): item.get("file_result_id")
+            for item in stored_files
+        }
+        audit = []
+        for item in order.files:
+            if item.callas_source_fix is None:
+                continue
+            entry: dict[str, Any] = {
+                "path": str(item.path),
+                "decision": "callas_source_fix",
+                "original": {"source": dict(item.callas_source_fix.get("source") or {})},
+                "proposed": {
+                    "plan": item.callas_source_fix.get("plan"),
+                    "pdf_path": str(item.content_path) if item.content_path else None,
+                    "width_mm": item.actual_width_mm,
+                    "height_mm": item.actual_height_mm,
+                },
+            }
+            if ids.get(str(item.path)) is not None:
+                entry["file_result_id"] = ids[str(item.path)]
+            audit.append(entry)
+        return audit
+
     def apply_file_transition(
         self,
         run_id: str,
@@ -844,6 +985,14 @@ class RunCoordinator:
                     if stored_file.get("file_result_id") is not None:
                         audit["file_result_id"] = stored_file["file_result_id"]
                 decision_audit.append(audit)
+            # Файлы с принятым исправлением Callas исходника решением «Применить» /
+            # «Оставить без изменений» не затрагиваются: они собираются из исправленного PDF.
+            decided_paths = {entry["path"] for entry in decision_audit}
+            decision_audit.extend(
+                entry
+                for entry in self._source_fix_audit(run, stored_key, order)
+                if entry["path"] not in decided_paths
+            )
             context.adapter.decide(order, approved)
             decision = "confirmed" if approved else "rejected"
             previous_status = (run["status"], run["stage"])

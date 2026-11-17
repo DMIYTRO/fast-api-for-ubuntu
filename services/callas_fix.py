@@ -9,7 +9,10 @@
 
 * ``state.json`` — состояние (переживает перезапуск сервиса);
 * ``fixed.pdf`` — результат исправления (кандидат на следующую ревизию);
-* ``compare/original|result|overlay`` — картинки сравнения.
+* ``compare/original|result|overlay`` — картинки сравнения;
+* ``accepted.pdf`` — только для исходного PDF заказа: копия принятого ``fixed.pdf``,
+  из которой собирается заказ, ждущий решения по коррекции (см.
+  ``services/callas_source_fix.py``). Повторный запуск исправления её не трогает.
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 STATE_NAME = "state.json"
 FIXED_PDF_NAME = "fixed.pdf"
+ACCEPTED_SOURCE_PDF_NAME = "accepted.pdf"
 COMPARE_DIR = "compare"
 IMAGE_KINDS = ("original", "result", "overlay")
 
@@ -81,6 +85,17 @@ def _signature(path: Path) -> dict[str, int]:
     return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
 
 
+def source_signature_matches(path: Path | str, signature: Mapping[str, Any] | None) -> bool:
+    """Исходный файл тот же, что при исправлении (размер и время изменения совпадают)."""
+    source = Path(path)
+    if not signature or not source.is_file():
+        return False
+    current = _signature(source)
+    return (signature.get("size"), signature.get("mtime_ns")) == (
+        current["size"], current["mtime_ns"],
+    )
+
+
 def read_state_file(pdf_path: Path | str) -> dict[str, Any] | None:
     """Читает сохранённое состояние; ``None``, если исправления не было или файл повреждён."""
     path = fix_dir_for(pdf_path) / STATE_NAME
@@ -99,17 +114,30 @@ def _write_state(directory: Path, state: dict[str, Any]) -> None:
 
 
 def comparison_payload(
-    state: dict[str, Any] | None, base_url: str, *, source_only: bool = False
+    state: dict[str, Any] | None,
+    base_url: str,
+    *,
+    source_only: bool = False,
+    can_accept: bool = False,
+    applied: bool = False,
+    status: str | None = None,
 ) -> dict[str, Any] | None:
-    """Состояние → контракт интерфейса ``comparison`` (URL картинок строятся от ``base_url``)."""
+    """Состояние → контракт интерфейса ``comparison`` (URL картинок строятся от ``base_url``).
+
+    Для исходного PDF (``source_only``) ``can_accept`` — исправление можно принять
+    для текущей проверки, ``applied`` — заказ собирается из принятого исправления;
+    ``status`` позволяет показать состояние с точки зрения этого заказа.
+    """
     if not state:
         return None
     images = state.get("images") or {}
     # Метка завершения в URL: новое исправление того же заказа не показывает старые картинки из кэша.
     version = f"?v={quote(str(state.get('finished_at') or ''), safe='')}" if state.get("finished_at") else ""
     return {
-        "status": state.get("status") or STATUS_FAILED,
+        "status": status or state.get("status") or STATUS_FAILED,
         "source_only": source_only,
+        "can_accept": can_accept,
+        "applied": applied,
         "plan": state.get("plan") or None,
         "error": state.get("error"),
         "decision": state.get("decision"),
@@ -319,14 +347,20 @@ class CallasFixService:
             logger.warning("callas_fix.cleanup_failed job_id=%s", job_id, exc_info=True)
 
     # --------------------------------------------------------------- decision
-    def decide(self, pdf_path: Path | str, decision: str) -> dict[str, Any]:
+    def decide(self, pdf_path: Path | str, decision: str, *, redecide_accepted: bool = False) -> dict[str, Any]:
+        """Решение оператора по готовому результату.
+
+        ``redecide_accepted`` — только для исходного PDF, чьё принятое исправление
+        текущий заказ не использует (принято в другой проверке): его можно отклонить.
+        """
         if decision not in {"accept", "reject"}:
             raise CallasFixError("Решение должно быть «accept» или «reject».", code="invalid_decision")
         pdf = Path(pdf_path)
         state = self.read_state(pdf)
         if state and state.get("status") == STATUS_ACCEPTED and decision == "accept":
             return state
-        if not state or state.get("status") != STATUS_READY:
+        decidable = {STATUS_READY, STATUS_ACCEPTED} if redecide_accepted else {STATUS_READY}
+        if not state or state.get("status") not in decidable:
             raise CallasFixError(
                 "Принять или отклонить можно только готовый результат исправления.",
                 status_code=409,
@@ -366,6 +400,39 @@ class CallasFixService:
             return
         state["published"] = {"sha256": sha256, "revision": revision, "at": _now()}
         _write_state(fix_dir_for(pdf_path), state)
+
+    def accepted_source_copy(self, pdf_path: Path | str) -> tuple[Path, dict[str, Any]]:
+        """Копия принятого исправления исходного PDF для сборки заказа и сведения о нём.
+
+        Копия (``accepted.pdf``) отделена от ``fixed.pdf``: повторный запуск исправления
+        перезаписывает ``fixed.pdf``, но не меняет файл, из которого собирается заказ.
+        """
+        pdf = Path(pdf_path)
+        state = read_state_file(pdf) or {}
+        accepted = self.accepted_pdf(pdf)
+        if accepted is None:
+            raise CallasFixError(
+                "Принятое исправление Callas не найдено. Запустите исправление заново.",
+                status_code=409,
+                code="callas_fix_not_ready",
+            )
+        target = fix_dir_for(pdf) / ACCEPTED_SOURCE_PDF_NAME
+        temporary = target.with_name(f".{target.stem}.{uuid4().hex[:8]}.tmp.pdf")
+        try:
+            shutil.copyfile(accepted, temporary)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        plan = state.get("plan") or {}
+        source = state.get("source") or {}
+        info = {
+            "status": STATUS_ACCEPTED,
+            "plan": plan.get("key"),
+            "plan_title": plan.get("title"),
+            "accepted_at": state.get("decided_at"),
+            "source": {"size": source.get("size"), "mtime_ns": source.get("mtime_ns")},
+        }
+        return target, info
 
     def accepted_pdf(self, pdf_path: Path | str) -> Path | None:
         """Принятый результат исправления или ``None``."""

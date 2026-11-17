@@ -289,7 +289,7 @@ class BatchProcessor:
 
     def _inspect_pdf_file(self, check: FileCheck) -> None:
         """Read and validate a PDF without routing it through ImageMagick."""
-        inspection = inspect_pdf(check.path)
+        inspection = inspect_pdf(check.input_path)
         check.actual_format = "PDF"
         check.page_count = inspection.page_count
         check.pdf_pages = inspection.pages
@@ -321,7 +321,7 @@ class BatchProcessor:
         )
         check.pdf_min_dpi = check.dpi
         check.colorspace = ", ".join(check.pdf_colorspaces) or None
-        check.size_mb = check.path.stat().st_size / (1024 * 1024)
+        check.size_mb = check.input_path.stat().st_size / (1024 * 1024)
         check.errors.extend(inspection.errors)
         check.warnings.extend(inspection.warnings)
 
@@ -641,6 +641,33 @@ class BatchProcessor:
             check.resample_decision = ResampleDecision.REJECT.value
             check.errors.append("пользователь отказался от предложенной коррекции размера")
 
+    def reinspect_pdf_file(self, item: FileCheck, content_path: Path | None) -> FileCheck:
+        """Новая проверка PDF-файла заказа по содержимому ``content_path``.
+
+        ``content_path`` — исправленный PDF (принятое исправление Callas исходника) или
+        ``None`` (снова сам исходник). Возвращается новый ``FileCheck`` с тем же путём и
+        разобранным именем; к нему применяются все обычные правила PDF (размер, боксы,
+        DPI, цвет, политика коррекции). Исходный ``item`` не меняется.
+        """
+        if item.path.suffix.lower() != ".pdf":
+            raise ValueError("повторная проверка доступна только для PDF-файла заказа")
+        check = FileCheck(path=item.path, parsed=item.parsed, content_path=content_path)
+        try:
+            self._inspect_pdf_file(check)
+        except Exception as exc:
+            check.errors.append(f"не удалось прочитать файл: {exc}")
+        return check
+
+    def revalidate_order(self, order: OrderCheck) -> None:
+        """Пересчитать проверки уровня заказа после замены файла (ориентация, стороны…).
+
+        До сборки PDF ошибки и предупреждения заказа даёт только ``_validate_order``,
+        поэтому они строятся заново, а не дописываются.
+        """
+        order.errors.clear()
+        order.warnings.clear()
+        self._validate_order(order)
+
     @staticmethod
     def _validate_order(order: OrderCheck) -> None:
         sides: dict[str, list[FileCheck]] = defaultdict(list)
@@ -788,11 +815,11 @@ class BatchProcessor:
             for page_number, item in enumerate(ordered_files, start=1):
                 try:
                     if item.path.suffix.lower() == ".pdf":
-                        with pymupdf.open(item.path) as document:
+                        with pymupdf.open(item.input_path) as document:
                             if document.page_count == 0:
                                 raise ValueError("в PDF нет страниц")
-                        if str(item.path) not in page_pdfs:
-                            page_pdfs.append(str(item.path))
+                        if str(item.input_path) not in page_pdfs:
+                            page_pdfs.append(str(item.input_path))
                         continue
                     if item.dpi_x and item.dpi_y:
                         dpi_arg: str | float = f"{item.dpi_x}x{item.dpi_y}"
@@ -1050,12 +1077,12 @@ class BatchProcessor:
     def _resize_pdf_if_needed(self, item: FileCheck, page_number: int, temporary_dir: Path) -> str:
         """Исходный PDF или его копия, приведённая к формату QuickFix callas."""
         if not (item.needs_resample and item.pdf_resize_plans):
-            return str(item.path)
+            return str(item.input_path)
         if self.pdf_resizer is None:
             raise ValueError("коррекция размера PDF запланирована, но callas QuickFix не настроен")
         resized = temporary_dir / f"resized_{page_number}_{item.path.stem}.pdf"
         plans = dict(item.pdf_resize_plans)
-        self.pdf_resizer(item.path, resized, plans, self.size_extra_mm / 2.0, item.path.stem)
+        self.pdf_resizer(item.input_path, resized, plans, self.size_extra_mm / 2.0, item.path.stem)
         item.processing_actions.append({
             "kind": "size_correction",
             "method": "callas_quickfix",
@@ -1323,7 +1350,7 @@ class BatchProcessor:
                             for page_number in range(1, page_count + 1)
                         ]
                     previews = self.generate_pdf_previews(
-                        file_check.path,
+                        file_check.input_path,
                         preview_dir,
                         page_names=page_names,
                         fold_overlay=overlay,

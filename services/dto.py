@@ -81,6 +81,12 @@ def file_check_to_dto(
         "orientation_verified": value.orientation_verified,
         "passed": value.passed,
     }
+    if value.callas_source_fix is not None:
+        # Файл собирается из принятого исправления Callas (``pdf_path``), а не из исходника.
+        dto["callas_source_fix"] = {
+            **dict(value.callas_source_fix),
+            "pdf_path": str(value.content_path) if value.content_path else None,
+        }
     matching_paths = [
         path
         for path in preview_paths or []

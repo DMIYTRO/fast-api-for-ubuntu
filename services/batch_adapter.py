@@ -19,6 +19,8 @@ from services.pitstop import (
     PitStopExecutionStatus,
     PitStopService,
 )
+from services.callas_fix import source_signature_matches
+from services.callas_source_fix import STALE_SOURCE_WARNING
 from services.pdf_routing import FAILED_FOLDER, completed_status, route_pdf
 from services.postpress import normalize_postpress
 
@@ -265,6 +267,40 @@ class BatchProcessorAdapter:
         for item in self.pending_files(order):
             self.processor.confirm_resample(item, approved)
 
+    def reinspect_file(self, item: FileCheck, content_path: Path | None) -> FileCheck:
+        """Проверить PDF-файл заказа заново по ``content_path`` (``None`` — по исходнику)."""
+        return self.processor.reinspect_pdf_file(item, content_path)
+
+    def revalidate_order(self, order: OrderCheck) -> None:
+        self.processor.revalidate_order(order)
+
+    def _drop_stale_source_fixes(self, order: OrderCheck) -> None:
+        """Не собирать из исправления Callas, если исходник изменился после него.
+
+        Такой файл проверяется заново по исходнику со всеми обычными правилами
+        (обычно ему снова нужно решение по коррекции, и заказ не собирается).
+        """
+        changed = False
+        for index, item in enumerate(order.files):
+            fix = item.callas_source_fix
+            if fix is None or item.content_path is None:
+                continue
+            if item.content_path.is_file() and source_signature_matches(
+                item.path, fix.get("source")  # type: ignore[arg-type]
+            ):
+                continue
+            logger.warning(
+                "order.callas_source_fix_stale order_id=%s file=%s",
+                order.order_id,
+                item.path.name,
+            )
+            replacement = self.processor.reinspect_pdf_file(item, None)
+            replacement.warnings.insert(0, STALE_SOURCE_WARNING)
+            order.files[index] = replacement
+            changed = True
+        if changed:
+            self.processor.revalidate_order(order)
+
     def process_order(self, order: OrderCheck) -> OrderArtifacts:
         result = self._process_order_unrouted(order)
         self._route_production_pdf(order, result)
@@ -359,6 +395,7 @@ class BatchProcessorAdapter:
         # Fold overlays and previews depend on postpress; wait for Sborka here
         # (bounded) rather than when the order is first shown.
         self._apply_postpress(order, wait=True)
+        self._drop_stale_source_fixes(order)
         result = OrderArtifacts()
         source_previews_created = False
 
