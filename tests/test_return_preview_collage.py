@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import shutil
@@ -15,6 +16,7 @@ from services.return_preview import (
     custom_return_preview_path,
     create_return_preview_collage,
     prepare_return_preview_name,
+    publish_custom_return_preview,
 )
 
 
@@ -33,6 +35,55 @@ class CustomReturnPreviewTests(unittest.TestCase):
                 prepare_return_preview_name("1001", input_path=input_path),
                 custom_path.name,
             )
+
+
+    def test_failed_publication_keeps_legacy_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            input_path = Path(temporary_directory)
+            directory = input_path / CUSTOM_PREVIEWS_RELATIVE_PATH
+            directory.mkdir(parents=True)
+            original = directory / "1001_return-preview.png"
+            original.write_bytes(b"previous PNG")
+
+            for operation in ("NamedTemporaryFile", "os.replace"):
+                for suffix in (".png", ".jpg"):
+                    with self.subTest(operation=operation, suffix=suffix):
+                        with unittest.mock.patch(
+                            f"services.return_preview.{operation}", side_effect=OSError("publish failed")
+                        ):
+                            with self.assertRaisesRegex(OSError, "publish failed"):
+                                publish_custom_return_preview(
+                                    "1001", input_path=input_path, suffix=suffix, content=b"new image"
+                                )
+                        self.assertEqual(original.read_bytes(), b"previous PNG")
+                        self.assertEqual(
+                            custom_return_preview_path("1001", input_path=input_path), original
+                        )
+                        self.assertEqual(list(directory.glob(".upload-*")), [])
+
+    def test_concurrent_uploads_publish_one_complete_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            input_path = Path(temporary_directory)
+            uploads = [
+                (".png" if index % 2 else ".jpg", bytes([index]) * 100_000)
+                for index in range(16)
+            ]
+
+            def publish(upload: tuple[str, bytes]) -> None:
+                suffix, content = upload
+                publish_custom_return_preview(
+                    "1001", input_path=input_path, suffix=suffix, content=content
+                )
+
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                list(executor.map(publish, uploads))
+
+            directory = input_path / CUSTOM_PREVIEWS_RELATIVE_PATH
+            previews = list(directory.glob("1001_return-preview.*"))
+            self.assertEqual(len(previews), 1)
+            self.assertIn((previews[0].suffix, previews[0].read_bytes()), uploads)
+            self.assertEqual(custom_return_preview_path("1001", input_path=input_path), previews[0])
+            self.assertEqual(list(directory.glob(".upload-*")), [])
 
 
 @unittest.skipUnless(shutil.which("magick"), "ImageMagick is required")

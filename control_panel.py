@@ -21,7 +21,8 @@ from uuid import uuid4
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import joinedload, selectinload
@@ -68,7 +69,9 @@ from services.callas_fix import comparison_payload as callas_fix_payload, read_s
 from services.callas_source_fix import fixable_source_path, source_comparison as source_fix_comparison
 from services.print_readiness import print_blockers, print_mode
 from services.ftp_preview_uploader import build_ftp_preview_uploader
-from services.return_preview import CUSTOM_PREVIEWS_RELATIVE_PATH, custom_return_preview_path
+from services.return_preview import (
+    custom_return_preview_path, publish_custom_return_preview, selected_custom_return_preview,
+)
 from core.preview_cache import full_preview_cache_path, preview_media_type, preview_variants
 from services.repository import InMemoryRunRepository, RunRepository
 from services.event_retention import run_event_retention
@@ -448,12 +451,14 @@ def _safe_history_preview_path(root_path: str, raw_path: str | None) -> Path | N
     return target
 
 
-def _safe_rework_history_preview_path(root_path: str, order_id: str) -> Path | None:
+def _safe_rework_history_preview_path(
+    root_path: str, order_id: str, *, include_custom: bool = True
+) -> Path | None:
     """Find the exact local preview selected for rework, confined to its run."""
     if not order_id or Path(order_id).name != order_id:
         return None
     root = Path(root_path)
-    custom = custom_return_preview_path(order_id, input_path=root)
+    custom = custom_return_preview_path(order_id, input_path=root) if include_custom else None
     if custom is not None:
         return _safe_history_preview_path(root_path, str(custom))
     # The return collage is JPEG or (historically) PNG; use the newest one.
@@ -1456,19 +1461,19 @@ def create_app(
     )
     def uploaded_return_preview(
         request: Request, run_id: str, order_id: str
-    ) -> FileResponse:
+    ) -> Response:
         run, order = _find_order(_get_coordinator(request), order_id, run_id)
         preview_storage_id = _custom_preview_storage_id(run, order)
-        preview = custom_return_preview_path(
+        with selected_custom_return_preview(
             preview_storage_id, input_path=Path(run["options"]["input_path"])
-        )
-        if preview is None:
-            raise APIError(
-                404,
-                "preview_not_found",
-                "Пользовательское превью не загружено.",
-            )
-        return FileResponse(preview)
+        ) as preview:
+            if preview is None:
+                raise APIError(
+                    404,
+                    "preview_not_found",
+                    "Пользовательское превью не загружено.",
+                )
+            return Response(preview.read_bytes(), media_type=preview_media_type(preview))
 
     @application.post(
         "/api/checks/{run_id}/orders/{order_id}/return-preview",
@@ -1478,7 +1483,9 @@ def create_app(
         request: Request, run_id: str, order_id: str
     ) -> dict[str, str]:
         """Store a small operator preview that takes precedence on FTP return."""
-        run, order = _find_order(_get_coordinator(request), order_id, run_id)
+        run, order = await run_in_threadpool(
+            _find_order, _get_coordinator(request), order_id, run_id
+        )
         preview_storage_id = _custom_preview_storage_id(run, order)
         maximum_size = 1024 * 1024
         try:
@@ -1510,16 +1517,13 @@ def create_app(
                 "preview_invalid_format",
                 "Можно загрузить только JPEG или PNG-превью.",
             )
-        directory = Path(run["options"]["input_path"]) / CUSTOM_PREVIEWS_RELATIVE_PATH
-        directory.mkdir(parents=True, exist_ok=True)
-        for other_suffix in (".png", ".jpg"):
-            (directory / f"{preview_storage_id}_return-preview{other_suffix}").unlink(
-                missing_ok=True
-            )
-        target = directory / f"{preview_storage_id}_return-preview{suffix}"
-        temporary = target.with_suffix(f"{suffix}.uploading")
-        temporary.write_bytes(content)
-        os.replace(temporary, target)
+        target = await run_in_threadpool(
+            publish_custom_return_preview,
+            preview_storage_id,
+            input_path=Path(run["options"]["input_path"]),
+            suffix=suffix,
+            content=content,
+        )
         return {
             "filename": target.name,
             "url": f"/api/checks/{run_id}/orders/{order_id}/return-preview",
@@ -1801,16 +1805,26 @@ def create_app(
     )
     def order_history_preview(
         request: Request, action_id: int, file_index: int
-    ) -> FileResponse:
+    ) -> Response:
         with request.app.state.database.session_factory() as session:
             action = session.get(OrderAction, action_id)
             if action is None:
                 raise APIError(404, "history_not_found", "Запись истории не найдена.")
             files = list(action.order_result.files)
-            if file_index == len(files) and action.action == "reject":
+            order_id = action.order_result.order_id
+            if (
+                file_index == len(files) and action.action == "reject"
+                and order_id and Path(order_id).name == order_id
+            ):
+                root_path = action.order_result.run.input_path
+                with selected_custom_return_preview(
+                    order_id, input_path=Path(root_path)
+                ) as custom:
+                    target = _safe_history_preview_path(root_path, str(custom)) if custom else None
+                    if target is not None:
+                        return Response(target.read_bytes(), media_type=preview_media_type(target))
                 target = _safe_rework_history_preview_path(
-                    action.order_result.run.input_path,
-                    action.order_result.order_id,
+                    root_path, order_id, include_custom=False
                 )
                 if target is not None:
                     return FileResponse(target)

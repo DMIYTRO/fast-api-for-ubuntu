@@ -32,7 +32,9 @@ from .callas_fix import read_state_file as read_callas_fix_state
 from .print_readiness import is_forced_print, pitstop_ready, print_blockers
 from .pdf_routing import completed_status, pdf_root_for, route_pdf
 from .pdf_revision_validation import readable_pdf, validate_pdf_revision
-from .return_preview import custom_return_preview_path, prepare_return_preview_name
+from .return_preview import (
+    prepare_return_preview_name, selected_custom_return_preview,
+)
 from .callas.renderer import dpi_for_longest_side, render_pdf_to_pngs
 from .pitstop.baseline import FixBaselinePolicy, apply_fix_baseline, is_original_check
 from .layered_tiff_print import (
@@ -343,7 +345,7 @@ class OrderWorkflowService:
 
     @staticmethod
     def _return_preview_upload_paths(
-        input_path: Path, transition: Any, preview_name: str, order_id: str
+        input_path: Path, transition: Any, preview_name: str
     ) -> list[Path]:
         """Find the previews after a return transition for one batch upload."""
         paths = [Path(path) for path in transition.preview_paths if Path(path).is_file()]
@@ -351,13 +353,8 @@ class OrderWorkflowService:
         if matching:
             return matching
         if preview_name:
-            custom_preview = custom_return_preview_path(
-                order_id, input_path=input_path
-            )
             collage = input_path / "Previews" / "Return" / preview_name
-            if custom_preview is not None and custom_preview.name == preview_name:
-                return [custom_preview]
-            elif not collage.is_file():
+            if not collage.is_file():
                 raise FileLifecycleError(
                     f"Не найдено превью для загрузки: {preview_name}"
                 )
@@ -905,15 +902,21 @@ class OrderWorkflowService:
                                 order_id, command.comment
                             )
                         elif action == "reject" and self.rework_sender is not None:
-                            if self.preview_uploader is not None:
-                                upload_paths = self._return_preview_upload_paths(
-                                    Path(run["options"]["input_path"]),
-                                    transition,
-                                    return_preview_name or "",
-                                    order_id,
-                                )
-                                if upload_paths:
-                                    self.preview_uploader(upload_paths)
+                            input_path = Path(run["options"]["input_path"])
+                            with selected_custom_return_preview(
+                                order_id, input_path=input_path
+                            ) as custom_preview:
+                                if custom_preview is not None:
+                                    return_preview_name = custom_preview.name
+                                if self.preview_uploader is not None:
+                                    upload_paths = (
+                                        [custom_preview] if custom_preview is not None
+                                        else self._return_preview_upload_paths(
+                                            input_path, transition, return_preview_name or ""
+                                        )
+                                    )
+                                    if upload_paths:
+                                        self.preview_uploader(upload_paths)
                             prepress_result = self.rework_sender(
                                 order_id,
                                 (command.comment or "").strip(),

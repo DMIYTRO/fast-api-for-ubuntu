@@ -621,6 +621,18 @@ class ControlPanelTests(unittest.TestCase):
         order = self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]
         self.assertEqual(order["custom_preview_url"], response.json()["url"])
 
+        for content, suffix, mime in (
+            (b"\xff\xd8\xffreplacement", ".jpg", "image/jpeg"),
+            (b"\x89PNG\r\n\x1a\nreplacement", ".png", "image/png"),
+        ):
+            with self.subTest(suffix=suffix):
+                upload = self.client.post(response.json()["url"], content=content)
+                self.assertEqual(upload.status_code, 200)
+                self.assertEqual(upload.json()["filename"], f"1001_return-preview{suffix}")
+                preview = self.client.get(response.json()["url"])
+                self.assertEqual(preview.content, content)
+                self.assertEqual(preview.headers["content-type"], mime)
+
         too_large = self.client.post(
             f"/api/checks/{run_id}/orders/1001/return-preview",
             content=b"\x89PNG\r\n\x1a\n" + b"x" * (1024 * 1024),
