@@ -29,6 +29,20 @@ def parsed_filename_to_dto(value: ParsedFilename | None) -> dict[str, Any] | Non
     }
 
 
+def _size_fix_to_dto(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not value:
+        return None
+    return {
+        # Дополнительные ключи сохраняются (пути — строками), основные приводятся к контракту.
+        **{key: str(item) if isinstance(item, Path) else item for key, item in value.items()},
+        "method": str(value.get("method") or ""),
+        "auto": value.get("auto") is True,
+        "from_mm": [float(item) for item in value.get("from_mm") or ()],
+        "to_mm": [float(item) for item in value.get("to_mm") or ()],
+        "detail": str(value.get("detail") or ""),
+    }
+
+
 def file_check_to_dto(
     value: FileCheck, *, preview_paths: list[str] | None = None
 ) -> dict[str, Any]:
@@ -76,6 +90,8 @@ def file_check_to_dto(
             else None
         ),
         "resample_confirmed": value.resample_confirmed,
+        # Пометка коррекции размера вместо строки предупреждения (контракт m001).
+        "size_fix": _size_fix_to_dto(value.size_fix),
         "downsampled_from_dpi": value.downsampled_from_dpi,
         "rotation_degrees": value.rotation_degrees,
         "orientation_verified": value.orientation_verified,

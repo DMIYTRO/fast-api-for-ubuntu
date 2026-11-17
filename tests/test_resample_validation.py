@@ -35,13 +35,29 @@ class ResampleValidationTests(unittest.TestCase):
         self.assertTrue(any("потребуется обрезка" in error for error in check.errors))
 
     def test_allows_proportional_downsample_in_matching_orientation(self):
-        # 428 x 304 mm is exactly twice the required 214 x 152 mm layout.
-        check = self.make_check((428.0, 304.0), (5055, 3591))
+        # 428 x 304 mm is exactly twice the required 214 x 152 mm layout; at 150 DPI the
+        # shrink raises the resolution to 300 DPI, so it stays automatic.
+        check = self.make_check((428.0, 304.0), (2528, 1795))
+        check.dpi = check.dpi_x = check.dpi_y = 150.0
 
         self.processor._validate_file(check)
 
         self.assertTrue(check.needs_resample)
         self.assertEqual(check.resample_target_mm, (214.0, 152.0))
+        self.assertFalse(check.errors)
+        self.assertEqual(check.size_fix["method"], "shrink")
+        self.assertTrue(check.size_fix["auto"])
+
+    def test_large_high_dpi_downsample_requires_confirmation(self):
+        # The same layout at 300 DPI: shrinking 214 mm is far above the 2 mm auto limit.
+        check = self.make_check((428.0, 304.0), (5055, 3591))
+
+        self.processor._validate_file(check)
+
+        self.assertFalse(check.needs_resample)
+        self.assertEqual(check.resample_decision, "ask_confirmation")
+        self.assertEqual(check.resample_target_mm, (214.0, 152.0))
+        self.assertIsNone(check.size_fix)
         self.assertFalse(check.errors)
 
     def test_large_source_with_small_crop_requires_confirmation(self):

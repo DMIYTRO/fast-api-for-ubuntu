@@ -5,16 +5,23 @@
 1. ``reveal`` — страница меньше формата, а фоновый объект уже заходит за её край:
    страница раздвигается (``enlarge_pages``) и скрытые вылеты становятся видимыми.
    Содержимое не масштабируется, DPI не меняется.
-2. ``fill`` — те же правила, что у растра (``analyze_resample``): пропорциональное
-   заполнение формата и центральная обрезка (``scale_pages`` ``fit_from_outside_cut_page``).
-3. ``stretch`` — неравномерное масштабирование (``scale_pages`` ``stretch_to_fill``),
-   только при малом искажении пропорций (пороги профиля ``pdf_stretch_*_pct``) и только
-   если заполнение не проходит автоматически; тогда при равном решении вытягивание
-   предпочтительнее обрезки. На малых форматах почти не срабатывает: на 94 мм обрезка
-   4 мм (предел авто) — это ~4.3% искажения; на 600 мм 1% искажения — уже 6 мм обрезки.
+2. ``stretch`` — неравномерное масштабирование (``scale_pages`` ``stretch_to_fill``),
+   только при малом искажении пропорций (пороги профиля ``pdf_stretch_*_pct``). При
+   равном решении вытягивание предпочтительнее уменьшения и обрезки. Кандидат с
+   искажением ~0 (< 0.01%) не рассматривается — это пропорциональный масштаб.
+   Вытягивание, уменьшающее страницу по обеим осям, подчиняется правилу уменьшения (п. 3).
+   На малых форматах редко проходит автоматически: на 94 мм обрезка 4 мм (предел авто) —
+   это ~4.3% искажения; на 600 мм 1% искажения — уже 6 мм обрезки.
+3. ``shrink`` — пропорциональное уменьшение (масштаб < 1) с центральной обрезкой
+   (``scale_pages`` ``fit_from_outside_cut_page``). Автоматически — только если страница
+   больше формата не более чем на ``shrink_auto_mm`` по каждой стороне или уменьшение
+   поднимает низкое разрешение до ``min_dpi`` (``analyze_resample``); иначе — с
+   подтверждением.
+4. ``fill`` — те же правила, что у растра (``analyze_resample``): пропорциональное
+   заполнение формата (увеличение или только обрезка) и центральная обрезка.
 
 Пороги «авто / подтверждение / отказ» общие с растром: прирост страницы при ``reveal``
-и обрезка при ``fill`` сравниваются с ``auto_crop_mm`` и ``confirm_crop_mm``.
+и обрезка при ``shrink``/``fill`` сравниваются с ``auto_crop_mm`` и ``confirm_crop_mm``.
 После любого способа BleedBox = MediaBox, TrimBox — внутрь на вылет, CropBox = MediaBox.
 JSON применяет профиль «Image Magic/Apply QuickFix config» из переменной
 ``quickfix_config`` (``scripts/build_quickfix_profile.py``).
@@ -27,7 +34,9 @@ import math
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
-from .resample_policy import ResampleDecision, analyze_resample
+from config.profiles import DEFAULT_SHRINK_AUTO_MAX_MM
+
+from .resample_policy import ResampleDecision, analyze_resample, is_shrink, shrink_verdict
 
 #: Имя переменной профиля, из которой QuickFix читает JSON.
 QUICKFIX_VARIABLE = "quickfix_config"
@@ -37,11 +46,15 @@ MAX_VARIABLE_LENGTH = 1024
 METHOD_FILL = "fill"
 METHOD_STRETCH = "stretch"
 METHOD_REVEAL = "reveal"
-# При равном решении: показать скрытое → вытянуть (ничего не срезает; кандидат
-# появляется, только если заполнение не проходит автоматически) → заполнить с обрезкой.
-_METHOD_ORDER = {METHOD_REVEAL: 0, METHOD_STRETCH: 1, METHOD_FILL: 2}
+#: Пропорциональное уменьшение (масштаб < 1); QuickFix — как у ``fill``.
+METHOD_SHRINK = "shrink"
+# При равном решении: показать скрытое → вытянуть (ничего не срезает) → уменьшить →
+# заполнить с обрезкой.
+_METHOD_ORDER = {METHOD_REVEAL: 0, METHOD_STRETCH: 1, METHOD_SHRINK: 2, METHOD_FILL: 3}
 
 _EPSILON = 0.01
+#: Вытягивание с меньшим искажением, %, — это пропорциональный масштаб, не вытягивание.
+_MIN_STRETCH_DISTORTION_PCT = 0.01
 
 _DECISION_RANK = {
     ResampleDecision.ACCEPT: 0,
@@ -82,6 +95,8 @@ class PdfResizeLimits:
     confirm_mm: float
     stretch_auto_pct: float = 0.0
     stretch_confirm_pct: float = 0.0
+    #: Предел автоматического уменьшения, мм (``PrePressProfile.shrink_auto_mm``).
+    shrink_auto_mm: float = DEFAULT_SHRINK_AUTO_MAX_MM
 
 
 def page_min_dpi(images: Iterable[Any]) -> float:
@@ -111,9 +126,11 @@ def _fill_plan(actual, target, dpi, limits) -> PdfPagePlan:
         auto_crop_mm=limits.auto_mm,
         confirm_crop_mm=limits.confirm_mm,
         allow_rotation=False,
+        shrink_auto_mm=limits.shrink_auto_mm,
     )
+    method = METHOD_SHRINK if is_shrink(actual, target, limits.metadata_tolerance_mm) else METHOD_FILL
     return PdfPagePlan(
-        plan.decision, METHOD_FILL, target, (plan.scale, plan.scale), plan.crop_mm,
+        plan.decision, method, target, (plan.scale, plan.scale), plan.crop_mm,
         (0.0, 0.0), plan.effective_dpi, plan.reason,
     )
 
@@ -140,6 +157,8 @@ def _stretch_plan(actual, target, dpi, limits) -> PdfPagePlan | None:
         return None
     scale = (target[0] / actual[0], target[1] / actual[1])
     distortion = abs(scale[0] / scale[1] - 1.0) * 100.0
+    if distortion < _MIN_STRETCH_DISTORTION_PCT:
+        return None  # пропорциональный масштаб — это shrink/fill
     effective = (dpi / scale[0], dpi / scale[1])
     if min(effective) + _EPSILON < limits.min_dpi:
         return None
@@ -149,10 +168,20 @@ def _stretch_plan(actual, target, dpi, limits) -> PdfPagePlan | None:
         decision = ResampleDecision.ASK_CONFIRMATION
     else:
         return None
-    return PdfPagePlan(
-        decision, METHOD_STRETCH, target, scale, (0.0, 0.0), (0.0, 0.0), effective,
+    reason = (
         f"вытягивание {scale[0] * 100:.1f}% × {scale[1] * 100:.1f}%: "
-        f"пропорции изменятся на {distortion:.2f}%",
+        f"пропорции изменятся на {distortion:.2f}%"
+    )
+    if decision == ResampleDecision.AUTO_CORRECT and is_shrink(actual, target, limits.metadata_tolerance_mm):
+        # Вытягивание, которое уменьшает страницу по обеим осям, — тоже уменьшение:
+        # крупное без подтверждения не применяется (то же правило, что у shrink).
+        verdict = shrink_verdict(
+            actual, target, dpi, min(effective), limits.min_dpi, limits.shrink_auto_mm
+        )
+        if verdict is not None and verdict[0] == ResampleDecision.ASK_CONFIRMATION:
+            decision, reason = verdict[0], f"{reason}; {verdict[1]}"
+    return PdfPagePlan(
+        decision, METHOD_STRETCH, target, scale, (0.0, 0.0), (0.0, 0.0), effective, reason,
     )
 
 
@@ -164,6 +193,9 @@ def plan_pdf_page_resize(
     hidden_margins_mm: Iterable[tuple[float, float]] = (),
 ) -> PdfPagePlan:
     """Лучший план для страницы среди способов и двух ориентаций целевого формата.
+
+    Сначала — мягчайшее решение (принять → авто → подтверждение → отказ), при равном —
+    способ по порядку reveal → stretch → shrink → fill, затем меньшая обрезка.
 
     50×90 и 90×50 равноправны: страница не поворачивается, ориентация цели берётся
     та, что ближе к странице.
@@ -178,10 +210,9 @@ def plan_pdf_page_resize(
         reveal = _reveal_plan(actual_mm, target, min_page_dpi, hidden, limits)
         if reveal is not None:
             candidates.append(reveal)
-        if fill.decision != ResampleDecision.AUTO_CORRECT:
-            stretch = _stretch_plan(actual_mm, target, min_page_dpi, limits)
-            if stretch is not None:
-                candidates.append(stretch)
+        stretch = _stretch_plan(actual_mm, target, min_page_dpi, limits)
+        if stretch is not None:
+            candidates.append(stretch)
     return min(
         candidates,
         key=lambda plan: (
