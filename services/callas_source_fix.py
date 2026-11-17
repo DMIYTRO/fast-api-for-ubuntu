@@ -11,7 +11,14 @@ PDF. Оператор может исправить каждый исходны�
   сам (тот же путь, что «Применить»); иначе «Применить» / «Оставить без изменений»
   относятся только к оставшимся файлам;
 * если исходник изменился после исправления, исправление не используется (проверка
-  при сборке, ``BatchProcessorAdapter``), файл проверяется заново с предупреждением.
+  при сборке, ``BatchProcessorAdapter``), файл проверяется заново с предупреждением;
+* растровый исходник (TIFF/JPEG/PNG) сначала собирается в ``source.pdf`` так же, как
+  при обычной сборке, и дальше идёт тем же путём; после принятия сторона собирается
+  из принятого PDF;
+* если исправление только дорисовало вылеты (``bleed_only``, ``services/callas_bleed.py``),
+  размер проверяется по исправленному PDF, а разрешение и цвет — по исходнику клиента
+  (``BatchProcessor.reinspect_pdf_file``); иначе всё — по исправленному PDF с
+  предупреждением, почему.
 
 Здесь — тексты и правила, общие для HTTP-ручек, координатора и адаптера.
 """
@@ -23,9 +30,12 @@ from typing import Any, Mapping
 
 from processing.models import FileCheck
 
-from .callas_fix import STATUS_ACCEPTED, STATUS_READY, comparison_payload
+from .callas_bleed import BLEED_ONLY_NOTE, not_bleed_only_warning
+from .callas_fix import RASTER_SOURCE_SUFFIXES, STATUS_ACCEPTED, STATUS_READY, comparison_payload
 
 SIZE_PLAN_KEY = "size_correction"
+#: Исходные файлы, которые можно исправить планом Callas до сборки PDF заказа.
+FIXABLE_SOURCE_SUFFIXES = frozenset({".pdf"}) | RASTER_SOURCE_SUFFIXES
 
 # Заказ ещё идёт: только такие проверки могут продолжить ожидающий заказ.
 LIVE_RUN_STATUSES = frozenset({"running", "waiting_confirmation"})
@@ -54,10 +64,45 @@ def applied_note(fix: Mapping[str, Any]) -> str:
 
 
 def mark_applied(check: FileCheck, fix: Mapping[str, Any]) -> FileCheck:
-    """Отметить заново проверенный по ``check.content_path`` файл принятым исправлением."""
-    check.callas_source_fix = dict(fix)
-    check.warnings.insert(0, applied_note(fix))
+    """Отметить заново проверенный по ``check.content_path`` файл принятым исправлением.
+
+    ``fix`` (``CallasFixService.accepted_source_copy``) несёт ``bleed_only``,
+    ``bleed_only_reasons`` и ``baseline_pdf``; они сохраняются вместе с файлом
+    (``callas_source_fix`` в DTO) и переживают перезапуск.
+    """
+    info = dict(fix)
+    info["bleed_only"] = info.get("bleed_only") is True
+    info["bleed_only_reasons"] = [str(reason) for reason in info.get("bleed_only_reasons") or ()]
+    if info.get("baseline_pdf") is not None:
+        info["baseline_pdf"] = str(info["baseline_pdf"])
+    check.callas_source_fix = info
+    notes = [applied_note(info)]
+    if info.get("plan") == SIZE_PLAN_KEY:
+        notes.append(
+            BLEED_ONLY_NOTE if info["bleed_only"] else not_bleed_only_warning(info["bleed_only_reasons"])
+        )
+    check.warnings[:0] = notes
     return check
+
+
+def fixable_source_path(input_root: Path, entry: Mapping[str, Any]) -> Path | None:
+    """Исходный файл заказа (PDF или растр) внутри папки проверки, который можно исправить.
+
+    ``None`` — путь вне папки проверки, файла нет или формат не поддерживается.
+    Замена ``control_panel._source_pdf_path``: растры тоже получают «Размер» Callas.
+    """
+    raw = entry.get("path") or entry.get("source_path")
+    if not raw:
+        return None
+    source = Path(str(raw)).resolve()
+    root = Path(input_root).resolve()
+    try:
+        source.relative_to(root)
+    except ValueError:
+        return None
+    if source.suffix.lower() not in FIXABLE_SOURCE_SUFFIXES or not source.is_file():
+        return None
+    return source
 
 
 def order_accepts_source_fix(run: Mapping[str, Any], order: Mapping[str, Any]) -> bool:

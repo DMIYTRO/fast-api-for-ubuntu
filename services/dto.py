@@ -83,8 +83,14 @@ def file_check_to_dto(
     }
     if value.callas_source_fix is not None:
         # Файл собирается из принятого исправления Callas (``pdf_path``), а не из исходника.
+        # ``bleed_only`` / ``bleed_only_reasons`` / ``baseline_pdf`` — контракт PitStop и
+        # интерфейса (``services/callas_source_fix.mark_applied``); есть всегда.
+        fix = dict(value.callas_source_fix)
         dto["callas_source_fix"] = {
-            **dict(value.callas_source_fix),
+            **fix,
+            "bleed_only": fix.get("bleed_only") is True,
+            "bleed_only_reasons": [str(reason) for reason in fix.get("bleed_only_reasons") or ()],
+            "baseline_pdf": str(fix["baseline_pdf"]) if fix.get("baseline_pdf") else None,
             "pdf_path": str(value.content_path) if value.content_path else None,
         }
     matching_paths = [
