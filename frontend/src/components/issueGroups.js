@@ -2,6 +2,8 @@
 // бэкенд отдаёт готовый order.issue_groups, а для старых payload без него
 // фронтенд строит группы сам по тем же правилам (числа схлопываются).
 
+import { displayIssue, isHiddenIssue, visibleIssueGroups } from "./pitstopBaseline.js";
+
 const SAMPLE_LIMIT = 3;
 const NUMBER_RE = /\d+(?:[.,]\d+)?/g;
 
@@ -99,14 +101,17 @@ export function formatGroupMessage(base, { count = 1, objects = null, pages = []
 class GroupBuilder {
   constructor() { this.groups = new Map(); }
 
-  add({ source, severity, code, label, message, file = null, locations = [] }) {
+  add({ source, severity, code, label, message, file = null, locations = [], occurrences = null }) {
     const key = `${source}\u0000${severity}\u0000${code}`;
     let group = this.groups.get(key);
     if (!group) {
-      group = { code, severity, source, label, count: 0, objectKeys: new Set(), pages: new Set(), files: [], samples: [], hasLocations: false, unknownObjects: false };
+      group = { code, severity, source, label, count: 0, objectKeys: new Set(), pages: new Set(), files: [], samples: [], hasLocations: false, unknownObjects: false, occurrenceSum: 0, allOccurrences: true };
       this.groups.set(key, group);
     }
     group.count += 1;
+    // PitStop перечисляет не более 100 мест; точное число — в occurrences (из текста).
+    if (Number.isInteger(occurrences) && occurrences > 0) group.occurrenceSum += occurrences;
+    else group.allOccurrences = false;
     if (message && group.samples.length < SAMPLE_LIMIT && !group.samples.includes(message)) group.samples.push(message);
     if (file && !group.files.includes(file)) group.files.push(file);
     if (!locations.length) group.unknownObjects = true;
@@ -127,7 +132,9 @@ class GroupBuilder {
     return [...this.groups.values()]
       .sort((a, b) => (order[a.severity] ?? 3) - (order[b.severity] ?? 3) || (a.source === "local" ? 0 : 1) - (b.source === "local" ? 0 : 1))
       .map((group) => {
-        const objects = group.hasLocations && !group.unknownObjects ? group.objectKeys.size : null;
+        const objects = group.source === "pitstop" && group.allOccurrences && group.occurrenceSum > 0
+          ? group.occurrenceSum
+          : group.hasLocations && !group.unknownObjects ? group.objectKeys.size : null;
         const pages = [...group.pages].sort((a, b) => a - b);
         const base = group.count === 1 && group.samples.length ? group.samples[0] : group.label;
         return {
@@ -146,14 +153,17 @@ class GroupBuilder {
 }
 
 function addPitStopIssues(builder, issues) {
-  for (const issue of issues || []) {
+  // Находки, добавленные исправлением Callas, не показываются; у частично добавленных
+  // остаётся только количество клиента.
+  for (const issue of (issues || []).filter((item) => !isHiddenIssue(item)).map(displayIssue)) {
     const message = issueText(issue) || "PitStop: сообщение отсутствует";
     const severity = typeof issue === "object" && issue ? pitstopSeverity(issue.severity) : "info";
     const actionId = typeof issue === "object" && issue ? issue.action_id : null;
     const code = actionId != null && actionId !== "" ? `action:${actionId}` : message.replace(NUMBER_RE, "#");
     let locations = typeof issue === "object" && issue ? issue.locations : null;
     if ((!locations || !locations.length) && typeof issue === "object" && issue && Number.isInteger(issue.page)) locations = [{ page: issue.page }];
-    builder.add({ source: "pitstop", severity, code, label: message, message, locations: locations || [] });
+    const occurrences = typeof issue === "object" && issue ? issue.occurrences : null;
+    builder.add({ source: "pitstop", severity, code, label: message, message, locations: locations || [], occurrences });
   }
 }
 
@@ -187,7 +197,7 @@ export function buildIssueGroups(order) {
 
 // Предпочитает готовые группы бэкенда; старые payload группируются на месте.
 export function orderIssueGroups(order) {
-  if (Array.isArray(order?.issue_groups)) return order.issue_groups;
+  if (Array.isArray(order?.issue_groups)) return visibleIssueGroups(order.issue_groups, order.pitstop);
   return buildIssueGroups(order);
 }
 

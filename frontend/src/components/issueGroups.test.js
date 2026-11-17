@@ -131,3 +131,35 @@ it("shows current revision findings without stale source errors", () => {
   expect(groups[0]).toMatchObject({ count: 1, samples: ["new"] });
   expect(buildIssueGroups({ ...order, processing_errors: [], revision_check: { errors: [], warnings: [] } })).toEqual([]);
 });
+
+describe("PitStop object counts", () => {
+  const locations = Array.from({ length: 100 }, (_, index) => ({
+    page: (index % 2) + 1,
+    bbox: { min_x: index, min_y: 0, max_x: index + 1, max_y: 1 },
+    units: "pt",
+  }));
+  const clipping = (extra = {}) => ({
+    severity: "warning",
+    action_id: "2079",
+    message: "Clipping objects found (1670x on pages 1-2)",
+    occurrences: 1670,
+    locations,
+    ...extra,
+  });
+
+  it("uses the exact count from occurrences, not the 100 listed locations", () => {
+    const [group] = groupPitStopIssues([clipping()]);
+    expect(group.objects).toBe(1670);
+    expect(group.pages).toEqual([1, 2]);
+  });
+
+  it("shows only the client's count for an issue the Callas fix enlarged", () => {
+    const [group] = groupPitStopIssues([clipping({ baseline_occurrences: 168, introduced_by_fix: 1502 })]);
+    expect(group.objects).toBe(168);
+  });
+
+  it("falls back to distinct locations when occurrences is missing", () => {
+    const [group] = groupPitStopIssues([clipping({ occurrences: undefined })]);
+    expect(group.objects).toBe(100);
+  });
+});

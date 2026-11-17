@@ -34,3 +34,68 @@ describe("PitStopReport issue grouping", () => {
     expect(items[1].textContent).not.toContain("1 объект");
   });
 });
+
+describe("PitStopReport fix baseline", () => {
+  const hiddenIssue = {
+    severity: "information", original_severity: "warning", hidden_by_baseline: true, introduced_by_fix: 1670, baseline_occurrences: 0,
+    action_id: 2079, occurrences: 1670, message: "Clipping objects found (1670x on pages 1-2)",
+    locations: [{ page: 1, bbox: { min_x: 0, min_y: 0, max_x: 1, max_y: 1 } }],
+  };
+  const partialIssue = {
+    severity: "warning", baseline_occurrences: 168, introduced_by_fix: 1502,
+    action_id: 3004, occurrences: 1670, message: "Transparency found (1670x on pages 1-2)",
+    locations: [{ page: 1, bbox: { min_x: 0, min_y: 0, max_x: 1, max_y: 1 } }],
+  };
+  const font = { severity: "error", action_id: 1001, message: "Font not embedded", locations: [{ page: 2, bbox: {} }] };
+
+  it("does not render or count hidden issues and uses the adjusted counts", async () => {
+    const host = mount({
+      execution_status: "completed", verdict: "passed", verdict_raw: "warning", baseline_status: "applied",
+      counts: { errors: 0, warnings: 0 }, counts_raw: { errors: 0, warnings: 1 }, issues: [hiddenIssue],
+    });
+    await nextTick();
+    expect(host.querySelector(".pitstop-toggle")).toBeNull();
+    expect(host.querySelectorAll(".pitstop-issues li")).toHaveLength(0);
+    expect(host.textContent).not.toContain("Clipping objects");
+    expect(host.textContent).not.toContain("1670");
+    expect(host.textContent).not.toContain("applied");
+    const meta = host.querySelector(".pitstop-meta").textContent;
+    expect(meta).toMatch(/Ошибок\s*0/);
+    expect(meta).toMatch(/Предупреждений\s*0/);
+    expect(host.querySelector(".pitstop-report").classList.contains("pitstop-passed")).toBe(true);
+  });
+
+  it("keeps visible issues next to a hidden one", async () => {
+    const host = mount({ execution_status: "completed", verdict: "error", counts: { errors: 1, warnings: 0 }, issues: [hiddenIssue, font] });
+    await nextTick();
+    expect(host.querySelector(".pitstop-toggle").textContent).toContain("(1)");
+    host.querySelector(".pitstop-toggle").click();
+    await nextTick();
+    const items = [...host.querySelectorAll(".pitstop-issues li")];
+    expect(items).toHaveLength(1);
+    expect(items[0].textContent).toContain("Font not embedded");
+  });
+
+  it("shows only the client's count for a partially introduced issue", async () => {
+    const host = mount({ execution_status: "completed", verdict: "warning", counts: { errors: 0, warnings: 1 }, issues: [partialIssue] });
+    await nextTick();
+    host.querySelector(".pitstop-toggle").click();
+    await nextTick();
+    const text = host.querySelector(".pitstop-issues").textContent;
+    expect(text).toContain("Transparency found (168x on pages 1-2)");
+    expect(text).not.toContain("1670");
+    expect(text).not.toContain("1502");
+  });
+
+  it("renders a DTO without baseline fields exactly as before", async () => {
+    const issue = { severity: "warning", action_id: 2079, occurrences: 1670, message: "Clipping objects found (1670x on pages 1-2)", locations: [{ page: 1, bbox: {} }] };
+    const host = mount({ execution_status: "completed", verdict: "warning", counts: { errors: 0, warnings: 1 }, issues: [issue] });
+    await nextTick();
+    host.querySelector(".pitstop-toggle").click();
+    await nextTick();
+    const items = [...host.querySelectorAll(".pitstop-issues li")];
+    expect(items).toHaveLength(1);
+    expect(items[0].textContent).toContain("Clipping objects found (1670x on pages 1-2)");
+    expect(items[0].textContent).toContain("страницы: 1");
+  });
+});
