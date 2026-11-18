@@ -149,3 +149,22 @@ describe("OrderCard expected size", () => {
     expect(host.textContent).toContain("438.0 × 318.0 мм");
   });
 });
+
+describe("OrderCard kit badge", () => {
+  it("shows the kit position and its main order", async () => {
+    const host = mount({
+      order_id: "26234882", customer_id: "36056", status: "warning", errors: [], files: [],
+      kit: { main_id: "26234881", member_ids: [], position: 2, size: 19 },
+    });
+    await nextTick();
+    const badge = host.querySelector(".kit-indicator");
+    expect(badge?.textContent).toContain("Комплект 2/19 · 26234881");
+    expect(badge?.getAttribute("title")).toContain("возвращает в Sborka весь комплект");
+  });
+
+  it("has no badge outside a kit", async () => {
+    const host = mount({ order_id: "1", customer_id: "2", status: "passed", errors: [], files: [] });
+    await nextTick();
+    expect(host.querySelector(".kit-indicator")).toBeNull();
+  });
+});

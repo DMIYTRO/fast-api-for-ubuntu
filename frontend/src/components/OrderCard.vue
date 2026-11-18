@@ -68,6 +68,15 @@ const rgbConvertedTitle = computed(() => {
 });
 const iccOffTitle = computed(() => iccOff(props.order));
 const sizeBadge = computed(() => sizeFixBadge(props.order));
+// Комплект Sborka: возврат любого его заказа возвращает весь комплект через главный заказ.
+const kit = computed(() => {
+  const value = props.order.kit;
+  return value && value.main_id ? value : null;
+});
+const kitTitle = computed(() => kit.value
+  ? `Комплект ${kit.value.main_id}: заказ ${kit.value.position} из ${kit.value.size}. `
+    + "Возврат любого заказа комплекта возвращает в Sborka весь комплект через главный заказ (один комментарий и превью главного)."
+  : "");
 const iccTitle = computed(() => iccOffTitle.value || "ICC-профиль не снимался");
 const fontsOutlinedTitle = computed(() => fonts.value?.converted ? "Шрифты переведены в кривые" : "Шрифты в кривые не переводились");
 const fonts = computed(() => fontsInfo(props.order));
@@ -226,6 +235,7 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
         <span class="rgb-cmyk-indicator" :class="{ inactive: !rgbConverted }" :title="rgbConvertedTitle" :aria-label="rgbConvertedTitle" role="img"><b class="c-r">R</b><b class="c-g">G</b><b class="c-b">B</b></span>
         <span class="icc-off-indicator" :class="{ inactive: !iccOffTitle }" :title="iccTitle" :aria-label="iccTitle" role="img">ICC off</span>
         <span class="fonts-outlined-indicator" :class="{ inactive: !fonts?.converted }" :title="fontsOutlinedTitle" :aria-label="fontsOutlinedTitle" role="img"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 16 9 4h2l5 12M6.5 11.5h7" /></svg></span>
+        <span v-if="kit" class="kit-indicator" :title="kitTitle" :aria-label="kitTitle">Комплект {{ kit.position }}/{{ kit.size }}<template v-if="kit.position !== 1"> · {{ kit.main_id }}</template></span>
         <span v-if="sizeBadge" class="callas-source-fix-indicator size-fix-indicator" :title="sizeBadge.title" :aria-label="sizeBadge.title">{{ sizeBadge.label }}</span>
         <span v-if="flattenedTiffs.length" class="tiff-flatten-indicator" :title="tiffFlattenTitle" :aria-label="tiffFlattenTitle">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" aria-hidden="true"><path d="m3 7 9-4 9 4-9 4-9-4Zm0 5 9 4 9-4M3 17l9 4 9-4" /></svg>

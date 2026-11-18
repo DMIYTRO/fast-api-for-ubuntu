@@ -74,6 +74,19 @@ const decorateOrder = (order, runId) => {
 };
 const decorateOrders = (data, runId) => list(data).map((order) => decorateOrder(order, runId));
 
+// Группы для возврата: заказы одного комплекта Sborka — вместе, главный (position 1) первым;
+// заказ вне комплекта — отдельная группа. Группы идут параллельно, заказы группы — по очереди.
+export const rejectGroups = (orders) => {
+  const groups = new Map();
+  orders.forEach((order, index) => {
+    const main = order.kit?.main_id;
+    const key = main ? `kit:${main}` : `order:${index}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(order);
+  });
+  return [...groups.values()].map((group) => [...group].sort((a, b) => (a.kit?.position ?? 0) - (b.kit?.position ?? 0)));
+};
+
 export const useChecksStore = defineStore("checks", {
   state: () => ({
     runs: [], activeRun: null, fileProgress: createRunFileProgress(), orders: [], config: null, loading: false, error: "",
@@ -390,17 +403,23 @@ export const useChecksStore = defineStore("checks", {
           conflict_strategy: conflictStrategy,
           confirm_failed_processing: forcedSelected,
         })]
-        : await Promise.all(selectedOrders.map((order) => {
-          const identity = orderIdentity(order);
-          const orderId = order.aggregate_id ?? order.order_id ?? order.id;
-          return api.prepareReject({
-            order_ids: [orderId],
-            run_id,
-            comment: [this.returnComments[identity] ?? this.returnComments[String(order.order_id ?? order.id)], comment].filter(Boolean).join("\n"),
-            ...(this.returnDesign[identity] || this.returnDesign[String(order.order_id ?? order.id)] || { design: true, design_cost: "0" }),
-            conflict_strategy: conflictStrategy,
-          });
-        }));
+        : (await Promise.all(rejectGroups(selectedOrders).map(async (group) => {
+          // Заказы одного комплекта — по очереди, главный первым: Sborka возвращает
+          // весь комплект через главный заказ, остальные бэкенд догоняет локально.
+          const groupResponses = [];
+          for (const order of group) {
+            const identity = orderIdentity(order);
+            const orderId = order.aggregate_id ?? order.order_id ?? order.id;
+            groupResponses.push(await api.prepareReject({
+              order_ids: [orderId],
+              run_id,
+              comment: [this.returnComments[identity] ?? this.returnComments[String(order.order_id ?? order.id)], comment].filter(Boolean).join("\n"),
+              ...(this.returnDesign[identity] || this.returnDesign[String(order.order_id ?? order.id)] || { design: true, design_cost: "0" }),
+              conflict_strategy: conflictStrategy,
+            }));
+          }
+          return groupResponses;
+        }))).flat();
       const result = responses.flatMap((response) => list(response));
       const resultIdentity = (item) => {
         const direct = orderIdentity(item);
