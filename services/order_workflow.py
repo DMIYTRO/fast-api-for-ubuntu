@@ -53,7 +53,7 @@ class OrderActionCommand:
     comment: str | None = None
     design: bool = True
     design_cost: str = "0"
-    conflict_strategy: str = "fail"
+    conflict_strategy: str = "replace"
     confirm_failed_processing: bool = False
 
 

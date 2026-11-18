@@ -477,7 +477,10 @@ class OrderWorkflowTests(unittest.TestCase):
             lifecycle_factory=FileLifecycle,
         )
 
-        result = service.prepare(self.command, "print")
+        result = service.prepare(
+            OrderActionCommand(("1001",), run_id="run-1", conflict_strategy="fail"),
+            "print",
+        )
 
         self.assertEqual(result["items"][0]["status"], "conflict")
         self.assertEqual(
@@ -485,6 +488,33 @@ class OrderWorkflowTests(unittest.TestCase):
             str(conflicted_path.resolve()),
         )
         self.assertIn("(новый)", result["items"][0]["conflict"]["suggested_name"])
+
+    def test_print_replaces_existing_files_by_default(self):
+        source = Path(self.temporary_directory.name) / "source.jpg"
+        pdf = Path(self.temporary_directory.name) / "PDF" / "source.pdf"
+        preview = Path(self.temporary_directory.name) / "Previews" / "source.png"
+        old = Path(self.temporary_directory.name) / "Processed" / "source.jpg"
+        source.write_bytes(b"new")
+        pdf.parent.mkdir(parents=True)
+        preview.parent.mkdir(parents=True)
+        old.parent.mkdir(parents=True)
+        pdf.write_bytes(b"pdf")
+        preview.write_bytes(b"preview")
+        old.write_bytes(b"old")
+        self.order["files"][0]["path"] = str(source)
+        self.order["pdf_path"] = str(pdf)
+        self.order["preview_paths"] = [str(preview)]
+        service = OrderWorkflowService(
+            self.coordinator,
+            self.database.session_factory,
+            lambda _order_id, _run_id: (self.run, self.order),
+            lifecycle_factory=FileLifecycle,
+        )
+
+        result = service.prepare(self.command, "print")
+
+        self.assertNotEqual(result["items"][0]["status"], "conflict")
+        self.assertEqual(old.read_bytes(), b"new")
 
     def test_print_sends_order_to_prepress_and_stores_response(self):
         BlockingLifecycle.release.set()
