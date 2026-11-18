@@ -111,7 +111,7 @@ class FileLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(
             transition.preview_paths,
-            [str(self.root / "Troubles" / "1001" / "face.png")],
+            [str(self.root / "Troubles" / "1001" / "Previews" / "face.png")],
         )
 
     def test_error_routing_removes_original_when_troubles_already_has_same_copy(self):
@@ -126,6 +126,78 @@ class FileLifecycleTests(unittest.TestCase):
         self.assertEqual(
             transition.source_paths[str(self.source)], str(existing)
         )
+
+    def test_return_of_pdf_order_with_same_named_built_pdf(self):
+        """Заказ 26234881: собранный PDF называется как исходный PDF клиента."""
+        name = "23_KS(K)_Bezlam_300_(90x50)_4-4_(36056-26234881)_1.pdf"
+        source = self.root / name
+        built = self.root / "PDF" / "Rework" / name
+        preview = self.root / "Previews" / name.replace(".pdf", "_face_preview.png")
+        built.parent.mkdir(parents=True)
+        source.write_bytes(b"client")
+        built.write_bytes(b"built")
+        preview.write_bytes(b"preview")
+        order = {
+            "order_id": "26234881",
+            "files": [{"path": str(source)}],
+            "pdf_path": str(built),
+            "preview_paths": [str(preview)],
+        }
+
+        transition = FileLifecycle(self.root).return_for_rework(order)
+
+        target = self.root / "Troubles" / "26234881"
+        self.assertEqual((target / name).read_bytes(), b"client")
+        self.assertEqual((target / "PDF" / name).read_bytes(), b"built")
+        self.assertEqual(transition.source_paths[str(source)], str(target / name))
+        self.assertEqual(transition.pdf_path, str(target / "PDF" / name))
+        self.assertEqual(transition.preview_paths, [str(target / "Previews" / preview.name)])
+        self.assertFalse(source.exists() or built.exists() or preview.exists())
+
+    def test_return_reuses_check_time_copy_and_keeps_error_note(self):
+        name = "job_(90x50)_4-4_(1-1001)-face.pdf"
+        source = self.root / name
+        built = self.root / "PDF" / "Failed" / name
+        built.parent.mkdir(parents=True)
+        source.write_bytes(b"client")
+        built.write_bytes(b"built")
+        target = self.root / "Troubles" / "1001"
+        target.mkdir(parents=True)
+        (target / name).write_bytes(b"client")
+        (target / f"{name}.error.txt").write_text("причина", encoding="utf-8")
+        order = {"order_id": "1001", "files": [{"path": str(source)}], "pdf_path": str(built), "preview_paths": []}
+
+        FileLifecycle(self.root).return_for_rework(order)
+
+        self.assertFalse(source.exists())
+        self.assertEqual((target / name).read_bytes(), b"client")
+        self.assertEqual((target / "PDF" / name).read_bytes(), b"built")
+        self.assertTrue((target / f"{name}.error.txt").exists())
+
+    def test_returned_order_can_be_rolled_back(self):
+        name = "job_(90x50)_4-0_(1-1001).pdf"
+        source = self.root / name
+        built = self.root / "PDF" / "Rework" / name
+        built.parent.mkdir(parents=True)
+        source.write_bytes(b"client")
+        built.write_bytes(b"built")
+        order = {"order_id": "1001", "files": [{"path": str(source)}], "pdf_path": str(built), "preview_paths": []}
+        lifecycle = FileLifecycle(self.root)
+
+        lifecycle.rollback(lifecycle.return_for_rework(order))
+
+        self.assertEqual(source.read_bytes(), b"client")
+        self.assertEqual(built.read_bytes(), b"built")
+
+    def test_return_still_rejects_two_sources_with_one_name(self):
+        other = self.root / "other" / "face.jpg"
+        other.parent.mkdir()
+        other.write_bytes(b"other")
+        order = dict(self.order, files=[{"path": str(self.source)}, {"path": str(other)}])
+
+        with self.assertRaises(FileLifecycleError):
+            FileLifecycle(self.root).return_for_rework(order)
+        self.assertTrue(self.source.exists() and other.exists())
 
 
 if __name__ == "__main__":
