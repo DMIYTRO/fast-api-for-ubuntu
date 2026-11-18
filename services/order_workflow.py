@@ -18,7 +18,7 @@ import shutil
 from core.share_tempdir import share_temp_dir
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Mapping
 
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
@@ -28,6 +28,7 @@ from server.models import OrderAction, OrderResult
 
 from .coordinator import RunCoordinator
 from .domain import validate_operator_transition
+from .order_kits import KitResolver, run_orders
 from .file_lifecycle import FileConflictError, FileLifecycle, FileLifecycleError
 from .callas_fix import read_state_file as read_callas_fix_state
 from .print_readiness import is_forced_print, pitstop_ready, print_blockers
@@ -58,6 +59,10 @@ class OrderActionCommand:
     confirm_failed_processing: bool = False
 
 
+#: Статусы заказа комплекта, которые возврат комплекта уже не меняет.
+TERMINAL_KIT_STATUSES = frozenset({"returned_for_rework", "accepted_for_print"})
+
+
 class OrderWorkflowService:
     def __init__(
         self,
@@ -78,7 +83,12 @@ class OrderWorkflowService:
         pdf_color_converter: Callable[[Path, Path, str], Any] | None = None,
         pdf_prepress_checker: Callable[..., dict[str, Any]] | None = None,
         pitstop_fix_baseline: FixBaselinePolicy | None = None,
+        kit_resolver: KitResolver | None = None,
     ) -> None:
+        # Комплекты Sborka (services/order_kits.py); None — заказы без комплектов.
+        self.kit_resolver = kit_resolver
+        self._kit_locks_guard = Lock()
+        self._kit_locks: dict[tuple[str, str], Lock] = {}
         self.pdf_color_converter = pdf_color_converter
         # None — сравнение с исходной проверкой PitStop не подключено (тесты, CLI).
         self.pitstop_fix_baseline = pitstop_fix_baseline
@@ -441,6 +451,185 @@ class OrderWorkflowService:
     def prepare(
         self, command: OrderActionCommand, action: str
     ) -> dict[str, list[dict[str, Any]]]:
+        """Отправить в печать или вернуть; заказы комплекта Sborka — как одна операция."""
+        if self.kit_resolver is not None and action == "reject" and self.rework_sender is not None:
+            return self._prepare_reject_with_kits(command)
+        if self.kit_resolver is not None and action == "print":
+            return self._prepare_print_with_kits(command)
+        return self._prepare(command, action)
+
+    @contextmanager
+    def _kit_lock(self, run_id: str, main_id: str):
+        """Один комплект обрабатывается одним запросом за раз (UI шлёт возвраты параллельно)."""
+        with self._kit_locks_guard:
+            lock = self._kit_locks.setdefault((run_id, main_id), Lock())
+        with lock:
+            yield
+
+    def _kit_of(self, order_ref: str, run_id: str | None, *, live: bool):
+        """``(run, order, kit)``; kit — ``None`` вне комплекта или если заказ не найден."""
+        try:
+            run, order = self.order_finder(order_ref, run_id)
+        except Exception:
+            return None, None, None
+        kits = self.kit_resolver.for_run(run, live=live) if self.kit_resolver else {}
+        return run, order, kits.get(str(order.get("order_id") or order.get("id") or ""))
+
+    @staticmethod
+    def _order_ref(order: dict[str, Any]) -> str:
+        return str(order.get("aggregate_id") or order.get("order_id") or order.get("id"))
+
+    def _prepare_print_with_kits(self, command: OrderActionCommand) -> dict[str, list[dict[str, Any]]]:
+        """Заказ комплекта, главный заказ которого уже возвращён, в печать не уходит."""
+        allowed: list[str] = []
+        blocked: list[dict[str, Any]] = []
+        for order_ref in command.order_ids:
+            run, order, kit = self._kit_of(order_ref, command.run_id, live=False)
+            if kit is None:
+                allowed.append(order_ref)
+                continue
+            main = next(
+                (item for item in run_orders(run) if str(item.get("order_id")) == kit["main_id"]),
+                None,
+            )
+            if main is not None and main.get("status") == "returned_for_rework":
+                blocked.append({
+                    "order_id": str(order.get("order_id")),
+                    "status": "rejected",
+                    "code": "kit_returned",
+                    "message": (
+                        f"Заказ входит в комплект {kit['main_id']}, который возвращён клиенту "
+                        "на доработку; в печать не отправлен."
+                    ),
+                })
+            else:
+                allowed.append(order_ref)
+        items = list(blocked)
+        if allowed:
+            items = self._prepare(replace(command, order_ids=tuple(allowed)), "print")["items"] + items
+        return {"items": items}
+
+    def _prepare_reject_with_kits(self, command: OrderActionCommand) -> dict[str, list[dict[str, Any]]]:
+        """Возврат: комплект — через главный заказ в Sborka, остальные — только локально.
+
+        Sborka при возврате главного заказа возвращает весь комплект, а возврат подзаказа
+        не подтверждает. Поэтому в Sborka уходит только главный заказ (с комментарием
+        этого запроса и превью главного), а все остальные заказы комплекта из этого
+        запуска переносятся в Troubles без запроса в Sborka. Если главный уже возвращён
+        (например, старый рассинхрон), остальные просто догоняются локально.
+        """
+        plain: list[str] = []
+        groups: dict[tuple[str, str], dict[str, Any]] = {}
+        for order_ref in command.order_ids:
+            run, order, kit = self._kit_of(order_ref, command.run_id, live=True)
+            if kit is None:
+                plain.append(order_ref)
+                continue
+            key = (str(run.get("id") or ""), str(kit["main_id"]))
+            group = groups.setdefault(key, {"kit": kit, "refs": []})
+            group["refs"].append(order_ref)
+        items: list[dict[str, Any]] = []
+        if plain:
+            items.extend(self._prepare(replace(command, order_ids=tuple(plain)), "reject")["items"])
+        for (run_id, main_id), group in groups.items():
+            with self._kit_lock(run_id, main_id):
+                items.extend(self._reject_kit(command, run_id, main_id, group["kit"], group["refs"]))
+        return {"items": items}
+
+    def _reject_kit(
+        self,
+        command: OrderActionCommand,
+        run_id: str,
+        main_id: str,
+        kit: dict[str, Any],
+        selected_refs: list[str],
+    ) -> list[dict[str, Any]]:
+        run, _ = self.order_finder(selected_refs[0], command.run_id)  # свежее состояние
+        by_id = {str(order.get("order_id")): order for order in run_orders(run)}
+        selected_ids = {
+            str((self._kit_of(ref, command.run_id, live=False)[1] or {}).get("order_id") or ref)
+            for ref in selected_refs
+        }
+        main = by_id.get(main_id)
+        size = kit.get("size") or len(kit.get("member_ids") or [])
+        if main is None:
+            return [
+                {
+                    "order_id": order_id,
+                    "status": "rejected",
+                    "code": "kit_main_missing",
+                    "message": (
+                        f"Заказ входит в комплект {main_id} ({size} заказов), но главного заказа "
+                        "нет в этой проверке. Sborka возвращает комплект только через главный "
+                        "заказ — добавьте его в проверку и верните."
+                    ),
+                }
+                for order_id in sorted(selected_ids)
+            ]
+        items: list[dict[str, Any]] = []
+        if main.get("status") != "returned_for_rework":
+            main_items = self._prepare(
+                replace(command, order_ids=(self._order_ref(main),)), "reject"
+            )["items"]
+            items.extend(main_items)
+            if not any(item.get("status") == "prepared" for item in main_items):
+                failed = next((item.get("message") for item in main_items if item.get("message")), "")
+                items.extend(
+                    {
+                        "order_id": order_id,
+                        "status": "rejected",
+                        "code": "kit_main_failed",
+                        "message": (
+                            f"Комплект {main_id} не возвращён: главный заказ не вернулся в "
+                            f"Sborka. {failed}"
+                        ).strip(),
+                    }
+                    for order_id in sorted(selected_ids - {main_id})
+                )
+                return items
+            logger.info("order.kit_returned run_id=%s main_id=%s size=%s", run_id, main_id, size)
+        elif main_id in selected_ids:
+            items.append({"order_id": main_id, "status": "prepared", "idempotent": True})
+
+        members = [
+            by_id[member] for member in kit.get("member_ids") or []
+            if member != main_id and member in by_id
+        ]
+        pending = [order for order in members if order.get("status") not in TERMINAL_KIT_STATUSES]
+        if pending:
+            local = {str(order.get("order_id")): main_id for order in pending}
+            items.extend(
+                self._prepare(
+                    replace(command, order_ids=tuple(self._order_ref(order) for order in pending)),
+                    "reject",
+                    kit_local=local,
+                )["items"]
+            )
+        for order in members:
+            order_id = str(order.get("order_id"))
+            if order.get("status") == "returned_for_rework" and order_id in selected_ids:
+                items.append({"order_id": order_id, "status": "prepared", "idempotent": True})
+            elif order.get("status") == "accepted_for_print":
+                items.append({
+                    "order_id": order_id,
+                    "status": "rejected",
+                    "code": "kit_member_printed",
+                    "message": (
+                        f"Заказ уже отправлен в печать, а Sborka вернула клиенту весь комплект "
+                        f"{main_id}: проверьте этот заказ вручную."
+                    ),
+                })
+        return items
+
+    def _prepare(
+        self,
+        command: OrderActionCommand,
+        action: str,
+        kit_local: Mapping[str, str] | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """``kit_local`` — заказы комплекта, возвращаемые без запроса в Sborka:
+        {номер заказа: главный заказ, уже возвращённый в Sborka}."""
+        kit_local = kit_local or {}
         results: list[dict[str, Any]] = []
         current_identity = {"order_id": "", "aggregate_id": "", "include_aggregate_id": False}
 
@@ -695,7 +884,11 @@ class OrderWorkflowService:
                         continue
                     previous_order = deepcopy(order)
                     return_preview_name = None
-                    if action == "reject" and self.rework_sender is not None:
+                    if (
+                        action == "reject"
+                        and self.rework_sender is not None
+                        and order_id not in kit_local
+                    ):
                         try:
                             return_preview_name = prepare_return_preview_name(
                                 order_id,
@@ -902,6 +1095,16 @@ class OrderWorkflowService:
                             prepress_result = self.prepress_sender(
                                 order_id, command.comment
                             )
+                        elif action == "reject" and order_id in kit_local:
+                            # Sborka уже вернула этот заказ вместе с главным заказом комплекта.
+                            prepress_result = {
+                                "kit_main_id": kit_local[order_id],
+                                "returned_with_kit": True,
+                                "message": (
+                                    f"Возвращён в составе комплекта {kit_local[order_id]}; "
+                                    "запрос в Sborka не отправлялся."
+                                ),
+                            }
                         elif action == "reject" and self.rework_sender is not None:
                             input_path = Path(run["options"]["input_path"])
                             with selected_custom_return_preview(

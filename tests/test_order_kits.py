@@ -1,0 +1,278 @@
+"""Комплекты Sborka: возврат одной операцией через главный заказ (комплект 26234881)."""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Lock
+
+from server.database import Database
+from server.models import CheckRun, OrderAction, OrderResult
+from services.file_lifecycle import FileTransition
+from services.order_kits import KitResolver, kits_from_order_info
+from services.order_workflow import OrderActionCommand, OrderWorkflowService
+from services.sborka_integration import SborkaIntegrationError
+
+MAIN, SECOND, THIRD, PLAIN = "26234881", "26234882", "26234883", "26234424"
+ORDER_INFO = [
+    {"id": MAIN, "status": "5", "sets_array": [{"id": SECOND, "status": "5"}, {"id": THIRD, "status": "5"}]},
+    {"id": PLAIN, "status": "5"},
+]
+
+
+def test_kits_from_order_info_maps_every_member_to_main():
+    kits = kits_from_order_info(ORDER_INFO)
+    assert set(kits) == {MAIN, SECOND, THIRD}
+    assert kits[THIRD] == {
+        "main_id": MAIN, "member_ids": [MAIN, SECOND, THIRD], "position": 3, "size": 3,
+    }
+    assert kits[MAIN]["position"] == 1
+
+
+def test_resolver_prefers_stored_kit_and_caches_live_lookup():
+    calls = []
+    resolver = KitResolver(lambda ids: calls.append(list(ids)) or ORDER_INFO)
+    stored_run = {"id": "r1", "orders": {"a": {"order_id": SECOND, "kit": {"main_id": MAIN}}}}
+    assert resolver.for_run(stored_run)[SECOND]["main_id"] == MAIN
+    assert calls == []
+
+    run = {"id": "r2", "orders": {MAIN: {"order_id": MAIN}, SECOND: {"order_id": SECOND}}}
+    assert resolver.for_run(run)[SECOND]["main_id"] == MAIN
+    assert resolver.for_run(run)[MAIN]["position"] == 1
+    assert calls == [[MAIN, SECOND]]  # один запрос на запуск
+    assert resolver.for_run({"id": "r3", "orders": {"x": {"order_id": MAIN}}}, live=False) == {}
+
+
+def test_resolver_failure_is_not_cached():
+    attempts = []
+
+    def fetcher(ids):
+        attempts.append(ids)
+        if len(attempts) == 1:
+            raise SborkaIntegrationError("timeout")
+        return ORDER_INFO
+
+    resolver = KitResolver(fetcher)
+    run = {"id": "r", "orders": {MAIN: {"order_id": MAIN}}}
+    assert resolver.for_run(run) == {}
+    assert resolver.for_run(run)[MAIN]["size"] == 3
+
+
+class Lifecycle:
+    calls: list[str] = []
+    guard = Lock()
+
+    def __init__(self, _input_dir: Path) -> None:
+        pass
+
+    def return_for_rework(self, order, **_kwargs):
+        with self.guard:
+            type(self).calls.append(str(order["order_id"]))
+        return FileTransition({}, None, [])
+
+    def accept_for_print(self, order, **_kwargs):
+        with self.guard:
+            type(self).calls.append(f"print:{order['order_id']}")
+        return FileTransition({}, None, [])
+
+    def rollback(self, _transition):
+        return None
+
+
+class Coordinator:
+    def __init__(self, run):
+        self.run = run
+        self.guard = Lock()
+
+    def apply_file_transition(self, _run_id, aggregate_id, **values):
+        with self.guard:
+            self.run["orders"][aggregate_id]["status"] = values["status"]
+
+    def restore_order_snapshot(self, _run_id, aggregate_id, previous):
+        with self.guard:
+            self.run["orders"][aggregate_id] = dict(previous)
+
+
+class KitReturnTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.database = Database(f"sqlite:///{Path(self.tmp.name) / 'state.sqlite3'}")
+        self.database.create_schema()
+        ids = [MAIN, SECOND, THIRD, PLAIN]
+        with self.database.session_factory() as session, session.begin():
+            session.add(CheckRun(id="run-1", input_path=self.tmp.name, direction="digital", status="completed"))
+            for index, order_id in enumerate(ids, start=1):
+                session.add(OrderResult(id=index, run_id="run-1", order_id=order_id, status="warning", passed=True))
+        self.run = {
+            "id": "run-1",
+            "options": {"input_path": self.tmp.name},
+            "orders": {
+                order_id: {
+                    "order_id": order_id, "aggregate_id": order_id, "status": "warning", "passed": True,
+                    "files": [], "pdf_path": None, "preview_paths": [],
+                }
+                for order_id in ids
+            },
+        }
+        self.sent: list[tuple[str, str]] = []
+        self.orderinfo_calls: list[list[str]] = []
+        Lifecycle.calls = []
+
+    def tearDown(self):
+        self.database.dispose()
+        self.tmp.cleanup()
+
+    def _sender(self, order_id, comment, _preview, _design, _cost):
+        self.sent.append((order_id, comment))
+        if order_id != MAIN and order_id != PLAIN:
+            # Так Sborka отвечает на возврат подзаказа комплекта.
+            raise SborkaIntegrationError("Sborka вернула пустой ответ на возврат заказа")
+        return {"http_status": 200, "response": {"raw": f"Заказ №{order_id} возвращен"}}
+
+    def _service(self, sender=None, fetcher=None):
+        def finder(order_ref, _run_id):
+            return self.run, self.run["orders"][order_ref]
+
+        def default_fetcher(ids):
+            self.orderinfo_calls.append(list(ids))
+            return ORDER_INFO
+
+        return OrderWorkflowService(
+            Coordinator(self.run),
+            self.database.session_factory,
+            finder,
+            lifecycle_factory=Lifecycle,
+            rework_sender=sender or self._sender,
+            kit_resolver=KitResolver(fetcher or default_fetcher),
+        )
+
+    def _reject(self, service, *ids, comment="Низька роздільна здатність"):
+        return service.prepare(OrderActionCommand(tuple(ids), run_id="run-1", comment=comment), "reject")["items"]
+
+    def _status(self, order_id):
+        return self.run["orders"][order_id]["status"]
+
+    def test_main_return_sends_only_main_and_returns_whole_kit_locally(self):
+        items = self._reject(self._service(), MAIN)
+
+        self.assertEqual(self.sent, [(MAIN, "Низька роздільна здатність")])
+        self.assertEqual({item["order_id"]: item["status"] for item in items},
+                         {MAIN: "prepared", SECOND: "prepared", THIRD: "prepared"})
+        for order_id in (MAIN, SECOND, THIRD):
+            self.assertEqual(self._status(order_id), "returned_for_rework")
+        self.assertEqual(self._status(PLAIN), "warning")
+        member = next(item for item in items if item["order_id"] == SECOND)
+        self.assertTrue(member["prepress"]["returned_with_kit"])
+        self.assertEqual(member["prepress"]["kit_main_id"], MAIN)
+        self.assertEqual(sorted(Lifecycle.calls), sorted([MAIN, SECOND, THIRD]))
+
+    def test_selecting_only_a_member_returns_kit_through_main(self):
+        items = self._reject(self._service(), THIRD)
+
+        self.assertEqual([order_id for order_id, _ in self.sent], [MAIN])
+        self.assertEqual(self._status(MAIN), "returned_for_rework")
+        self.assertEqual(self._status(SECOND), "returned_for_rework")
+        self.assertEqual(self._status(THIRD), "returned_for_rework")
+        self.assertIn(THIRD, {item["order_id"] for item in items if item["status"] == "prepared"})
+
+    def test_parallel_requests_like_the_ui_call_sborka_once(self):
+        service = self._service()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(lambda order_id: self._reject(service, order_id), [SECOND, THIRD, MAIN, PLAIN]))
+
+        self.assertEqual(sorted(order_id for order_id, _ in self.sent), sorted([MAIN, PLAIN]))
+        for order_id in (MAIN, SECOND, THIRD, PLAIN):
+            self.assertEqual(self._status(order_id), "returned_for_rework")
+        flat = [item for result in results for item in result]
+        self.assertFalse([item for item in flat if item["status"] not in {"prepared"}], flat)
+
+    def test_desynced_kit_is_caught_up_without_calling_sborka(self):
+        """Рассинхрон 18.11: главный уже возвращён, подзаказы остались активными."""
+        self.run["orders"][MAIN]["status"] = "returned_for_rework"
+
+        items = self._reject(self._service(), SECOND, THIRD)
+
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self._status(SECOND), "returned_for_rework")
+        self.assertEqual(self._status(THIRD), "returned_for_rework")
+        self.assertEqual({item["status"] for item in items}, {"prepared"})
+        with self.database.session_factory() as session:
+            actions = session.query(OrderAction).all()
+            self.assertTrue(all(action.status == "prepared" for action in actions))
+
+    def test_failed_main_return_keeps_kit_untouched(self):
+        def failing(order_id, *_args):
+            raise SborkaIntegrationError("Sborka не отвечает")
+
+        items = self._reject(self._service(sender=failing), SECOND)
+
+        for order_id in (MAIN, SECOND, THIRD):
+            self.assertEqual(self._status(order_id), "warning")
+        member = next(item for item in items if item["order_id"] == SECOND)
+        self.assertEqual(member["code"], "kit_main_failed")
+        self.assertIn("Sborka не отвечает", member["message"])
+
+    def test_missing_main_is_reported_not_sent(self):
+        del self.run["orders"][MAIN]
+
+        items = self._reject(self._service(), SECOND)
+
+        self.assertEqual(self.sent, [])
+        self.assertEqual(items[0]["code"], "kit_main_missing")
+        self.assertEqual(self._status(SECOND), "warning")
+
+    def test_orderinfo_failure_falls_back_to_plain_return(self):
+        def broken(_ids):
+            raise SborkaIntegrationError("timeout")
+
+        items = self._reject(self._service(fetcher=broken), PLAIN)
+
+        self.assertEqual(self.sent, [(PLAIN, "Низька роздільна здатність")])
+        self.assertEqual(items[0]["status"], "prepared")
+
+    def test_printed_member_is_reported(self):
+        self.run["orders"][THIRD]["status"] = "accepted_for_print"
+
+        items = self._reject(self._service(), MAIN)
+
+        printed = next(item for item in items if item["order_id"] == THIRD)
+        self.assertEqual(printed["code"], "kit_member_printed")
+        self.assertEqual(self._status(THIRD), "accepted_for_print")
+
+    def test_print_of_member_is_blocked_after_kit_return(self):
+        self.run["orders"][MAIN]["status"] = "returned_for_rework"
+        for order in self.run["orders"].values():
+            order["kit"] = kits_from_order_info(ORDER_INFO).get(order["order_id"])
+            if order["kit"] is None:
+                del order["kit"]
+        service = self._service()
+
+        items = service.prepare(OrderActionCommand((SECOND,), run_id="run-1"), "print")["items"]
+
+        self.assertEqual(items[0]["code"], "kit_returned")
+        self.assertNotIn(f"print:{SECOND}", Lifecycle.calls)
+        self.assertEqual(self.orderinfo_calls, [])  # печать не ходит в Sborka за составом
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+def test_check_stores_kit_on_orders_and_dto(tmp_path):
+    from services.batch_adapter import BatchProcessorAdapter, ProcessingOptions
+    from services.dto import order_check_to_dto
+    from tests.test_postpress import _InspectingProcessor
+
+    adapter = BatchProcessorAdapter(
+        ProcessingOptions(input_path=str(tmp_path), direction="digital"),
+        processor_factory=_InspectingProcessor,
+        order_info_fetcher=lambda _ids: [{"id": "100", "sets_array": [{"id": "101"}]}],
+    )
+
+    orders = adapter.scan_and_inspect()
+
+    assert orders[0].kit == {"main_id": "100", "member_ids": ["100", "101"], "position": 1, "size": 2}
+    assert orders[1].kit["position"] == 2
+    assert order_check_to_dto(orders[1])["kit"]["main_id"] == "100"

@@ -27,6 +27,7 @@ from services.pitstop.baseline import (
 from services.callas_fix import source_signature_matches
 from services.callas_source_fix import STALE_SOURCE_WARNING
 from services.pdf_routing import FAILED_FOLDER, completed_status, route_pdf
+from services.order_kits import kits_from_order_info
 from services.postpress import normalize_postpress
 
 
@@ -116,6 +117,7 @@ class BatchProcessorAdapter:
         self._order_info_future: Future[list[dict[str, Any]]] | None = None
         self._order_info_deadline = 0.0
         self._order_info_by_id: dict[str, dict[str, Any]] | None = None
+        self._kits_by_id: dict[str, dict[str, Any]] = {}
         self._order_info_failed = False
         self._order_info_lock = threading.Lock()
         profile = get_profile(options.direction)
@@ -171,6 +173,7 @@ class BatchProcessorAdapter:
         # for it (bounded by order_info_timeout_seconds) before using it.
         self._order_info_future = None
         self._order_info_by_id = None
+        self._kits_by_id = {}
         self._order_info_failed = False
         for order in self.processor.iter_inspect_orders():
             if self._order_info_future is None:
@@ -213,9 +216,13 @@ class BatchProcessorAdapter:
                         for item in self._order_info_records(records)
                         if item.get("id") is not None
                     }
+                    self._kits_by_id = kits_from_order_info(records)
                 record = self._order_info_by_id.get(order.order_id)
+                kit = self._kits_by_id.get(order.order_id)
             if record is not None:
                 order.postpress = normalize_postpress(record.get("post_text"))
+            if kit is not None:
+                order.kit = dict(kit)
         except Exception as exc:
             # Metadata failure must never block artwork validation.
             with self._order_info_lock:

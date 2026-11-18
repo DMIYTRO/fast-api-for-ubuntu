@@ -60,6 +60,7 @@ from services.pitstop import (
     SSHSettings,
     SSHTransport,
 )
+from services.order_kits import KitResolver
 from services.sborka_integration import (
     build_order_info_fetcher,
     build_rework_sender,
@@ -1096,6 +1097,15 @@ def create_app(
         preview_uploader=build_ftp_preview_uploader(
             PROJECT_DIR / "sborka_ftp_credentials.json",
             timeout=settings.sborka_timeout_seconds,
+        ),
+        kit_resolver=(
+            KitResolver(
+                build_order_info_fetcher(
+                    settings.sborka_api_dir, timeout=settings.sborka_timeout_seconds
+                )
+            )
+            if settings.sborka_enabled
+            else None
         ),
     )
     application.state.log_path = log_path

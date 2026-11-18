@@ -645,3 +645,20 @@ describe("checks store", () => {
     });
   });
 });
+
+describe("rejectGroups", () => {
+  it("keeps kit orders together with the main order first", async () => {
+    const { rejectGroups } = await import("./checks.js");
+    const kit = (position) => ({ main_id: "26234881", position, size: 3 });
+    const groups = rejectGroups([
+      { order_id: "26234883", kit: kit(3) },
+      { order_id: "26234424" },
+      { order_id: "26234881", kit: kit(1) },
+      { order_id: "26234882", kit: kit(2) },
+    ]);
+    expect(groups.map((group) => group.map((order) => order.order_id))).toEqual([
+      ["26234881", "26234882", "26234883"],
+      ["26234424"],
+    ]);
+  });
+});
