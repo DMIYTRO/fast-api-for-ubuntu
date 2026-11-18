@@ -93,33 +93,63 @@ class KitResolver:
     def __init__(self, fetcher: Callable[[Sequence[str]], list[dict[str, Any]]] | None) -> None:
         self.fetcher = fetcher
         self._guard = Lock()
-        self._cache: OrderedDict[str, dict[str, dict[str, Any]]] = OrderedDict()
+        # {run_id: {"looked_up": номера, уже спрошенные у Sborka, "kits": найденное}}
+        self._cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
     def for_run(self, run: Mapping[str, Any], *, live: bool = True) -> dict[str, dict[str, Any]]:
+        """``{номер заказа: комплект}`` для заказов запуска.
+
+        Сохранённые при проверке комплекты дополняются живым ``orderinfo`` для остальных
+        заказов (главного может не быть в проверке); живой результат кэшируется на запуск.
+        ``live=False`` — без запросов в Sborka (только сохранённое и кэш).
+        """
         orders = run_orders(run)
-        stored = {
+        kits = {
             str(order.get("order_id")): dict(order["kit"])
             for order in orders
             if isinstance(order.get("kit"), Mapping) and order.get("order_id") is not None
         }
-        if stored:
-            return stored
+        unresolved = [order for order in orders if order.get("order_id") and str(order.get("order_id")) not in kits]
+        if not unresolved:
+            return kits
         run_id = str(run.get("id") or "")
         with self._guard:
-            if run_id in self._cache:
+            entry = self._cache.get(run_id)
+            if entry is not None:
                 self._cache.move_to_end(run_id)
-                return self._cache[run_id]
-        if not live or self.fetcher is None:
-            return {}
-        order_ids = sorted({str(order.get("order_id")) for order in orders if order.get("order_id")})
-        if not order_ids:
-            return {}
+            looked_up = set(entry["looked_up"]) if entry else set()
+            cached = dict(entry["kits"]) if entry else {}
+        # Заказы, которые ещё не искали (проверка идёт — они появляются по одному).
+        fresh = [order for order in unresolved if str(order.get("order_id")) not in looked_up]
+        if fresh and live and self.fetcher is not None:
+            found = self._lookup(run_id, fresh)
+            if found is not None:
+                cached.update(found)
+                looked_up.update(str(order.get("order_id")) for order in fresh)
+                with self._guard:
+                    self._cache[run_id] = {"looked_up": looked_up, "kits": cached}
+                    self._cache.move_to_end(run_id)
+                    while len(self._cache) > _CACHE_RUNS:
+                        self._cache.popitem(last=False)
+                logger.info(
+                    "order_kits.resolved run_id=%s orders=%d kits=%d",
+                    run_id, len(fresh), len({kit["main_id"] for kit in found.values()}),
+                )
+        for order in unresolved:
+            order_id = str(order.get("order_id"))
+            if order_id in cached:
+                kits[order_id] = cached[order_id]
+        return kits
+
+    def _lookup(self, run_id: str, orders: list[dict[str, Any]]) -> dict[str, dict[str, Any]] | None:
+        """Живой ``orderinfo``: сами заказы, затем предполагаемые главные; ``None`` — ошибка."""
+        order_ids = sorted({str(order.get("order_id")) for order in orders})
         try:
             kits = kits_from_order_info(self.fetcher(order_ids))
         except Exception as exc:
             logger.warning("order_kits.orderinfo_failed run_id=%s error=%s", run_id, exc)
-            return {}
-        # Главного заказа может не быть в запуске (уже возвращён и перенесён в Troubles),
+            return None
+        # Главного заказа может не быть в запуске (уже возвращён или придёт позже),
         # а подзаказ Sborka отдельно не отдаёт: спросить предполагаемые главные заказы.
         known = set(order_ids)
         candidates = {
@@ -133,13 +163,8 @@ class KitResolver:
                 extra = kits_from_order_info(self.fetcher(sorted(candidates)))
             except Exception as exc:
                 logger.warning("order_kits.candidate_orderinfo_failed run_id=%s error=%s", run_id, exc)
-                return {}
+                return None
             for order_id in known:
                 if order_id not in kits and order_id in extra:
                     kits[order_id] = extra[order_id]
-        with self._guard:
-            self._cache[run_id] = kits
-            while len(self._cache) > _CACHE_RUNS:
-                self._cache.popitem(last=False)
-        logger.info("order_kits.resolved run_id=%s kits=%d", run_id, len({k["main_id"] for k in kits.values()}))
-        return kits
+        return {order_id: kit for order_id, kit in kits.items() if order_id in known}

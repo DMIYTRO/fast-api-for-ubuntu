@@ -84,6 +84,18 @@ def test_resolver_finds_main_order_outside_the_run_by_file_name():
     assert kits[SECOND]["main_id"] == MAIN and kits[THIRD]["position"] == 3
 
 
+def test_resolver_merges_stored_kits_with_live_lookup():
+    other = {"id": "9000001", "sets_array": [{"id": "9000002"}]}
+    resolver = KitResolver(lambda ids: [r for r in [*ORDER_INFO, other] if r["id"] in ids])
+    run = {"id": "r", "orders": {
+        MAIN: {"order_id": MAIN, "kit": {"main_id": MAIN, "member_ids": [MAIN, SECOND, THIRD], "position": 1, "size": 3}},
+        "9000002": {"order_id": "9000002", "files": _kit_file("9000002", 2)},
+    }}
+    kits = resolver.for_run(run)
+    assert kits[MAIN]["main_id"] == MAIN and kits["9000002"]["main_id"] == "9000001"
+    assert resolver.for_run(run, live=False)["9000002"]["main_id"] == "9000001"  # из кэша
+
+
 def test_resolver_ignores_unconfirmed_candidate():
     resolver = KitResolver(_sborka_orderinfo)
     run = {"id": "r", "orders": {"5000002": {"order_id": "5000002", "files": _kit_file("5000002", 2)}}}
@@ -244,14 +256,64 @@ class KitReturnTests(unittest.TestCase):
         self.assertEqual(member["code"], "kit_main_failed")
         self.assertIn("Sborka не отвечает", member["message"])
 
-    def test_missing_main_is_reported_not_sent(self):
+    def test_main_not_yet_in_run_is_returned_by_its_number(self):
+        """Часть комплекта пришла раньше главного: возврат уходит под номером главного."""
         del self.run["orders"][MAIN]
 
         items = self._reject(self._service(), SECOND)
 
+        self.assertEqual(self.sent, [(MAIN, "Низька роздільна здатність")])
+        self.assertEqual(self._status(SECOND), "returned_for_rework")
+        self.assertEqual(self._status(THIRD), "returned_for_rework")
+        carrier = next(item for item in items if item["order_id"] == SECOND)
+        self.assertEqual(carrier["prepress"]["kit_main_id"], MAIN)
+        self.assertTrue(carrier["prepress"]["sent_as_kit_main"])
+
+    def test_rest_of_kit_in_a_later_run_is_caught_up_without_sborka(self):
+        del self.run["orders"][MAIN]
+        del self.run["orders"][THIRD]
+        self._reject(self._service(), SECOND)
+        self.assertEqual([order_id for order_id, _ in self.sent], [MAIN])
+
+        # Следующая проверка: пришли главный и третий заказ комплекта.
+        self.run["orders"][MAIN] = {"order_id": MAIN, "aggregate_id": MAIN, "status": "warning", "files": [], "preview_paths": []}
+        self.run["orders"][THIRD] = {"order_id": THIRD, "aggregate_id": THIRD, "status": "warning", "files": [], "preview_paths": []}
+        items = self._reject(self._service(), MAIN)
+
+        self.assertEqual([order_id for order_id, _ in self.sent], [MAIN])  # второго запроса нет
+        self.assertEqual(self._status(MAIN), "returned_for_rework")
+        self.assertEqual(self._status(THIRD), "returned_for_rework")
+        self.assertTrue(all(item.get("prepress", {}).get("returned_with_kit") for item in items))
+
+    def test_orders_still_being_checked_are_not_touched(self):
+        """18.11 23:52: возврат забрал заказы посреди проверки, и её итог перезаписал статус."""
+        service = self._service()
+        busy = {THIRD}
+        service.coordinator.order_in_progress = lambda _run, ref: ref in busy
+
+        items = self._reject(service, MAIN)
+
+        self.assertEqual(self._status(MAIN), "returned_for_rework")
+        self.assertEqual(self._status(SECOND), "returned_for_rework")
+        self.assertEqual(self._status(THIRD), "warning")
+        self.assertNotIn(THIRD, Lifecycle.calls)
+        busy_item = next(item for item in items if item["order_id"] == THIRD)
+        self.assertEqual(busy_item["code"], "order_in_progress")
+
+        busy.clear()  # проверка закончилась — догоняем без Sborka
+        self._reject(service, THIRD)
+        self.assertEqual(self._status(THIRD), "returned_for_rework")
+        self.assertEqual([order_id for order_id, _ in self.sent], [MAIN])
+
+    def test_plain_order_still_being_checked_is_refused(self):
+        service = self._service()
+        service.coordinator.order_in_progress = lambda _run, ref: ref == PLAIN
+
+        items = self._reject(service, PLAIN)
+
+        self.assertEqual(items[0]["code"], "order_in_progress")
         self.assertEqual(self.sent, [])
-        self.assertEqual(items[0]["code"], "kit_main_missing")
-        self.assertEqual(self._status(SECOND), "warning")
+        self.assertEqual(self._status(PLAIN), "warning")
 
     def test_main_returned_in_earlier_run_catches_up_members_locally(self):
         """Повторная проверка без главного заказа: он возвращён в прошлой проверке."""
@@ -322,3 +384,36 @@ def test_check_stores_kit_on_orders_and_dto(tmp_path):
     assert orders[0].kit == {"main_id": "100", "member_ids": ["100", "101"], "position": 1, "size": 2}
     assert orders[1].kit["position"] == 2
     assert order_check_to_dto(orders[1])["kit"]["main_id"] == "100"
+
+
+def test_coordinator_reports_orders_still_being_processed():
+    import threading
+    from types import SimpleNamespace
+
+    from services.coordinator import RunCoordinator
+
+    coordinator = object.__new__(RunCoordinator)
+    coordinator._lock = threading.RLock()
+    run = {"orders": {
+        "1": {"order_id": "1", "aggregate_id": "a1", "status": "error"},
+        "2": {"order_id": "2", "aggregate_id": "a2", "status": "warning"},
+        "3": {"order_id": "3", "aggregate_id": "a3", "status": "waiting_confirmation"},
+    }}
+    context = SimpleNamespace(run=run, orders={"1": 0, "2": 0, "3": 0}, finished_keys={"2"}, timed_out_keys=set())
+    coordinator._contexts = {"run": context}
+
+    assert coordinator.order_in_progress("run", "a1") is True   # «error» после осмотра, PDF ещё строится
+    assert coordinator.order_in_progress("run", "a2") is False  # обработка закончена
+    assert coordinator.order_in_progress("run", "a3") is False  # ждёт подтверждения оператора
+    assert coordinator.order_in_progress("other", "a1") is False
+
+
+def test_resolver_looks_up_orders_that_appear_later_in_a_running_check():
+    calls = []
+    resolver = KitResolver(lambda ids: calls.append(list(ids)) or _sborka_orderinfo(ids))
+    run = {"id": "r", "orders": {SECOND: {"order_id": SECOND, "files": _kit_file(SECOND, 2)}}}
+    assert resolver.for_run(run)[SECOND]["main_id"] == MAIN
+    run["orders"][THIRD] = {"order_id": THIRD, "files": _kit_file(THIRD, 3)}
+    assert resolver.for_run(run)[THIRD]["main_id"] == MAIN
+    assert resolver.for_run(run)[SECOND]["main_id"] == MAIN
+    assert calls == [[SECOND], [MAIN], [THIRD], [MAIN]]

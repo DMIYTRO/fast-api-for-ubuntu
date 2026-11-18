@@ -54,3 +54,23 @@ describe("ActionBar print eligibility", () => {
     expect(actions).toEqual([["print", "", true]]);
   });
 });
+
+describe("ActionBar kit warning", () => {
+  it("warns that Sborka returns the whole kit", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const app = createApp(ActionBar, {
+      count: 2, selectedIds: ["a", "b"], canPrint: false, busy: false,
+      kits: [{ main_id: "26234881", size: 19, selected: 2 }],
+    });
+    app.mount(host);
+    cleanup.push(() => { app.unmount(); host.remove(); });
+    await nextTick();
+    [...document.querySelectorAll(".action-bar button")]
+      .find((button) => button.textContent === "Вернуть на доработку").click();
+    await nextTick();
+    const warning = document.querySelector(".kit-return-warning");
+    expect(warning?.textContent).toContain("Комплект 26234881 (19 заказов, выбрано 2)");
+    expect(warning?.textContent).toContain("Sborka вернёт клиенту весь комплект");
+  });
+});

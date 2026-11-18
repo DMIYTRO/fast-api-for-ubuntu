@@ -662,3 +662,30 @@ describe("rejectGroups", () => {
     ]);
   });
 });
+
+describe("run kits", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  it("annotates orders with kits from the API and lists selected kits", async () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1" };
+    store.orders = [{ order_id: "26234883" }, { order_id: "26234424" }];
+    vi.spyOn(api, "runKits").mockResolvedValue({
+      kits: { 26234883: { main_id: "26234881", member_ids: [], position: 3, size: 19 } },
+    });
+
+    await store.loadKits("run-1");
+    store.toggle(store.orders[0]);
+    store.toggle(store.orders[1]);
+
+    expect(store.orders[0].kit.main_id).toBe("26234881");
+    expect(store.orders[1].kit).toBeUndefined();
+    expect(store.selectedKits).toEqual([{ main_id: "26234881", size: 19, selected: 1 }]);
+    await store.loadKits("run-1");
+    expect(api.runKits).toHaveBeenCalledTimes(1); // повтор не чаще раза в 20 с
+  });
+});

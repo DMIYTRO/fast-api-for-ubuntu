@@ -93,6 +93,7 @@ export const useChecksStore = defineStore("checks", {
     connection: "closed", selected: [], selectedOrderSnapshots: {}, filter: localStorage.getItem("im-filter") || "passed",
     search: "", page: 1, pageSize: 10, pageInfo: { total: 0, total_pages: 1, counts: {} },
     runSelectionSequence: 0, runResyncSequence: 0,
+    runKits: {}, runKitsLoadedAt: {},
     events: [], drawerOpen: false, stopEvents: null, actionResults: {}, returnComments: {}, returnDesign: {}, conflictPrompt: null,
   }),
   getters: {
@@ -105,6 +106,18 @@ export const useChecksStore = defineStore("checks", {
         const text = [order.order_id, order.id, order.customer_id, ...(order.files || []).map((file) => file.filename)].join(" ").toLowerCase();
         return filterOk && (!query || text.includes(query));
       });
+    },
+    // Комплекты Sborka среди выбранных заказов: [{ main_id, size, selected }].
+    selectedKits() {
+      const kits = new Map();
+      for (const order of this.selectedOrders) {
+        const kit = order.kit;
+        if (!kit?.main_id) continue;
+        const entry = kits.get(kit.main_id) || { main_id: kit.main_id, size: kit.size, selected: 0 };
+        entry.selected += 1;
+        kits.set(kit.main_id, entry);
+      }
+      return [...kits.values()];
     },
     selectedOrders: (state) => state.selected.map((id) => state.selectedOrderSnapshots[id] || state.orders.find((order) => orderIdentity(order) === String(id) || String(order.order_id ?? order.id) === String(id))).filter(Boolean),
     printBlockReason() { return this.selectedOrders.filter((order) => !isOrderSendable(order)).map(printBlockMessage).filter(Boolean).join(" ") || "В печать можно отправить только зелёные и жёлтые заказы, а заказы с ошибками — при наличии готового PDF и с подтверждением"; },
@@ -143,6 +156,8 @@ export const useChecksStore = defineStore("checks", {
       if (page > totalPages) return this.loadOrders(totalPages);
       this.page = result.page || page;
       this.orders = decorateOrders(result, runId);
+      this._applyKits(runId);
+      this.loadKits(runId).catch(() => {});
       this.pageInfo = { total: result.total || 0, total_pages: result.total_pages || 1, counts: result.counts || {} };
       for (const order of this.orders) {
         const id = orderIdentity(order);
@@ -221,6 +236,27 @@ export const useChecksStore = defineStore("checks", {
       this.activeRun = run;
       await this.loadOrders(this.page);
     },
+    // Комплекты Sborka запуска (GET /api/checks/{id}/kits): значок и предупреждение при
+    // возврате, в том числе для старых проверок и проверок без главного заказа.
+    async loadKits(runId, { force = false } = {}) {
+      if (!runId) return;
+      const now = Date.now();
+      if (!force && now - (this.runKitsLoadedAt[runId] || 0) < 20000) return;
+      this.runKitsLoadedAt[runId] = now;
+      const result = await api.runKits(runId);
+      this.runKits[runId] = result?.kits || {};
+      if (String(this.activeRun?.id) === String(runId)) this._applyKits(runId);
+    },
+    _applyKits(runId) {
+      const kits = this.runKits[runId];
+      if (!kits) return;
+      const apply = (order) => {
+        const kit = kits[String(order.order_id ?? order.id)];
+        if (kit && !order.kit) order.kit = kit;
+      };
+      this.orders.forEach(apply);
+      Object.values(this.selectedOrderSnapshots).forEach(apply);
+    },
     async refreshOrders(id = this.activeRun?.id) {
       if (!id) return;
       await this.loadOrders(this.page);
@@ -246,6 +282,10 @@ export const useChecksStore = defineStore("checks", {
       if (event.processed != null && event.total) this.activeRun.progress = Math.round(event.processed / event.total * 100);
       Object.assign(this.activeRun || {}, event.run || {});
       const orderData = event.order ? decorateOrder(event.order, this.activeRun?.id) : null;
+      if (orderData && !orderData.kit) {
+        const kit = this.runKits[this.activeRun?.id]?.[String(orderData.order_id ?? orderData.id)];
+        if (kit) orderData.kit = kit;
+      }
       if (orderData || event.order_id != null) orderEventRevision += 1;
       if (orderData) {
         const id = orderIdentity(orderData);

@@ -741,6 +741,26 @@ class RunCoordinator:
             audit.append(entry)
         return audit
 
+    def order_in_progress(self, run_id: str, order_id: str) -> bool:
+        """Заказ ещё обрабатывается активной проверкой: её итог перезапишет перенос файлов.
+
+        Заказ, ожидающий подтверждения коррекции, обработкой не считается.
+        """
+        with self._lock:
+            context = self._contexts.get(run_id)
+            if context is None:
+                return False
+            try:
+                key = _stored_order_key(context.run, order_id) or order_id
+            except AmbiguousOrderError:
+                return False
+            if key not in context.orders:
+                return False
+            if key in context.finished_keys or key in context.timed_out_keys:
+                return False
+            order = (context.run.get("orders") or {}).get(key) or {}
+            return order.get("status") != "waiting_confirmation"
+
     def apply_file_transition(
         self,
         run_id: str,
