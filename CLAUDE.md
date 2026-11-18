@@ -55,3 +55,5 @@ Image Magic is a prepress checker: it validates raster artwork for print orders,
 ## Configuration
 
 Settings come from `IMAGE_MAGIC_*` environment variables, read by `Settings.from_env()` in `server/settings.py`. User paths are confined to `IMAGE_MAGIC_ALLOWED_ROOTS`. Logs are written to `logs/image-magic.log`.
+
+Temporary work folders on the SMB share (`/mnt/shared`) must use `core/share_tempdir.share_temp_dir`, not `tempfile.TemporaryDirectory`: on CIFS a file still held open by another client (callas, PitStop) makes `rmdir` fail with `[Errno 39] Directory not empty` for a moment, so cleanup is retried (0.5/1/2 s) and then only logged (`share_tempdir.cleanup_deferred`), never failing an order whose PDF is already published; `create_pdfs` and the diagnostic PDF sweep hidden Image Magic temp folders older than an hour (`sweep_stale_temp_dirs`).

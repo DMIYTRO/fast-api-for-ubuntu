@@ -14,7 +14,8 @@ import logging
 import json
 import os
 import shutil
-import tempfile
+
+from core.share_tempdir import share_temp_dir
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -233,7 +234,7 @@ class OrderWorkflowService:
         previous = Path(str(order["pdf_path"])) if order.get("pdf_path") else None
         root = pdf_root_for(previous) if previous else Path(run["options"]["input_path"]) / "PDF"
         root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix=".revision-", dir=root) as backup_dir:
+        with share_temp_dir(prefix=".revision-", dir=root) as backup_dir:
             backup = Path(backup_dir) / "previous.pdf"
             if previous and previous.is_file():
                 shutil.copy2(previous, backup)
