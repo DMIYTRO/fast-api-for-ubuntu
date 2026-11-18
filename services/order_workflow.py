@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import hashlib
@@ -59,6 +60,9 @@ class OrderActionCommand:
     confirm_failed_processing: bool = False
 
 
+#: Сколько помним возврат комплекта: позже подзаказы снова идут через Sborka
+#: (клиент мог исправить и отправить комплект заново).
+KIT_RETURN_MEMORY = timedelta(days=3)
 #: Статусы заказа комплекта, которые возврат комплекта уже не меняет.
 TERMINAL_KIT_STATUSES = frozenset({"returned_for_rework", "accepted_for_print"})
 
@@ -544,63 +548,86 @@ class OrderWorkflowService:
         kit: dict[str, Any],
         selected_refs: list[str],
     ) -> list[dict[str, Any]]:
+        """Возврат комплекта (вызывается под блокировкой комплекта).
+
+        1. Комплект уже возвращён (главный — в этом запуске или недавно у нас) — все
+           заказы комплекта этого запуска возвращаются локально.
+        2. Главный в запуске — в Sborka уходит главный, остальные — локально.
+        3. Главного в запуске нет (придёт позже или уже в Troubles без записи) — в Sborka
+           уходит номер главного с комментарием и превью выбранного заказа, остальные —
+           локально. Заказы комплекта из следующих проверок догоняются по п. 1.
+        Заказы, которые ещё проверяются, не трогаются: их догоняют после проверки.
+        """
         run, _ = self.order_finder(selected_refs[0], command.run_id)  # свежее состояние
         by_id = {str(order.get("order_id")): order for order in run_orders(run)}
-        selected_ids = {
+        selected_ids = [
             str((self._kit_of(ref, command.run_id, live=False)[1] or {}).get("order_id") or ref)
             for ref in selected_refs
-        }
-        main = by_id.get(main_id)
+        ]
         size = kit.get("size") or len(kit.get("member_ids") or [])
-        # Главного нет в этом запуске, но мы уже вернули его в другой проверке: Sborka
-        # вернула весь комплект — остальные заказы догоняем локально.
-        main_returned_elsewhere = main is None and self._returned_in_history(main_id)
-        if main is None and not main_returned_elsewhere:
-            return [
-                {
-                    "order_id": order_id,
-                    "status": "rejected",
-                    "code": "kit_main_missing",
-                    "message": (
-                        f"Заказ входит в комплект {main_id} ({size} заказов), но главного заказа "
-                        "нет в этой проверке. Sborka возвращает комплект только через главный "
-                        "заказ — добавьте его в проверку и верните."
-                    ),
-                }
-                for order_id in sorted(selected_ids)
-            ]
+        members = [by_id[m] for m in kit.get("member_ids") or [] if m in by_id]
+        main = by_id.get(main_id)
         items: list[dict[str, Any]] = []
-        if main_returned_elsewhere:
-            logger.info("order.kit_main_returned_elsewhere run_id=%s main_id=%s", run_id, main_id)
-        elif main.get("status") != "returned_for_rework":
-            main_items = self._prepare(
-                replace(command, order_ids=(self._order_ref(main),)), "reject"
+        busy = {
+            str(order.get("order_id")) for order in members
+            if self._order_in_progress(run_id, self._order_ref(order))
+        }
+        kit_returned = (
+            main is not None and main.get("status") == "returned_for_rework"
+        ) or self._kit_returned_in_history(main_id)
+
+        if not kit_returned:
+            if main is not None:
+                if main_id in busy:
+                    return [self._kit_busy_item(order_id, main_id) for order_id in selected_ids]
+                carrier, send_as = main, {}
+            else:
+                # Главного нет в проверке: возврат комплекта — по номеру главного заказа,
+                # с превью и комментарием первого выбранного готового заказа.
+                carrier = next(
+                    (
+                        by_id[order_id] for order_id in selected_ids
+                        if order_id in by_id and order_id not in busy
+                        and by_id[order_id].get("status") not in TERMINAL_KIT_STATUSES
+                    ),
+                    None,
+                )
+                if carrier is None:
+                    return [self._kit_busy_item(order_id, main_id) for order_id in selected_ids]
+                send_as = {str(carrier.get("order_id")): main_id}
+            carrier_items = self._prepare(
+                replace(command, order_ids=(self._order_ref(carrier),)), "reject", kit_send_as=send_as,
             )["items"]
-            items.extend(main_items)
-            if not any(item.get("status") == "prepared" for item in main_items):
-                failed = next((item.get("message") for item in main_items if item.get("message")), "")
+            items.extend(carrier_items)
+            if not any(item.get("status") == "prepared" for item in carrier_items):
+                failed = next((item.get("message") for item in carrier_items if item.get("message")), "")
                 items.extend(
                     {
                         "order_id": order_id,
                         "status": "rejected",
                         "code": "kit_main_failed",
                         "message": (
-                            f"Комплект {main_id} не возвращён: главный заказ не вернулся в "
-                            f"Sborka. {failed}"
+                            f"Комплект {main_id} не возвращён: Sborka не подтвердила возврат. {failed}"
                         ).strip(),
                     }
-                    for order_id in sorted(selected_ids - {main_id})
+                    for order_id in selected_ids if order_id != str(carrier.get("order_id"))
                 )
                 return items
-            logger.info("order.kit_returned run_id=%s main_id=%s size=%s", run_id, main_id, size)
-        elif main_id in selected_ids:
-            items.append({"order_id": main_id, "status": "prepared", "idempotent": True})
+            logger.info(
+                "order.kit_returned run_id=%s main_id=%s size=%s via=%s",
+                run_id, main_id, size, carrier.get("order_id"),
+            )
+            run, _ = self.order_finder(selected_refs[0], command.run_id)
+            by_id = {str(order.get("order_id")): order for order in run_orders(run)}
+            members = [by_id[m] for m in kit.get("member_ids") or [] if m in by_id]
+        else:
+            logger.info("order.kit_already_returned run_id=%s main_id=%s", run_id, main_id)
 
-        members = [
-            by_id[member] for member in kit.get("member_ids") or []
-            if member != main_id and member in by_id
+        pending = [
+            order for order in members
+            if order.get("status") not in TERMINAL_KIT_STATUSES
+            and str(order.get("order_id")) not in busy
         ]
-        pending = [order for order in members if order.get("status") not in TERMINAL_KIT_STATUSES]
         if pending:
             local = {str(order.get("order_id")): main_id for order in pending}
             items.extend(
@@ -610,9 +637,14 @@ class OrderWorkflowService:
                     kit_local=local,
                 )["items"]
             )
+        reported = {str(item.get("order_id")) for item in items}
         for order in members:
             order_id = str(order.get("order_id"))
-            if order.get("status") == "returned_for_rework" and order_id in selected_ids:
+            if order_id in reported:
+                continue
+            if order_id in busy:
+                items.append(self._kit_busy_item(order_id, main_id))
+            elif order.get("status") == "returned_for_rework" and order_id in selected_ids:
                 items.append({"order_id": order_id, "status": "prepared", "idempotent": True})
             elif order.get("status") == "accepted_for_print":
                 items.append({
@@ -626,13 +658,43 @@ class OrderWorkflowService:
                 })
         return items
 
-    def _returned_in_history(self, order_id: str) -> bool:
-        """Заказ возвращён на доработку в одной из сохранённых проверок."""
+    @staticmethod
+    def _kit_busy_item(order_id: str, main_id: str) -> dict[str, Any]:
+        return {
+            "order_id": order_id,
+            "status": "rejected",
+            "code": "order_in_progress",
+            "message": (
+                f"Заказ комплекта {main_id} ещё проверяется: дождитесь окончания проверки и "
+                "верните его снова — повторного запроса в Sborka не будет."
+            ),
+        }
+
+    def _order_in_progress(self, run_id: str, order_ref: str) -> bool:
+        probe = getattr(self.coordinator, "order_in_progress", None)
+        return bool(probe(run_id, order_ref)) if probe is not None else False
+
+    def _kit_returned_in_history(self, main_id: str) -> bool:
+        """Комплект недавно возвращён у нас: главный в другой проверке или возврат
+        «в составе комплекта» с этим главным (за ``KIT_RETURN_MEMORY``)."""
+        since = datetime.now(timezone.utc).replace(tzinfo=None) - KIT_RETURN_MEMORY
+        marker = f'"kit_main_id": "{main_id}"'
         with self.session_factory() as session:
-            return session.scalar(
+            main_returned = session.scalar(
                 select(OrderResult.id).where(
-                    OrderResult.order_id == order_id,
+                    OrderResult.order_id == main_id,
                     OrderResult.status == "returned_for_rework",
+                    OrderResult.updated_at >= since,
+                ).limit(1)
+            )
+            if main_returned is not None:
+                return True
+            return session.scalar(
+                select(OrderAction.id).where(
+                    OrderAction.action == "reject",
+                    OrderAction.status == "prepared",
+                    OrderAction.created_at >= since,
+                    OrderAction.cms_response_json.contains(marker),
                 ).limit(1)
             ) is not None
 
@@ -641,10 +703,14 @@ class OrderWorkflowService:
         command: OrderActionCommand,
         action: str,
         kit_local: Mapping[str, str] | None = None,
+        kit_send_as: Mapping[str, str] | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         """``kit_local`` — заказы комплекта, возвращаемые без запроса в Sborka:
-        {номер заказа: главный заказ, уже возвращённый в Sborka}."""
+        {номер заказа: главный заказ, уже возвращённый в Sborka}. ``kit_send_as`` —
+        {номер заказа: главный заказ}: возврат в Sborka уходит под номером главного
+        (главного нет в проверке), превью и комментарий — этого заказа."""
         kit_local = kit_local or {}
+        kit_send_as = kit_send_as or {}
         results: list[dict[str, Any]] = []
         current_identity = {"order_id": "", "aggregate_id": "", "include_aggregate_id": False}
 
@@ -733,6 +799,18 @@ class OrderWorkflowService:
                 current_identity["order_id"] = order_id
                 current_identity["aggregate_id"] = aggregate_id
                 current_identity["include_aggregate_id"] = order_ref == aggregate_id and aggregate_id != order_id
+                if self._order_in_progress(str(run.get("id") or ""), aggregate_id):
+                    # Проверка ещё пишет результат этого заказа: перенос файлов сейчас
+                    # перезаписался бы её итогом (возврат комплекта 26234881, 18.11).
+                    add_result(
+                        {
+                            "order_id": order_id,
+                            "status": "rejected",
+                            "code": "order_in_progress",
+                            "message": "Заказ ещё проверяется: дождитесь окончания обработки и повторите.",
+                        }
+                    )
+                    continue
                 if sends_to_external_service and (str(run.get("id") or ""), aggregate_id) in ambiguous_external_refs:
                     add_result(
                         {
@@ -1137,12 +1215,18 @@ class OrderWorkflowService:
                                     if upload_paths:
                                         self.preview_uploader(upload_paths)
                             prepress_result = self.rework_sender(
-                                order_id,
+                                kit_send_as.get(order_id, order_id),
                                 (command.comment or "").strip(),
                                 return_preview_name or "",
                                 command.design,
                                 command.design_cost,
                             )
+                        if order_id in kit_send_as and isinstance(prepress_result, dict):
+                            prepress_result = {
+                                **prepress_result,
+                                "kit_main_id": kit_send_as[order_id],
+                                "sent_as_kit_main": True,
+                            }
                         action_record.status = "prepared"
                         if prepress_result is not None:
                             action_record.cms_response_json = json.dumps(

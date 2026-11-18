@@ -1266,6 +1266,21 @@ def create_app(
             raise APIError(404, "run_not_found", "Запуск проверки не найден.") from exc
         return _public_run(run)
 
+    @application.get(
+        "/api/checks/{run_id}/kits", dependencies=[Depends(protected)]
+    )
+    async def get_check_kits(request: Request, run_id: str) -> dict[str, Any]:
+        """Комплекты Sborka заказов проверки: ``{"kits": {номер заказа: комплект}}``.
+
+        Один запрос ``orderinfo`` на запуск (кэш в ``KitResolver``); без Sborka — пусто.
+        """
+        run = _get_run_or_404(_get_coordinator(request), run_id)
+        resolver = getattr(request.app.state.order_workflow, "kit_resolver", None)
+        if resolver is None:
+            return {"kits": {}}
+        kits = await run_in_threadpool(resolver.for_run, run)
+        return {"kits": kits}
+
     @application.post(
         "/api/checks/{run_id}/cancel", dependencies=[Depends(protected)]
     )

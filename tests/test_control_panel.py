@@ -315,6 +315,30 @@ class ControlPanelTests(unittest.TestCase):
                 b"preview-image",
             )
 
+    def test_run_kits_endpoint_uses_the_kit_resolver(self):
+        from services.order_kits import KitResolver
+
+        self.adapter_type = OneOrderAdapter
+        self.login()
+        run_id = self.client.post(
+            "/api/checks",
+            json={"input_path": str(self.root), "direction": "digital", "copy_failures": False},
+        ).json()["id"]
+        self.client.app.state.coordinator.wait_for(run_id, timeout=2)
+        self.assertEqual(self.client.get(f"/api/checks/{run_id}/kits").json(), {"kits": {}})
+
+        requested = []
+        self.client.app.state.order_workflow.kit_resolver = KitResolver(
+            lambda ids: requested.append(list(ids)) or [{"id": ids[0], "sets_array": [{"id": "999"}]}]
+        )
+        kits = self.client.get(f"/api/checks/{run_id}/kits").json()["kits"]
+
+        self.assertEqual(len(requested), 1)
+        (order_id, kit), = kits.items()
+        self.assertEqual(kit["main_id"], order_id)
+        self.assertEqual(kit["size"], 2)
+        self.assertEqual(self.client.get("/api/checks/missing/kits").status_code, 404)
+
     def test_dashboard_can_fetch_lightweight_run_summary_and_paginated_orders(self):
         self.adapter_type = OneOrderAdapter
         self.login()

@@ -41,6 +41,7 @@ export const api = {
   uploadReturnPreview: (runId, orderId, file) => request(`/api/checks/${encodeURIComponent(runId)}/orders/${encodeURIComponent(orderId)}/return-preview`, { method: "POST", body: file, headers: { "Content-Type": file.type || "application/octet-stream" } }),
   layeredTiffPreview: (url, method = "GET") => request(url, { method }),
   preparePrint: (body) => request("/api/orders/prepare-print", { method: "POST", body: JSON.stringify(body) }),
+  runKits: (id) => request(`/api/checks/${encodeURIComponent(id)}/kits`),
   prepareReject: (body) => request("/api/orders/prepare-reject", { method: "POST", body: JSON.stringify(body) }),
   callasPlans: () => request("/api/callas/plans"),
   startCallasFix: (runId, orderId, planKey, fileId = "") => request(`${callasFixBase(runId, orderId, fileId)}`, { method: "POST", body: JSON.stringify({ plan: planKey }) }),
