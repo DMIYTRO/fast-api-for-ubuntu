@@ -7,6 +7,11 @@
 только при осмотре файла и только если сравнение подтвердило ``bleed_only`` (макет
 внутри формата не изменён, ``services/callas_bleed.py``).
 
+Файл с меткой «без масштабирования» в имени (``PrePressProfile.is_no_scale_name``:
+``(SRA3P)``, ``(SRA3)``, ``(BAN)``) никогда не отдаётся Callas (причина ``no_scale_name``):
+поля такому файлу не дорисовываются, размер приводит обычная коррекция способом
+``canvas`` — белые поля или центральная обрезка без масштабирования.
+
 Кандидат — файл заказа (PDF без /Rotate с одинаковыми страницами или растр с известным
 размером), чей размер в любой ориентации (50×90 == 90×50) лежит между форматом из имени
 (минус допуск) и форматом + 2 вылета, но ещё не совпадает с форматом + 2 вылета. Если
@@ -98,6 +103,10 @@ def _orientations(size: tuple[float, float]) -> tuple[tuple[float, float], tuple
 
 def candidate_reason(check: FileCheck, processor: "BatchProcessor") -> str | None:
     """``None`` — файл можно отдать Callas; иначе короткая причина пропуска (для журнала)."""
+    # Первым: помеченный файл не получает полей Callas ни при каких размерах.
+    profile = getattr(processor, "profile", None)
+    if profile is not None and profile.is_no_scale_name(check.path.name):
+        return "no_scale_name"
     parsed = check.parsed
     if parsed is None:
         return "no_format"

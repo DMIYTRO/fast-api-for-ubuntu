@@ -306,6 +306,7 @@ describe("sizeFixBadge", () => {
   });
   it.each([
     ["bleed", "Поля Callas"], ["reveal", "Поля открыты"], ["stretch", "Растянуто"], ["shrink", "Уменьшено"], ["fill", "Подогнано"],
+    ["canvas", "Поля/обрезка"],
   ])("labels method %s", (method, label) => {
     expect(sizeFixBadge({ files: [{ name: "a.pdf", size_fix: fix(method) }] }).label).toBe(label);
   });

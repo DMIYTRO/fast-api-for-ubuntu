@@ -77,3 +77,49 @@ def resample_image(
 
     run_command(cmd, check=True)
     return output_path
+
+
+def canvas_image(
+    input_path: str,
+    output_path: str,
+    target_width_mm: float,
+    target_height_mm: float,
+    source_dpi: Tuple[float, float],
+    ignore_tiff_layers: bool = False,
+) -> str:
+    """Привести растр к формату БЕЗ масштабирования: белые поля и/или центральная обрезка.
+
+    Холст считается в пикселях исходного разрешения (``source_dpi``), пиксели макета не
+    пересчитываются и не растягиваются. Белый цвет ImageMagick 7 переводит в цветовую
+    модель изображения: CMYK — cmyk(0,0,0,0), RGB — белый, Gray — gray(255).
+    """
+    magick_cmd = shutil.which("magick")
+    if not magick_cmd:
+        raise FileNotFoundError("ImageMagick (`magick`) не найден.")
+    dpi_x, dpi_y = (float(value) for value in source_dpi)
+    if dpi_x <= 0 or dpi_y <= 0:
+        raise ValueError(
+            "не удалось привести макет к формату без масштабирования: неизвестно разрешение (DPI) файла"
+        )
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+    target_w_px = max(1, round(target_width_mm * dpi_x / 25.4))
+    target_h_px = max(1, round(target_height_mm * dpi_y / 25.4))
+
+    cmd = [magick_cmd]
+    if ignore_tiff_layers:
+        cmd += ["-define", "tiff:ignore-layers=true"]
+    cmd += [
+        input_path,
+        "-units", "PixelsPerInch",
+        "-density", f"{dpi_x:g}x{dpi_y:g}",
+        "-background", "white",
+        "-gravity", "center",
+        "-extent", f"{target_w_px}x{target_h_px}",
+        "+repage",
+        output_path,
+    ]
+
+    run_command(cmd, check=True)
+    return output_path

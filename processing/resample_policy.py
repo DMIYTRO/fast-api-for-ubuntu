@@ -137,3 +137,91 @@ def analyze_resample(
         reason = "размер соответствует после поворота; требуется создать файл в целевой ориентации"
 
     return ResamplePlan(decision, target_mm, rotation, scale, crop, effective, reason)
+
+
+#: Способ коррекции «без масштабирования» (``FileCheck.size_fix``, ``SIZE_FIX_METHODS``).
+METHOD_CANVAS = "canvas"
+
+
+def canvas_margins_mm(
+    actual_mm: tuple[float, float], target_mm: tuple[float, float]
+) -> tuple[float, float]:
+    """Белые поля холста без масштабирования, мм в сумме по каждой стороне (≥ 0)."""
+    return (
+        max(0.0, target_mm[0] - actual_mm[0]),
+        max(0.0, target_mm[1] - actual_mm[1]),
+    )
+
+
+def canvas_change_text(
+    actual_mm: tuple[float, float], target_mm: tuple[float, float], separator: str = ": "
+) -> str:
+    """Пояснение «без масштабирования: белые поля … мм, обрезка … мм» (только ненулевые части).
+
+    ``separator`` — между «без масштабирования» и частями (в пометке ``size_fix`` — запятая).
+    """
+    pad = canvas_margins_mm(actual_mm, target_mm)
+    crop = (
+        max(0.0, actual_mm[0] - target_mm[0]),
+        max(0.0, actual_mm[1] - target_mm[1]),
+    )
+    parts = []
+    if max(pad) > 0.005:
+        parts.append(f"белые поля {pad[0]:.2f}x{pad[1]:.2f} мм")
+    if max(crop) > 0.005:
+        parts.append(f"обрезка {crop[0]:.2f}x{crop[1]:.2f} мм")
+    return "без масштабирования" + separator + (", ".join(parts) or "размер не меняется")
+
+
+def analyze_canvas(
+    actual_mm: tuple[float, float],
+    target_mm: tuple[float, float],
+    dpi: tuple[float, float],
+    *,
+    min_dpi: float,
+    metadata_tolerance_mm: float,
+    auto_crop_mm: float,
+    confirm_crop_mm: float,
+) -> ResamplePlan:
+    """План приведения к формату БЕЗ масштабирования (метки «без масштабирования» в имени).
+
+    Масштаб всегда 1.0, поворота нет, эффективное разрешение равно исходному. По каждой
+    стороне разница ``target - actual``: положительная — белые поля (холст больше),
+    отрицательная — центральная обрезка. Решение — по наибольшему модулю разницы с теми же
+    пределами, что и у пропорциональной коррекции: до погрешности метаданных — принять,
+    до ``auto_crop_mm`` — исправить автоматически, до ``confirm_crop_mm`` — с
+    подтверждением оператора, иначе — отклонить.
+
+    Правило уменьшения (``shrink_auto_mm``) здесь не действует: ничего не масштабируется.
+    Низкое исходное DPI (< ``min_dpi``) не отклоняет план по размеру — холст не меняет
+    разрешение, о низком DPI сообщает правило метаданных (``evaluate_metadata_rules``).
+    ``min_dpi`` принимается для единообразия с ``analyze_resample``. Для страниц PDF
+    передаётся ``dpi=(inf, inf)``.
+    """
+    del min_dpi  # см. docstring: DPI не участвует в решении по размеру холста
+    delta = (target_mm[0] - actual_mm[0], target_mm[1] - actual_mm[1])
+    crop = (max(0.0, -delta[0]), max(0.0, -delta[1]))
+    amount = max(abs(delta[0]), abs(delta[1]))
+    change = canvas_change_text(actual_mm, target_mm)
+
+    epsilon = 0.01
+    if amount <= metadata_tolerance_mm + epsilon:
+        decision = ResampleDecision.ACCEPT
+        reason = f"отклонение до {metadata_tolerance_mm:.1f} мм принято как погрешность метаданных"
+    elif amount <= auto_crop_mm + epsilon:
+        decision = ResampleDecision.AUTO_CORRECT
+        reason = f"коррекция {change}"
+    elif amount <= confirm_crop_mm + epsilon:
+        decision = ResampleDecision.ASK_CONFIRMATION
+        reason = (
+            f"коррекция {change}; изменение {amount:.1f} мм больше предела автоматической "
+            f"коррекции {auto_crop_mm:.1f} мм: требуется подтверждение оператора"
+        )
+    else:
+        decision = ResampleDecision.REJECT
+        reason = (
+            f"для приведения к размеру {change}, изменение до {amount:.1f} мм; "
+            f"максимум коррекции {confirm_crop_mm:.1f} мм — пришлите макет нужного размера"
+        )
+
+    return ResamplePlan(decision, target_mm, 0, 1.0, crop, (dpi[0], dpi[1]), reason)

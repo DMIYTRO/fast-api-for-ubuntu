@@ -20,9 +20,17 @@
 4. ``fill`` — те же правила, что у растра (``analyze_resample``): пропорциональное
    заполнение формата (увеличение или только обрезка) и центральная обрезка.
 
+Файлы с меткой «без масштабирования» в имени (``PrePressProfile.no_scale_name_markers``:
+``(SRA3P)``, ``(SRA3)``, ``(BAN)``) не проходят лестницу: единственный способ —
+``canvas`` (``analyze_canvas``). MediaBox сдвигается от центра на половину разницы по
+каждой стороне (``set_page_box``): наружу — белые поля (незакрашенная область — бумага),
+внутрь — центральная обрезка. Содержимое не масштабируется и не поворачивается; reveal,
+stretch, shrink и fill не рассматриваются, даже если были бы мягче.
+
 Пороги «авто / подтверждение / отказ» общие с растром: прирост страницы при ``reveal``
 и обрезка при ``shrink``/``fill`` сравниваются с ``auto_crop_mm`` и ``confirm_crop_mm``.
-После любого способа BleedBox = MediaBox, TrimBox — внутрь на вылет, CropBox = MediaBox.
+Изменение холста ``canvas`` сравнивается с теми же пределами (наибольший модуль разницы
+сторон). После любого способа BleedBox = MediaBox, TrimBox — внутрь на вылет, CropBox = MediaBox.
 JSON применяет профиль «Image Magic/Apply QuickFix config» из переменной
 ``quickfix_config`` (``scripts/build_quickfix_profile.py``).
 """
@@ -36,7 +44,14 @@ from typing import Any, Iterable, Mapping
 
 from config.profiles import DEFAULT_SHRINK_AUTO_MAX_MM
 
-from .resample_policy import ResampleDecision, analyze_resample, is_shrink, shrink_verdict
+from .resample_policy import (
+    METHOD_CANVAS,
+    ResampleDecision,
+    analyze_canvas,
+    analyze_resample,
+    is_shrink,
+    shrink_verdict,
+)
 
 #: Имя переменной профиля, из которой QuickFix читает JSON.
 QUICKFIX_VARIABLE = "quickfix_config"
@@ -48,9 +63,15 @@ METHOD_STRETCH = "stretch"
 METHOD_REVEAL = "reveal"
 #: Пропорциональное уменьшение (масштаб < 1); QuickFix — как у ``fill``.
 METHOD_SHRINK = "shrink"
+# ``METHOD_CANVAS`` (из ``resample_policy``, общий с растром) — без масштабирования:
+# белые поля и/или центральная обрезка сдвигом MediaBox (только файлы с меткой
+# «без масштабирования» в имени).
 # При равном решении: показать скрытое → вытянуть (ничего не срезает) → уменьшить →
-# заполнить с обрезкой.
-_METHOD_ORDER = {METHOD_REVEAL: 0, METHOD_STRETCH: 1, METHOD_SHRINK: 2, METHOD_FILL: 3}
+# заполнить с обрезкой. ``canvas`` с остальными не соревнуется (у помеченного файла он
+# единственный кандидат) и стоит последним только для полноты порядка.
+_METHOD_ORDER = {
+    METHOD_REVEAL: 0, METHOD_STRETCH: 1, METHOD_SHRINK: 2, METHOD_FILL: 3, METHOD_CANVAS: 4,
+}
 
 _EPSILON = 0.01
 #: Вытягивание с меньшим искажением, %, — это пропорциональный масштаб, не вытягивание.
@@ -72,18 +93,21 @@ class PdfPagePlan:
     method: str
     #: Формат с вылетами в ориентации страницы.
     target_mm: tuple[float, float]
-    #: Масштаб по ширине и высоте (у ``reveal`` — 1).
+    #: Масштаб по ширине и высоте (у ``reveal`` и ``canvas`` — 1).
     scale: tuple[float, float]
-    #: Обрезка по ширине и высоте у ``fill``; у остальных — 0.
+    #: Обрезка в сумме по ширине и высоте у ``shrink``/``fill``/``canvas``; у остальных — 0.
     crop_mm: tuple[float, float]
-    #: Прирост страницы с каждой стороны у ``reveal`` (по ширине, по высоте).
+    #: Сдвиг краёв MediaBox с каждой стороны (по ширине, по высоте), мм. У ``reveal`` —
+    #: прирост страницы (≥ 0). У ``canvas`` — со знаком: положительный — белое поле
+    #: наружу, отрицательный — обрезка внутрь (половина разницы ``target - actual``).
+    #: У остальных — 0.
     enlarge_mm: tuple[float, float]
     effective_dpi: tuple[float, float]
     reason: str
 
     @property
     def distortion_pct(self) -> float:
-        """Искажение пропорций, %: 0 у ``fill`` и ``reveal``."""
+        """Искажение пропорций, %: 0 у ``fill``, ``reveal`` и ``canvas``."""
         return abs(self.scale[0] / self.scale[1] - 1.0) * 100.0
 
 
@@ -185,12 +209,28 @@ def _stretch_plan(actual, target, dpi, limits) -> PdfPagePlan | None:
     )
 
 
+def _canvas_plan(actual, target, dpi, limits) -> PdfPagePlan:
+    plan = analyze_canvas(
+        actual, target, (dpi, dpi),
+        min_dpi=limits.min_dpi,
+        metadata_tolerance_mm=limits.metadata_tolerance_mm,
+        auto_crop_mm=limits.auto_mm,
+        confirm_crop_mm=limits.confirm_mm,
+    )
+    offset = ((target[0] - actual[0]) / 2.0, (target[1] - actual[1]) / 2.0)
+    return PdfPagePlan(
+        plan.decision, METHOD_CANVAS, target, (1.0, 1.0), plan.crop_mm, offset,
+        plan.effective_dpi, plan.reason,
+    )
+
+
 def plan_pdf_page_resize(
     actual_mm: tuple[float, float],
     expected_mm: tuple[float, float],
     min_page_dpi: float,
     limits: PdfResizeLimits,
     hidden_margins_mm: Iterable[tuple[float, float]] = (),
+    no_scale: bool = False,
 ) -> PdfPagePlan:
     """Лучший план для страницы среди способов и двух ориентаций целевого формата.
 
@@ -199,7 +239,22 @@ def plan_pdf_page_resize(
 
     50×90 и 90×50 равноправны: страница не поворачивается, ориентация цели берётся
     та, что ближе к странице.
+
+    ``no_scale`` (метка «без масштабирования» в имени файла): единственный способ —
+    ``canvas`` (белые поля / центральная обрезка без масштаба); скрытые вылеты и
+    вытягивание не рассматриваются. Из двух ориентаций — с мягчайшим решением, затем с
+    меньшим изменением холста.
     """
+    if no_scale:
+        return min(
+            (
+                _canvas_plan(actual_mm, target, min_page_dpi, limits)
+                for target in (expected_mm, (expected_mm[1], expected_mm[0]))
+            ),
+            key=lambda plan: (
+                _DECISION_RANK[plan.decision], max(abs(value) for value in plan.enlarge_mm)
+            ),
+        )
     hidden = tuple(hidden_margins_mm)
     candidates: list[PdfPagePlan] = []
     for target in (expected_mm, (expected_mm[1], expected_mm[0])):
@@ -249,7 +304,8 @@ def build_resize_quickfix(plans: Mapping[int, PdfPagePlan], bleed_mm: float) -> 
     """QuickFix JSON для страниц PDF по их планам.
 
     ``scale_pages`` получает короткую и длинную сторону и сохраняет ориентацию
-    страницы; боксы задаются от MediaBox (проверено на pdfToolbox 17.0.682:
+    страницы; ``canvas`` сдвигает края MediaBox (``set_page_box`` MediaBox от MediaBox,
+    сдвиг со знаком); боксы задаются от MediaBox (проверено на pdfToolbox 17.0.682:
     положительный сдвиг в ``set_page_box`` — наружу), поэтому подходят и альбомным,
     и книжным страницам.
     """
@@ -265,10 +321,15 @@ def build_resize_quickfix(plans: Mapping[int, PdfPagePlan], bleed_mm: float) -> 
 
     by_mode: dict[str, list[int]] = {}
     enlarge: dict[tuple[float, float], list[int]] = {}
+    canvas: dict[tuple[float, float], list[int]] = {}
     for number, plan in sorted(plans.items()):
         if plan.method == METHOD_REVEAL:
             key = (round(plan.enlarge_mm[0], 3), round(plan.enlarge_mm[1], 3))
             enlarge.setdefault(key, []).append(number)
+        elif plan.method == METHOD_CANVAS:
+            key = (round(plan.enlarge_mm[0], 3), round(plan.enlarge_mm[1], 3))
+            if key != (0.0, 0.0):  # страница уже точно в формате — MediaBox не трогаем
+                canvas.setdefault(key, []).append(number)
         else:
             mode = "stretch_to_fill" if plan.method == METHOD_STRETCH else "fit_from_outside_cut_page"
             by_mode.setdefault(mode, []).append(number)
@@ -299,6 +360,22 @@ def build_resize_quickfix(plans: Mapping[int, PdfPagePlan], bleed_mm: float) -> 
                     "page_scale_mode": mode,
                 }
                 for mode, pages in by_mode.items()
+            ],
+        })
+    if canvas:
+        # Холст без масштабирования: MediaBox от MediaBox со сдвигом краёв (наружу — белые
+        # поля, внутрь — обрезка). Отдельным QuickFix до итоговых боксов, чтобы CropBox,
+        # BleedBox и TrimBox считались уже от нового MediaBox.
+        fixes.append({
+            "quickfix": "set_page_box",
+            "version": "1.0",
+            "instructions": [
+                {
+                    **_box("MediaBox", 0),
+                    "page_selector": _selector(pages, total),
+                    "left": side_w, "bottom": side_h, "right": side_w, "top": side_h,
+                }
+                for (side_w, side_h), pages in canvas.items()
             ],
         })
     fixes.append({

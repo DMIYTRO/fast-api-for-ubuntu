@@ -3,7 +3,9 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 #: Способы коррекции размера в пометке ``FileCheck.size_fix`` (лестница по порядку).
-SIZE_FIX_METHODS = ("reveal", "bleed", "stretch", "shrink", "fill")
+#: ``canvas`` — без масштабирования: белые поля и/или центральная обрезка (файлы с меткой
+#: «без масштабирования» в имени, ``PrePressProfile.no_scale_name_markers``).
+SIZE_FIX_METHODS = ("reveal", "bleed", "stretch", "shrink", "fill", "canvas")
 
 
 def make_size_fix(
@@ -76,6 +78,9 @@ class FileCheck:
     resample_confirmed: Optional[bool] = None
     # Исходное DPI растра, который будет уменьшен до целевого (размер был верным).
     downsampled_from_dpi: Optional[float] = None
+    # Имя файла содержит метку «без масштабирования» (``PrePressProfile.is_no_scale_name``):
+    # коррекция размера — только белые поля и/или центральная обрезка (способ ``canvas``).
+    no_scale: bool = False
     rotation_degrees: int = 0
     orientation_verified: bool = False
     # PDF-specific facts.  These are optional so existing image workflows and

@@ -4,7 +4,9 @@ JSON собирает ``processing.pdf_resize_policy``; профиль «Image M
 только применяет его. QuickFix с ошибкой в JSON завершается без ошибки и без изменений,
 а ``fixups_applied`` у JavaScript-QuickFix всегда 0, поэтому успех определяется только
 по геометрии результата: число страниц, MediaBox, TrimBox и BleedBox каждой страницы.
-Исходный PDF не меняется; результат пишется в ``target``.
+Размеры боксов считаются по разности координат: после ``canvas`` (сдвиг краёв MediaBox
+без масштабирования) начало MediaBox уже не (0, 0). Исходный PDF не меняется; результат
+пишется в ``target``.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ class PdfResizeError(RuntimeError):
 
 
 def _box_mm(box: tuple[float, float, float, float]) -> tuple[float, float]:
+    """Ширина и высота бокса, мм, — по разности координат (начало может быть не в 0)."""
     return ((box[2] - box[0]) * 25.4 / 72.0, (box[3] - box[1]) * 25.4 / 72.0)
 
 
@@ -74,7 +77,7 @@ def verify_resized_pdf(
 @dataclass(frozen=True)
 class CallasPdfResizer:
     """``resizer(source, target, page_plans, bleed_mm, label)``: страницы приводятся к формату
-    способом из плана (``fill`` / ``stretch`` / ``reveal``)."""
+    способом из плана (``reveal`` / ``stretch`` / ``shrink`` / ``fill`` / ``canvas``)."""
 
     client: Any
     profile: str = DEFAULT_PDF_RESIZE_PROFILE

@@ -52,7 +52,7 @@ function submit() { emit("start", { ...form, approve_corrections: form.correctio
           </fieldset>
           <fieldset><legend>Спорные коррекции</legend>
             <label class="radio"><input v-model="form.correction_policy" value="ask" type="radio"> Запрашивать решение по каждой коррекции</label>
-            <label class="radio" title="Порядок коррекции размера: открыть скрытые поля → дорисовать поля Callas → растянуть (PDF) → сжать → подогнать."><input v-model="form.correction_policy" value="auto" type="radio"> Автоматически принимать малые коррекции (поля, до {{ correctionLimit }} мм обрезки; до {{ correctionCap }} мм — с подтверждением)</label>
+            <label class="radio" title="Порядок коррекции размера: открыть скрытые поля → дорисовать поля Callas → растянуть (PDF) → сжать → подогнать. Файлы с (SRA3), (SRA3P) или (BAN) в имени не масштабируются: только белые поля или обрезка."><input v-model="form.correction_policy" value="auto" type="radio"> Автоматически принимать малые коррекции (поля, до {{ correctionLimit }} мм обрезки; до {{ correctionCap }} мм — с подтверждением)</label>
             <label class="radio"><input v-model="form.correction_policy" value="reject" type="radio"> Не применять коррекции</label>
           </fieldset>
           <div class="safe-note">Исходные файлы не изменяются. Результаты сохраняются в отдельные папки.</div>

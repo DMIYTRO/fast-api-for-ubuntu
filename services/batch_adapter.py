@@ -96,6 +96,7 @@ class BatchProcessorAdapter:
         correction_confirm_max_mm: float | None = None,
         max_dpi: float | None = None,
         downsample_high_dpi: bool | None = None,
+        no_scale_name_markers: Sequence[str] | None = None,
         pitstop_fix_baseline: FixBaselinePolicy | None = None,
         auto_bleed: Callable[[FileCheck, BatchProcessor], FileCheck | None] | None = None,
     ) -> None:
@@ -125,6 +126,9 @@ class BatchProcessorAdapter:
             )
         if max_dpi is not None or downsample_high_dpi is not None:
             profile = profile.with_downsample(max_dpi, downsample_high_dpi)
+        if no_scale_name_markers is not None:
+            # Метки «без масштабирования» из настроек (IMAGE_MAGIC_NO_SCALE_NAME_MARKERS).
+            profile = profile.with_no_scale_markers(tuple(no_scale_name_markers))
         # «Запрашивать решение» и «Не применять» не должны молча менять размер:
         # коррекция уходит на решение оператора. «Автоматически» применяет её
         # сама в пределах профиля (IMAGE_MAGIC_AUTO_CORRECT_MAX_MM).

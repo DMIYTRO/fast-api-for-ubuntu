@@ -907,6 +907,7 @@ def _pitstop_adapter_factory(settings: Settings, callas_fix_service=None):
             correction_confirm_max_mm=settings.correction_confirm_max_mm,
             max_dpi=settings.max_dpi,
             downsample_high_dpi=settings.downsample_high_dpi_enabled,
+            no_scale_name_markers=settings.no_scale_name_markers,
             order_info_fetcher=(
                 build_order_info_fetcher(
                     settings.sborka_api_dir,
@@ -943,6 +944,7 @@ def _default_adapter_factory(settings: Settings, callas_fix_service=None):
         correction_confirm_max_mm=settings.correction_confirm_max_mm,
         max_dpi=settings.max_dpi,
         downsample_high_dpi=settings.downsample_high_dpi_enabled,
+        no_scale_name_markers=settings.no_scale_name_markers,
     )
 
 
