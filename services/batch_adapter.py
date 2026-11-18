@@ -13,7 +13,7 @@ from typing import Any, Callable, Sequence
 
 from config.profiles import get_profile
 from processing.batch_processor import BatchProcessor
-from processing.models import FileCheck, OrderCheck
+from processing.models import FileCheck, OrderCheck, has_page_rule_violation
 from services.pitstop import (
     PitStopCheckResult,
     PitStopExecutionStatus,
@@ -342,7 +342,11 @@ class BatchProcessorAdapter:
                 self._quarantine_previous_print(order)
             return
         status = completed_status(
-            local_errors=bool(result.errors) or (not order.passed and result.pdf_kind != "diagnostic"),
+            local_errors=(
+                bool(result.errors)
+                or (not order.passed and result.pdf_kind != "diagnostic")
+                or has_page_rule_violation(order)
+            ),
             local_warnings=bool(
                 not order.passed or order.warnings or any(item.warnings for item in order.files)
             ),

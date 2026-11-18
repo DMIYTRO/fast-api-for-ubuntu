@@ -55,7 +55,7 @@ _LOCAL_RULES: tuple[tuple[str, re.Pattern[str], str], ...] = tuple(
         ("pdf_unknown_colorspace", r"^PDF страница \d+: неизвестная цветовая модель", "Неизвестная цветовая модель на странице PDF"),
         ("pdf_rgb_raster", r"^PDF страница \d+: растровое изображение", "Растровое изображение в PDF имеет RGB colorspace"),
         ("pdf_low_dpi", r"^PDF страница \d+: effective DPI", "Низкое эффективное разрешение в PDF"),
-        ("pdf_too_many_pages", r"^PDF contains \d+ pages", "В PDF слишком много страниц"),
+        ("pdf_too_many_pages", r"^(?:PDF contains \d+ pages|PDF содержит \d+ страниц; допускается)", "В PDF больше 2 страниц: допускается 1 или 2"),
         ("pdf_no_pages", r"^PDF contains no pages", "PDF не содержит страниц"),
         ("pdf_encrypted", r"^Encrypted PDF", "Зашифрованный PDF не поддерживается"),
         ("pdf_repaired", r"^PDF required structural repair", "PDF потребовал структурного восстановления"),

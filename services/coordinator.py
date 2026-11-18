@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 from uuid import uuid4
 
-from processing.models import OrderCheck
+from processing.models import OrderCheck, has_page_rule_violation
 
 from .batch_adapter import BatchProcessorAdapter, OrderArtifacts, ProcessingOptions
 from .callas_source_fix import ORDER_CHANGED_MESSAGE, mark_applied
@@ -1897,7 +1897,11 @@ def _completed_order_status(
 ) -> str:
     """Final status: a local (first-stage) error is never lifted by PitStop."""
     return completed_status(
-        local_errors=bool(artifacts.errors) or (not order.passed and artifacts.pdf_kind != "diagnostic"),
+        local_errors=(
+            bool(artifacts.errors)
+            or (not order.passed and artifacts.pdf_kind != "diagnostic")
+            or has_page_rule_violation(order)
+        ),
         local_warnings=bool(
             not order.passed or order.warnings or any(item.warnings for item in order.files)
         ),
