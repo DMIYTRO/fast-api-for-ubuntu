@@ -96,20 +96,28 @@ class FileLifecycle:
     def return_for_rework(
         self, order: dict[str, Any], *, conflict_strategy: str = "fail"
     ) -> FileTransition:
-        """Move every available artifact of an operator-returned order to Troubles."""
+        """Move every available artifact of an operator-returned order to Troubles.
+
+        Раскладка ``Troubles/<заказ>/``: исходники клиента — прямо в папку заказа (там же
+        копии и ``.error.txt`` от проверки), собранный PDF — в ``PDF/``, превью — в
+        ``Previews/``. Собранный PDF называется как исходник (одиночный PDF или face),
+        поэтому в одной папке они бы столкнулись по имени.
+        """
         self.initialize()
         target_dir = self.troubles_dir / str(order.get("order_id") or "UNPARSED")
-        candidates = [*self._existing_source_paths(order)]
+        moves = [(path, target_dir / path.name) for path in self._existing_source_paths(order)]
         pdf = self._optional_path(order.get("pdf_path"))
         if pdf:
-            candidates.append(pdf)
-        candidates.extend(
-            path for path in (self._optional_path(value) for value in order.get("preview_paths") or []) if path
+            moves.append((pdf, target_dir / "PDF" / pdf.name))
+        moves.extend(
+            (path, target_dir / "Previews" / path.name)
+            for path in (self._optional_path(value) for value in order.get("preview_paths") or [])
+            if path
         )
-        if not candidates:
+        if not moves:
             raise FileLifecycleError("Для возврата не найдено ни одного файла заказа.")
         completed = self._move_all(
-            ((path, target_dir / path.name) for path in candidates),
+            moves,
             reuse_identical=True,
             conflict_strategy=conflict_strategy,
         )
