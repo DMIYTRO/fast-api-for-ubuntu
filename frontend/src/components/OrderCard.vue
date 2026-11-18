@@ -49,7 +49,13 @@ const formatNumber = (input, decimals = 1) => {
   return Number.isFinite(number) ? number.toFixed(decimals) : "—";
 };
 const formatMm = (input) => formatNumber(input, 1);
-const expectedSize = computed(() => parsed.value.width_mm && parsed.value.height_mm ? `${formatMm(parsed.value.width_mm + 4)} × ${formatMm(parsed.value.height_mm + 4)} мм` : "—");
+// Ожидаемый размер с вылетами считает бэкенд (expected_mm): у (SRA3)/(SRA3P) это эталон
+// 314×434 / 324×471 без прибавки вылетов; у старых запусков — формат + 4 мм.
+const expectedSize = computed(() => {
+  const expected = face.value?.expected_mm;
+  if (Array.isArray(expected) && expected.length === 2) return `${formatMm(expected[0])} × ${formatMm(expected[1])} мм`;
+  return parsed.value.width_mm && parsed.value.height_mm ? `${formatMm(parsed.value.width_mm + 4)} × ${formatMm(parsed.value.height_mm + 4)} мм` : "—";
+});
 const issueText = (value) => typeof value === "string" ? value : value?.message || value?.code;
 // Локальные проблемы группируются по типу (order.issue_groups с бэкенда, иначе на месте);
 // проблемы PitStop показывает PitStopReport.

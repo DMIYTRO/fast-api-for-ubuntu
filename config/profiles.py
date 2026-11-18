@@ -23,6 +23,13 @@ DEFAULT_TARGET_DPI = 300.0
 #: Сравнение — подстрока без учёта регистра, скобки входят в метку: «(SRA3)» не
 #: совпадает с «(SRA3P)», поэтому обе перечислены.
 DEFAULT_NO_SCALE_NAME_MARKERS = ("(SRA3P)", "(SRA3)", "(BAN)")
+#: Эталонный размер файла по метке в имени, мм, — норма УЖЕ с вылетами (вылеты к нему не
+#: прибавляются, размер из имени не используется); ориентация любая (314×434 == 434×314).
+#: Метка сравнивается как в ``DEFAULT_NO_SCALE_NAME_MARKERS``.
+DEFAULT_REFERENCE_SIZES_MM = MappingProxyType({
+    "(SRA3)": (314.0, 434.0),
+    "(SRA3P)": (324.0, 471.0),
+})
 
 
 @dataclass(frozen=True)
@@ -87,6 +94,34 @@ class PrePressProfile:
     # (reveal, Callas-поля, stretch, shrink, fill): только белые поля или обрезка
     # по центру, способ ``canvas``. Пустой кортеж выключает правило.
     no_scale_name_markers: tuple[str, ...] = DEFAULT_NO_SCALE_NAME_MARKERS
+
+    # Эталонный размер файла (с вылетами) по метке в имени — см. ``expected_size_mm``.
+    reference_sizes_mm: Mapping[str, tuple[float, float]] = DEFAULT_REFERENCE_SIZES_MM
+
+    def reference_size_mm(self, name: str) -> tuple[float, float] | None:
+        """Эталонный размер с вылетами по метке в имени файла или ``None``.
+
+        Если подходят несколько меток, берётся самая длинная («(SRA3P)» точнее «(SRA3)»).
+        """
+        lowered = name.casefold()
+        matches = [
+            marker for marker in self.reference_sizes_mm
+            if marker and marker.casefold() in lowered
+        ]
+        if not matches:
+            return None
+        width, height = self.reference_sizes_mm[max(matches, key=len)]
+        return (float(width), float(height))
+
+    def expected_size_mm(
+        self, name: str, width_mm: float, height_mm: float, extra_mm: float | None = None
+    ) -> tuple[float, float]:
+        """Ожидаемый размер файла с вылетами: эталон по метке или формат из имени + вылеты."""
+        reference = self.reference_size_mm(name)
+        if reference is not None:
+            return reference
+        extra = self.size_extra_mm if extra_mm is None else float(extra_mm)
+        return (float(width_mm) + extra, float(height_mm) + extra)
 
     def is_no_scale_name(self, name: str) -> bool:
         """Имя файла содержит метку «без масштабирования» (без учёта регистра)."""

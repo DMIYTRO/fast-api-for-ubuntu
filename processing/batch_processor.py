@@ -544,11 +544,7 @@ class BatchProcessor:
         check.actual_height_mm = first_page.height_mm
         check.rotation_degrees = first_page.rotation
 
-        parsed = check.parsed
-        expected = (
-            parsed.width_mm + self.size_extra_mm,
-            parsed.height_mm + self.size_extra_mm,
-        )
+        expected = self._expected_mm(check)
         resize_plans = self._plan_pdf_resize(check, inspection.pages, expected)
         for page in inspection.pages:
             actual = (page.width_mm, page.height_mm)
@@ -785,10 +781,19 @@ class BatchProcessor:
             correction_has_enough_dpi = False
         self._validate_raster_content(check, correction_has_enough_dpi, scopes)
 
+    def _expected_mm(self, check: FileCheck) -> tuple[float, float]:
+        """Ожидаемый размер с вылетами; эталон по метке в имени ((SRA3), (SRA3P)) — как есть."""
+        parsed = check.parsed
+        expected = self.profile.expected_size_mm(
+            check.path.name, parsed.width_mm, parsed.height_mm, self.size_extra_mm
+        )
+        check.expected_mm = expected
+        return expected
+
     def _validate_raster_size(self, check: FileCheck) -> bool:
         """Решение по размеру растра (геометрия); ``True`` — у коррекции хватает DPI."""
         parsed = check.parsed
-        expected = (parsed.width_mm + self.size_extra_mm, parsed.height_mm + self.size_extra_mm)
+        expected = self._expected_mm(check)
         actual = (check.actual_width_mm, check.actual_height_mm)
         # The order of dimensions in the filename defines the format, not the
         # visual top of the artwork. Accept both orientations without rotating.

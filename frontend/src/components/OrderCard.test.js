@@ -127,3 +127,25 @@ describe("OrderCard RGB to CMYK badge", () => {
     }
   });
 });
+
+describe("OrderCard expected size", () => {
+  const file = (extra) => ({
+    name: "06_NP(K)_(SRA3)_(434x314)_4-0_(3773-1)_1-face.pdf",
+    parsed: { side: "face", width_mm: 434, height_mm: 314, front_colors: 4, back_colors: 0 },
+    ...extra,
+  });
+  const order = (files) => ({ order_id: "1", customer_id: "3773", status: "passed", errors: [], files });
+
+  it("shows the backend reference size (SRA3 already includes bleed)", async () => {
+    const host = mount(order([file({ expected_mm: [314, 434] })]));
+    await nextTick();
+    expect(host.textContent).toContain("314.0 × 434.0 мм");
+    expect(host.textContent).not.toContain("438.0 × 318.0 мм");
+  });
+
+  it("falls back to format + 4 mm for old runs without expected_mm", async () => {
+    const host = mount(order([file({})]));
+    await nextTick();
+    expect(host.textContent).toContain("438.0 × 318.0 мм");
+  });
+});

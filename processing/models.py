@@ -81,6 +81,9 @@ class FileCheck:
     # Имя файла содержит метку «без масштабирования» (``PrePressProfile.is_no_scale_name``):
     # коррекция размера — только белые поля и/или центральная обрезка (способ ``canvas``).
     no_scale: bool = False
+    # Ожидаемый размер файла с вылетами, мм (``PrePressProfile.expected_size_mm``): формат из
+    # имени + вылеты или эталон по метке ((SRA3) 314×434, (SRA3P) 324×471).
+    expected_mm: Optional[tuple[float, float]] = None
     rotation_degrees: int = 0
     orientation_verified: bool = False
     # PDF-specific facts.  These are optional so existing image workflows and

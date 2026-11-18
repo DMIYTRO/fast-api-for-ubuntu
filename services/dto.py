@@ -92,6 +92,7 @@ def file_check_to_dto(
         "resample_confirmed": value.resample_confirmed,
         # Пометка коррекции размера вместо строки предупреждения (контракт m001).
         "size_fix": _size_fix_to_dto(value.size_fix),
+        "expected_mm": list(value.expected_mm) if value.expected_mm else None,
         "downsampled_from_dpi": value.downsampled_from_dpi,
         "rotation_degrees": value.rotation_degrees,
         "orientation_verified": value.orientation_verified,

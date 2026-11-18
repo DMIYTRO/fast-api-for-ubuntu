@@ -44,7 +44,7 @@ LIMITS = PdfResizeLimits(
     min_dpi=250, metadata_tolerance_mm=0.1, auto_mm=4.0, confirm_mm=10.0,
     stretch_auto_pct=1.0, stretch_confirm_pct=3.0,
 )
-MARKED = "job_(SRA3)_(90x50)_4-0_(1-100)_input.pdf"
+MARKED = "job_(BAN)_(90x50)_4-0_(1-100)_input.pdf"
 UNMARKED = "job_(90x50)_4-0_(1-100)_input.pdf"
 
 
@@ -297,7 +297,7 @@ def test_marked_pdf_too_far_off_is_rejected(tmp_path: Path) -> None:
 
 
 def test_marked_pdf_is_sent_to_resizer_as_canvas(tmp_path: Path) -> None:
-    pdf = tmp_path / "job_(SRA3P)_(90x50)_4-4_(1-100).pdf"
+    pdf = tmp_path / "job_(BAN)_(90x50)_4-4_(1-100).pdf"
     _make_pdf(pdf, [(90.0, 50.0), (96.0, 56.0)])
     calls: list = []
     processor = BatchProcessor(tmp_path, tmp_path / "output", pdf_resizer=_fake_resizer(calls))
@@ -344,7 +344,7 @@ def test_marked_file_never_gets_callas_bleed(tmp_path: Path) -> None:
     hook = CallasAutoBleed(CallasFixService(client), semaphore=threading.BoundedSemaphore(2))
     root = tmp_path / "in"
     root.mkdir()
-    art_pdf(root / "T_(SRA3)_(97x97)_4-0_(5-1)_face.pdf", 97, 97)
+    art_pdf(root / "T_(BAN)_(97x97)_4-0_(5-1)_face.pdf", 97, 97)
 
     processor = BatchProcessor(
         root, root / "PDF", correction_policy="auto", auto_bleed=hook, pdf_resizer=_fake_resizer([]),

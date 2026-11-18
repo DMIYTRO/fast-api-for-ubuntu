@@ -147,8 +147,14 @@ def save_order_audit(
                 else None
             )
 
-            exp_w = file_check.parsed.width_mm + profile.size_extra_mm if file_check.parsed else None
-            exp_h = file_check.parsed.height_mm + profile.size_extra_mm if file_check.parsed else None
+            expected = (
+                profile.expected_size_mm(
+                    file_check.path.name, file_check.parsed.width_mm, file_check.parsed.height_mm
+                )
+                if file_check.parsed
+                else (None, None)
+            )
+            exp_w, exp_h = expected
             c_mode = f"{file_check.parsed.front_colors}-{file_check.parsed.back_colors}" if file_check.parsed else None
 
             file_audit = FileAudit(

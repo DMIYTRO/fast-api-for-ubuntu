@@ -21,7 +21,9 @@ def validate_pdf_revision(path: Path, order: dict[str, Any], direction: str) -> 
     for index, page in enumerate(inspection.pages):
         parsed = (page_files[index].get("parsed") or {}) if index < len(page_files) else {}
         if parsed.get("width_mm") and parsed.get("height_mm"):
-            expected = (float(parsed["width_mm"]) + profile.size_extra_mm, float(parsed["height_mm"]) + profile.size_extra_mm)
+            expected = profile.expected_size_mm(
+                str(page_files[index].get("name") or ""), float(parsed["width_mm"]), float(parsed["height_mm"])
+            )
             actual = (page.width_mm, page.height_mm)
             if not any(all(abs(a - b) <= profile.size_tolerance_mm for a, b in zip(actual, target)) for target in (expected, expected[::-1])):
                 errors.append(f"PDF страница {page.page_number} имеет размер {actual[0]:.1f}x{actual[1]:.1f} мм; ожидается {expected[0]:.1f}x{expected[1]:.1f} мм")
