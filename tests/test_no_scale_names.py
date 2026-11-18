@@ -33,10 +33,10 @@ from services.batch_adapter import BatchProcessorAdapter, ProcessingOptions
 MAGICK = shutil.which("magick")
 needs_magick = pytest.mark.skipif(not MAGICK, reason="requires ImageMagick")
 
-TARGET = (438.0, 318.0)  # 434x314 + вылеты 2 мм
+TARGET = (438.0, 318.0)  # 434x314 + вылеты 2 мм ((BAN): эталона нет, формат из имени)
 DPI = (300.0, 300.0)
 LIMITS = dict(min_dpi=250.0, metadata_tolerance_mm=0.1, auto_crop_mm=4.0, confirm_crop_mm=10.0)
-MARKED = "06_NP(K)_(SRA3)_Glam10_450_mel_(434x314)_4-0_L5_T1_(3773-26162382)_1-face.tif"
+MARKED = "28_NP(K)_(BAN)_Glam10_450_mel_(434x314)_4-0_L5_T1_(3773-26162382)_1-face.tif"
 UNMARKED = "06_NP(K)_Glam10_450_mel_(434x314)_4-0_L5_T1_(3773-26162382)_1-face.tif"
 
 
@@ -390,7 +390,7 @@ def test_canvas_image_requires_known_dpi(tmp_path):
 
 @needs_magick
 def test_prepare_page_pdfs_uses_canvas_in_source_dpi(tmp_path):
-    name = "06_NP(K)_(SRA3)_Glam10_(23.4x10)_4-0_(1-1)_1-face.tif"
+    name = "06_NP(K)_(BAN)_Glam10_(23.4x10)_4-0_(1-1)_1-face.tif"
     source = _make(tmp_path / name, "red", "CMYK", size="300x180")  # 25.4x15.24 мм
     item = FileCheck(
         path=source,
