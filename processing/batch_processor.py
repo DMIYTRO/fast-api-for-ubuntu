@@ -16,7 +16,7 @@ if TYPE_CHECKING:  # services.__init__ imports this module; avoid a cycle
     from services.callas import CallasClient
 
 from core.inspector import inspect_file, inspect_raster
-from core.pdf_inspector import inspect_pdf
+from core.pdf_inspector import MAX_SUPPORTED_PAGES, inspect_pdf
 from core.pdf_exporter import convert_image_to_pdf
 from core.preview_cache import preview_extension
 from core.preview_generator import generate_preview
@@ -503,6 +503,7 @@ class BatchProcessor:
         inspection = inspect_pdf(check.input_path)
         check.actual_format = "PDF"
         check.page_count = inspection.page_count
+        check.page_rule_violation = inspection.page_count > MAX_SUPPORTED_PAGES
         check.pdf_pages = inspection.pages
         check.pdf_content_type = (
             "mixed" if any(page.content_type == "mixed" for page in inspection.pages)
@@ -1080,6 +1081,7 @@ class BatchProcessor:
         """
         order.errors.clear()
         order.warnings.clear()
+        order.page_rule_violation = False
         self._validate_order(order)
 
     @staticmethod
@@ -1095,8 +1097,10 @@ class BatchProcessor:
 
         duplex_files = [item for item in order.files if item.page_count == 2]
         if len(duplex_files) > 1:
+            order.page_rule_violation = True
             order.errors.append("найдено несколько двухстраничных PDF в одном заказе")
         if duplex_files and len(order.files) > 1:
+            order.page_rule_violation = True
             order.errors.append(
                 "двухстраничный PDF является полным заказом; дополнительные стороны запрещены"
             )
@@ -1110,8 +1114,10 @@ class BatchProcessor:
         if duplex_files:
             expected_pages = 2 if back_colors > 0 else 1
             if back_colors == 0:
+                order.page_rule_violation = True
                 order.errors.append("двухстраничный PDF недопустим для односторонней печати")
             if duplex_files[0].page_count != expected_pages:
+                order.page_rule_violation = True
                 order.errors.append(
                     f"для цветности с оборотом требуется {expected_pages} логические страницы"
                 )

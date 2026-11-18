@@ -30,7 +30,7 @@ const LOCAL_RULES = [
   ["pdf_unknown_colorspace", /^PDF страница \d+: неизвестная цветовая модель/i, "Неизвестная цветовая модель на странице PDF"],
   ["pdf_rgb_raster", /^PDF страница \d+: растровое изображение/i, "Растровое изображение в PDF имеет RGB colorspace"],
   ["pdf_low_dpi", /^PDF страница \d+: effective DPI/i, "Низкое эффективное разрешение в PDF"],
-  ["pdf_too_many_pages", /^PDF contains \d+ pages/i, "В PDF слишком много страниц"],
+  ["pdf_too_many_pages", /^(?:PDF contains \d+ pages|PDF содержит \d+ страниц; допускается)/i, "В PDF больше 2 страниц: допускается 1 или 2"],
   ["pdf_no_pages", /^PDF contains no pages/i, "PDF не содержит страниц"],
   ["pdf_encrypted", /^Encrypted PDF/i, "Зашифрованный PDF не поддерживается"],
   ["pdf_repaired", /^PDF required structural repair/i, "PDF потребовал структурного восстановления"],

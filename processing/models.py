@@ -84,6 +84,9 @@ class FileCheck:
     # Ожидаемый размер файла с вылетами, мм (``PrePressProfile.expected_size_mm``): формат из
     # имени + вылеты или эталон по метке ((SRA3) 314×434, (SRA3P) 324×471).
     expected_mm: Optional[tuple[float, float]] = None
+    # Нарушено правило числа страниц PDF (больше 2): заказ остаётся красным при любом
+    # итоге PitStop (``has_page_rule_violation``).
+    page_rule_violation: bool = False
     rotation_degrees: int = 0
     orientation_verified: bool = False
     # PDF-specific facts.  These are optional so existing image workflows and
@@ -127,6 +130,8 @@ class OrderCheck:
     postpress: dict[str, object] | None = None
     # Комплект Sborka (``services/order_kits.py``): main_id, member_ids, position, size.
     kit: dict[str, object] | None = None
+    # Нарушено правило числа страниц на уровне заказа (лишний двухстраничный PDF и т. п.).
+    page_rule_violation: bool = False
     # Итог автоматического перевода RGB → CMYK итогового PDF (None — не требовался).
     color_conversion: dict[str, object] | None = None
     # Допечатные проверки callas итогового PDF: шрифты, ppi, плашка K100 (services/callas/prepress.py).
@@ -139,3 +144,15 @@ class OrderCheck:
     @property
     def passed(self) -> bool:
         return not self.errors and all(item.passed for item in self.files)
+
+
+def has_page_rule_violation(order: "OrderCheck") -> bool:
+    """Заказ нарушает правило «PDF — 1 или 2 страницы»: это жёсткая ошибка.
+
+    В отличие от прочих замечаний к макету (низкое DPI, размер…), которые при собранном
+    «как есть» диагностическом PDF становятся предупреждением, такой заказ не печатается.
+    """
+    return bool(
+        getattr(order, "page_rule_violation", False)
+        or any(getattr(item, "page_rule_violation", False) for item in order.files)
+    )

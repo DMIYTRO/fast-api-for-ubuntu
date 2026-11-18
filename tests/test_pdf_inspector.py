@@ -81,7 +81,7 @@ def test_three_pages_is_diagnostic_error(tmp_path: Path) -> None:
 
     assert not result.is_valid
     assert result.page_count == 3
-    assert any("maximum supported is 2" in error for error in result.errors)
+    assert any("допускается не более 2" in error for error in result.errors)
 
 
 def test_empty_corrupt_and_missing_files_are_diagnostics(tmp_path: Path) -> None:

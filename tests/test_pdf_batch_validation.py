@@ -173,7 +173,7 @@ def test_three_page_pdf_fails(tmp_path: Path) -> None:
     order = _processor(tmp_path).inspect_orders()[0]
 
     assert not order.passed
-    assert any("maximum supported is 2" in error for error in order.files[0].errors)
+    assert any("допускается не более 2" in error for error in order.files[0].errors)
 
 
 def test_real_pdf_fixture_has_expected_one_and_two_page_documents() -> None:

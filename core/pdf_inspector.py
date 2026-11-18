@@ -211,8 +211,9 @@ def inspect_pdf(path: str | Path) -> PdfInspection:
             errors.append("PDF contains no pages")
         elif page_count > MAX_SUPPORTED_PAGES:
             errors.append(
-                f"PDF contains {page_count} pages; maximum supported is "
-                f"{MAX_SUPPORTED_PAGES}"
+                f"PDF содержит {page_count} страниц; допускается не более "
+                f"{MAX_SUPPORTED_PAGES} (лицо и оборот) — пришлите каждую сторону "
+                "отдельной страницей одного заказа"
             )
 
         pages: list[PdfPageInfo] = []
