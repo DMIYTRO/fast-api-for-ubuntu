@@ -371,7 +371,7 @@ export const useChecksStore = defineStore("checks", {
       await api.correction(this.activeRun.id, order.aggregate_id ?? order.order_id ?? order.id, { decision });
       await this.resync();
     },
-    async act(action, comment, conflictStrategy = "fail", confirmFailed = false) {
+    async act(action, comment, conflictStrategy = "replace", confirmFailed = false) {
       const selectedOrders = this.selectedOrders;
       if (action === "force-print" || (action === "print" && !this.canPrint)) {
         throw new Error((this.selectedOrders.some((order) => (order.print_blockers || []).length) && this.printBlockReason) || "В печать можно отправить только заказы, прошедшие все обязательные проверки.");

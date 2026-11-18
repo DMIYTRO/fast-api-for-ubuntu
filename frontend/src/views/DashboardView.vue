@@ -19,7 +19,7 @@ async function logout() { await auth.logout(); router.replace("/login"); }
 async function act(action, comment, confirmFailed = false) {
   actionBusy.value = true;
   try {
-    const result = await checks.act(action, comment, "fail", confirmFailed);
+    const result = await checks.act(action, comment, "replace", confirmFailed);
     const failed = result.filter((item) => !["prepared", "pending", "conflict"].includes(item.status));
     if (failed.length) {
       const first = failed[0];

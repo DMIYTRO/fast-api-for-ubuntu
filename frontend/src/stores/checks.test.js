@@ -523,10 +523,10 @@ describe("checks store", () => {
     await store.act("reject", "Общий комментарий.");
 
     expect(reject).toHaveBeenNthCalledWith(1, {
-      order_ids: ["100"], run_id: "run-1", comment: "Размер неверный.\nОбщий комментарий.", design: false, design_cost: "0", conflict_strategy: "fail",
+      order_ids: ["100"], run_id: "run-1", comment: "Размер неверный.\nОбщий комментарий.", design: false, design_cost: "0", conflict_strategy: "replace",
     });
     expect(reject).toHaveBeenNthCalledWith(2, {
-      order_ids: ["200"], run_id: "run-1", comment: "Низкое разрешение.\nОбщий комментарий.", design: true, design_cost: "50", conflict_strategy: "fail",
+      order_ids: ["200"], run_id: "run-1", comment: "Низкое разрешение.\nОбщий комментарий.", design: true, design_cost: "50", conflict_strategy: "replace",
     });
     expect(store.returnComments).toEqual({});
     expect(store.activeRun.progress).toBe(73);
@@ -590,7 +590,7 @@ describe("checks store", () => {
     await store.act("print", "");
 
     expect(print).toHaveBeenCalledWith({
-      order_ids: ["client-a:100", "client-b:100"], run_id: "run-1", conflict_strategy: "fail", confirm_failed_processing: false,
+      order_ids: ["client-a:100", "client-b:100"], run_id: "run-1", conflict_strategy: "replace", confirm_failed_processing: false,
     });
   });
 
