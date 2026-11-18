@@ -552,7 +552,10 @@ class OrderWorkflowService:
         }
         main = by_id.get(main_id)
         size = kit.get("size") or len(kit.get("member_ids") or [])
-        if main is None:
+        # Главного нет в этом запуске, но мы уже вернули его в другой проверке: Sborka
+        # вернула весь комплект — остальные заказы догоняем локально.
+        main_returned_elsewhere = main is None and self._returned_in_history(main_id)
+        if main is None and not main_returned_elsewhere:
             return [
                 {
                     "order_id": order_id,
@@ -567,7 +570,9 @@ class OrderWorkflowService:
                 for order_id in sorted(selected_ids)
             ]
         items: list[dict[str, Any]] = []
-        if main.get("status") != "returned_for_rework":
+        if main_returned_elsewhere:
+            logger.info("order.kit_main_returned_elsewhere run_id=%s main_id=%s", run_id, main_id)
+        elif main.get("status") != "returned_for_rework":
             main_items = self._prepare(
                 replace(command, order_ids=(self._order_ref(main),)), "reject"
             )["items"]
@@ -620,6 +625,16 @@ class OrderWorkflowService:
                     ),
                 })
         return items
+
+    def _returned_in_history(self, order_id: str) -> bool:
+        """Заказ возвращён на доработку в одной из сохранённых проверок."""
+        with self.session_factory() as session:
+            return session.scalar(
+                select(OrderResult.id).where(
+                    OrderResult.order_id == order_id,
+                    OrderResult.status == "returned_for_rework",
+                ).limit(1)
+            ) is not None
 
     def _prepare(
         self,

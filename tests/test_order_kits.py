@@ -60,6 +60,36 @@ def test_resolver_failure_is_not_cached():
     assert resolver.for_run(run)[MAIN]["size"] == 3
 
 
+def _sborka_orderinfo(ids):
+    """Как настоящая Sborka: комплект — только в записи запрошенного главного заказа."""
+    return [record for record in ORDER_INFO if record["id"] in ids]
+
+
+def _kit_file(order_id, position):
+    return [{"name": f"23_KS(K)_Bezlam_300_(90x50)_4-4_L212_T300_(36056-{order_id})_{position}.pdf"}]
+
+
+def test_resolver_finds_main_order_outside_the_run_by_file_name():
+    """Проверка 23:42: главный 26234881 уже в Troubles, в запуске только подзаказы."""
+    calls = []
+    resolver = KitResolver(lambda ids: calls.append(list(ids)) or _sborka_orderinfo(ids))
+    run = {"id": "r", "orders": {
+        SECOND: {"order_id": SECOND, "files": _kit_file(SECOND, 2)},
+        THIRD: {"order_id": THIRD, "files": _kit_file(THIRD, 3)},
+    }}
+
+    kits = resolver.for_run(run)
+
+    assert calls == [[SECOND, THIRD], [MAIN]]
+    assert kits[SECOND]["main_id"] == MAIN and kits[THIRD]["position"] == 3
+
+
+def test_resolver_ignores_unconfirmed_candidate():
+    resolver = KitResolver(_sborka_orderinfo)
+    run = {"id": "r", "orders": {"5000002": {"order_id": "5000002", "files": _kit_file("5000002", 2)}}}
+    assert resolver.for_run(run) == {}
+
+
 class Lifecycle:
     calls: list[str] = []
     guard = Lock()
@@ -222,6 +252,22 @@ class KitReturnTests(unittest.TestCase):
         self.assertEqual(self.sent, [])
         self.assertEqual(items[0]["code"], "kit_main_missing")
         self.assertEqual(self._status(SECOND), "warning")
+
+    def test_main_returned_in_earlier_run_catches_up_members_locally(self):
+        """Повторная проверка без главного заказа: он возвращён в прошлой проверке."""
+        del self.run["orders"][MAIN]
+        self.run["orders"][SECOND]["files"] = _kit_file(SECOND, 2)
+        self.run["orders"][THIRD]["files"] = _kit_file(THIRD, 3)
+        with self.database.session_factory() as session, session.begin():
+            session.add(CheckRun(id="run-0", input_path=self.tmp.name, direction="digital", status="completed"))
+            session.add(OrderResult(id=50, run_id="run-0", order_id=MAIN, status="returned_for_rework", passed=True))
+
+        items = self._reject(self._service(fetcher=_sborka_orderinfo), THIRD)
+
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self._status(SECOND), "returned_for_rework")
+        self.assertEqual(self._status(THIRD), "returned_for_rework")
+        self.assertEqual({item["status"] for item in items}, {"prepared"})
 
     def test_orderinfo_failure_falls_back_to_plain_return(self):
         def broken(_ids):

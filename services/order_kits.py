@@ -14,7 +14,9 @@ Sborka не подтверждает (пустой ответ). Поэтому �
 from __future__ import annotations
 
 import logging
+import re
 from collections import OrderedDict
+from pathlib import PurePath
 from threading import Lock
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -22,6 +24,27 @@ logger = logging.getLogger("image_magic.order_kits")
 
 #: Сколько запусков держать в кэше состава комплектов.
 _CACHE_RUNS = 32
+#: Номер заказа и позиция в комплекте в имени файла: «…(36056-26234883)_3.pdf» — 3-й заказ.
+_KIT_POSITION_RE = re.compile(r"\((\d+)-(\d+)\)_(\d+)(?=$|[_.\-])")
+
+
+def candidate_main_ids(order: Mapping[str, Any]) -> set[str]:
+    """Предполагаемый главный заказ комплекта по имени файла (номера заказов комплекта подряд).
+
+    «…(36056-26234883)_3» → 26234881. Это только кандидат: комплект засчитывается, если
+    Sborka в ``orderinfo`` кандидата перечислит этот заказ в ``sets_array``.
+    """
+    order_id = str(order.get("order_id") or "")
+    if not order_id.isdigit():
+        return set()
+    candidates: set[str] = set()
+    for file in order.get("files") or []:
+        name = str(file.get("name") or PurePath(str(file.get("path") or "")).name)
+        for match in _KIT_POSITION_RE.finditer(name):
+            position = int(match.group(3))
+            if match.group(2) == order_id and 2 <= position <= 999 and int(order_id) >= position:
+                candidates.add(str(int(order_id) - (position - 1)))
+    return candidates
 
 
 def kits_from_order_info(records: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -96,6 +119,24 @@ class KitResolver:
         except Exception as exc:
             logger.warning("order_kits.orderinfo_failed run_id=%s error=%s", run_id, exc)
             return {}
+        # Главного заказа может не быть в запуске (уже возвращён и перенесён в Troubles),
+        # а подзаказ Sborka отдельно не отдаёт: спросить предполагаемые главные заказы.
+        known = set(order_ids)
+        candidates = {
+            candidate
+            for order in orders
+            if str(order.get("order_id")) not in kits
+            for candidate in candidate_main_ids(order)
+        } - known
+        if candidates:
+            try:
+                extra = kits_from_order_info(self.fetcher(sorted(candidates)))
+            except Exception as exc:
+                logger.warning("order_kits.candidate_orderinfo_failed run_id=%s error=%s", run_id, exc)
+                return {}
+            for order_id in known:
+                if order_id not in kits and order_id in extra:
+                    kits[order_id] = extra[order_id]
         with self._guard:
             self._cache[run_id] = kits
             while len(self._cache) > _CACHE_RUNS:
