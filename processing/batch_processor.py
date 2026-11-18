@@ -5,7 +5,6 @@ import logging
 import os
 from pathlib import Path
 import shutil
-import tempfile
 import threading
 import uuid
 
@@ -23,6 +22,7 @@ from core.preview_cache import preview_extension
 from core.preview_generator import generate_preview
 from core.preview_cache import full_preview_cache_path, preview_work_dir
 from core.resampler import canvas_image, resample_image
+from core.share_tempdir import share_temp_dir, sweep_stale_temp_dirs
 from core.tool_runner import run_command
 from config.profiles import DEFAULT_PROFILE, PrePressProfile
 from .resample_policy import (
@@ -235,7 +235,7 @@ def build_raster_source_pdf(source: Path | str, target: Path | str, *, strip_icc
     if check.errors:
         raise ValueError("; ".join(check.errors))
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".raster-pdf-", dir=target_path.parent) as temporary_dir:
+    with share_temp_dir(prefix=".raster-pdf-", dir=target_path.parent) as temporary_dir:
         image_path, flattened = _flatten_for_pdf(
             check, str(source_path), Path(temporary_dir) / "flattened.tif"
         )
@@ -318,6 +318,8 @@ class BatchProcessor:
         # возвращает новую проверку файла из принятого исправления или None. Только
         # при correction_policy == "auto"; None — шаг не выполняется (CLI, тесты).
         self.auto_bleed = auto_bleed
+        # Папки, где брошенные временные папки уже убраны (``_sweep_temp_dirs``).
+        self._swept_temp_roots: set[str] = set()
         self.auto_bleed_max_concurrent = auto_bleed_max_concurrent
         # "auto" — малые коррекции применяются сами (CLI, тесты); "ask" и "reject" —
         # любая коррекция размера требует решения оператора (подтверждение или отказ).
@@ -1174,6 +1176,7 @@ class BatchProcessor:
 
     def create_pdfs(self, orders: list[OrderCheck]) -> list[tuple[OrderCheck, Path, str | None]]:
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._sweep_temp_dirs(self.output_dir)
         results = []
         for order in orders:
             if not order.passed:
@@ -1181,7 +1184,8 @@ class BatchProcessor:
             ordered_files = self._ordered_files_for_creation(order)
             output_path = self.output_dir / f"{self._output_stem(order, ordered_files)}.pdf"
             try:
-                with tempfile.TemporaryDirectory(
+                # Уборка папки на SMB не роняет заказ: PDF к этому моменту уже опубликован.
+                with share_temp_dir(
                     prefix=f".{order.order_id}_",
                     dir=self.output_dir,
                 ) as temporary_dir:
@@ -1206,6 +1210,14 @@ class BatchProcessor:
                 results.append((order, output_path, str(exc)))
         return results
 
+    def _sweep_temp_dirs(self, root: Path) -> None:
+        """Убрать брошенные временные папки (старше часа) в ``root`` — раз за процессор."""
+        key = str(root)
+        if key in self._swept_temp_roots:
+            return
+        self._swept_temp_roots.add(key)
+        sweep_stale_temp_dirs(root)
+
     def create_diagnostic_pdf(
         self, order: OrderCheck, output_dir: Path
     ) -> tuple[Path | None, str | None]:
@@ -1218,9 +1230,10 @@ class BatchProcessor:
         """
         ordered_files = self._ordered_files_for_creation(order)
         output_dir.mkdir(parents=True, exist_ok=True)
+        self._sweep_temp_dirs(output_dir)
         output_path = output_dir / f"{self._output_stem(order, ordered_files)}.pdf"
         skipped: list[str] = []
-        with tempfile.TemporaryDirectory(
+        with share_temp_dir(
             prefix=f".{order.order_id}_diag_", dir=output_dir
         ) as temporary_dir:
             page_pdfs: list[str] = []
@@ -1659,7 +1672,7 @@ class BatchProcessor:
         preview_dir.mkdir(parents=True, exist_ok=True)
         created_previews: list[Path] = []
 
-        with tempfile.TemporaryDirectory(
+        with share_temp_dir(
             prefix=f".preview_{pdf_path.stem}_", dir=preview_work_dir(preview_dir / ".preview")
         ) as temp_dir:
             temp_path = Path(temp_dir)

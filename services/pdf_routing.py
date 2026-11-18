@@ -25,8 +25,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import shutil
-import tempfile
 from typing import Any
+
+from core.share_tempdir import share_temp_dir
 
 
 PDF_FOLDER_BY_STATUS: dict[str, str] = {
@@ -131,7 +132,7 @@ def route_pdf(
     staged: list[tuple[Path, Path]] = []
     # Stage previous copies outside every status folder, so a successful
     # publish has exactly one visible result. Restore them on a failed save.
-    with tempfile.TemporaryDirectory(prefix=".pdf-route-", dir=root) as backup_dir:
+    with share_temp_dir(prefix=".pdf-route-", dir=root) as backup_dir:
         temporary = Path(backup_dir) / "candidate.pdf"
         try:
             _link_or_copy(source, temporary)

@@ -69,11 +69,11 @@ def dpi_for_longest_side(width_pt: float, height_pt: float, longest_px: int, max
 
 def render_pdf_to_pngs(pdf_path: Path, dpi: int, destinations: list[Path]) -> list[Path]:
     """Рендерит PDF через callas и кладёт страницы по указанным путям (по порядку)."""
-    import tempfile
+    from core.share_tempdir import share_temp_dir
 
     first = destinations[0]
     first.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".callas-render-", dir=first.parent) as tmp:
+    with share_temp_dir(prefix=".callas-render-", dir=first.parent) as tmp:
         pages = get_pdf_renderer()(Path(pdf_path), int(dpi), Path(tmp))
         if len(pages) < len(destinations):
             raise ValueError(
