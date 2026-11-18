@@ -18,6 +18,11 @@ DEFAULT_SHRINK_AUTO_MAX_MM = 2.0
 DEFAULT_MAX_DPI = 500.0
 #: Целевое разрешение профилей по умолчанию.
 DEFAULT_TARGET_DPI = 300.0
+#: Метки в имени файла, при которых макет никогда не масштабируется: размер приводится
+#: только белыми полями (холст больше) или центральной обрезкой (холст меньше).
+#: Сравнение — подстрока без учёта регистра, скобки входят в метку: «(SRA3)» не
+#: совпадает с «(SRA3P)», поэтому обе перечислены.
+DEFAULT_NO_SCALE_NAME_MARKERS = ("(SRA3P)", "(SRA3)", "(BAN)")
 
 
 @dataclass(frozen=True)
@@ -78,6 +83,15 @@ class PrePressProfile:
     sheet_trim: Mapping[str, str] | None = None
     cut_lines: Mapping[str, str] | None = None
     spots: tuple[str, ...] = field(default_factory=tuple)
+    # Файлы с этими метками в имени не масштабируются никаким способом лестницы
+    # (reveal, Callas-поля, stretch, shrink, fill): только белые поля или обрезка
+    # по центру, способ ``canvas``. Пустой кортеж выключает правило.
+    no_scale_name_markers: tuple[str, ...] = DEFAULT_NO_SCALE_NAME_MARKERS
+
+    def is_no_scale_name(self, name: str) -> bool:
+        """Имя файла содержит метку «без масштабирования» (без учёта регистра)."""
+        lowered = name.casefold()
+        return any(marker and marker.casefold() in lowered for marker in self.no_scale_name_markers)
 
     def with_correction_limit(
         self, limit_mm: float, confirm_max_mm: float | None = None
@@ -98,6 +112,18 @@ class PrePressProfile:
                 self.downsample_high_dpi if enabled is None else bool(enabled)
             ),
         )
+
+    def with_no_scale_markers(self, markers: "tuple[str, ...] | list[str]") -> "PrePressProfile":
+        """Профиль с метками «без масштабирования» (IMAGE_MAGIC_NO_SCALE_NAME_MARKERS).
+
+        Пустые и повторяющиеся метки отбрасываются; пустой список выключает правило.
+        """
+        cleaned: list[str] = []
+        for marker in markers:
+            value = str(marker).strip()
+            if value and value.casefold() not in {item.casefold() for item in cleaned}:
+                cleaned.append(value)
+        return replace(self, no_scale_name_markers=tuple(cleaned))
 
     @property
     def size_extra_mm(self) -> float:

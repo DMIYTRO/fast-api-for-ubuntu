@@ -49,6 +49,8 @@ const SIZE_FIX_LABELS = {
   stretch: "Растянуто",
   shrink: "Уменьшено",
   fill: "Подогнано",
+  // Файл с меткой (SRA3)/(SRA3P)/(BAN) в имени: без масштабирования — белые поля или обрезка.
+  canvas: "Поля/обрезка",
   callas: "Исправлено Callas",
 };
 const SIZE_FIX_MIXED_LABEL = "Размер скорректирован";

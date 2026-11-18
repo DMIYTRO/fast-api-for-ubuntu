@@ -22,10 +22,17 @@ from core.pdf_exporter import convert_image_to_pdf
 from core.preview_cache import preview_extension
 from core.preview_generator import generate_preview
 from core.preview_cache import full_preview_cache_path, preview_work_dir
-from core.resampler import resample_image
+from core.resampler import canvas_image, resample_image
 from core.tool_runner import run_command
 from config.profiles import DEFAULT_PROFILE, PrePressProfile
-from .resample_policy import ResampleDecision, analyze_resample, is_shrink
+from .resample_policy import (
+    METHOD_CANVAS,
+    ResampleDecision,
+    analyze_canvas,
+    analyze_resample,
+    canvas_change_text,
+    is_shrink,
+)
 from .pdf_resize_policy import (
     METHOD_FILL,
     METHOD_REVEAL,
@@ -122,6 +129,21 @@ def _report(
 def _is_pdf_content(item: FileCheck) -> bool:
     """Содержимое файла — PDF (исходный PDF или принятое исправление растра/PDF)."""
     return item.input_path.suffix.lower() == ".pdf"
+
+
+def _is_canvas_correction(item: FileCheck) -> bool:
+    """Коррекция растра «без масштабирования» (белые поля / обрезка в исходном DPI).
+
+    Уменьшение высокого DPI (``downsampled_from_dpi``) — не коррекция размера и идёт
+    обычным ресемплингом.
+    """
+    return bool(
+        item.no_scale
+        and item.needs_resample
+        and item.resample_target_mm
+        and item.downsampled_from_dpi is None
+        and not _is_pdf_content(item)
+    )
 
 
 def _read_raster_facts(check: FileCheck, scopes: Collection[str] = ALL_SCOPES) -> bool:
@@ -606,8 +628,11 @@ class BatchProcessor:
         Способы и пороги — ``processing/pdf_resize_policy.py`` (показать скрытые вылеты,
         пропорциональное заполнение как у растра, малое вытягивание). План строится для
         всех страниц, потому что QuickFix выставляет боксы каждой; страницы с /Rotate
-        не трогаем.
+        не трогаем. Файл с меткой «без масштабирования» в имени
+        (``PrePressProfile.is_no_scale_name``) получает только ``canvas``: белые поля и/или
+        центральная обрезка без масштаба, без показа скрытых вылетов и вытягивания.
         """
+        check.no_scale = self.profile.is_no_scale_name(check.path.name)
         if self.pdf_resizer is None or not pages:
             return None
         mismatched = [
@@ -633,6 +658,7 @@ class BatchProcessor:
                 page_min_dpi(page.images),
                 limits,
                 getattr(page, "hidden_margins_mm", ()),
+                no_scale=check.no_scale,
             )
             for page in pages
         }
@@ -711,6 +737,16 @@ class BatchProcessor:
 
     @staticmethod
     def _pdf_resize_detail(plan) -> str:
+        if plan.method == METHOD_CANVAS:
+            # enlarge_mm у canvas — сдвиг краёв MediaBox со знаком (+ поле, − обрезка).
+            pad = tuple(max(value, 0.0) for value in plan.enlarge_mm)
+            cut = tuple(max(-value, 0.0) for value in plan.enlarge_mm)
+            parts = []
+            if max(pad) > 0.005:
+                parts.append(f"белые поля {pad[0]:.2f}/{pad[1]:.2f} мм с каждой стороны")
+            if max(cut) > 0.005:
+                parts.append(f"обрезка {cut[0]:.2f}/{cut[1]:.2f} мм с каждой стороны")
+            return "без масштабирования: " + (", ".join(parts) or "размер не меняется")
         if plan.method == METHOD_REVEAL:
             return (
                 f"показаны скрытые вылеты: +{plan.enlarge_mm[0]:.2f}/{plan.enlarge_mm[1]:.2f} мм "
@@ -757,27 +793,55 @@ class BatchProcessor:
         # The order of dimensions in the filename defines the format, not the
         # visual top of the artwork. Accept both orientations without rotating.
         # A possible face/back mismatch is handled later at order level.
-        plans = [
-            analyze_resample(
-                actual,
-                target,
-                (check.dpi_x or 0.0, check.dpi_y or 0.0),
-                min_dpi=self.min_dpi,
-                metadata_tolerance_mm=self.profile.metadata_tolerance_mm,
-                auto_crop_mm=self.profile.auto_crop_mm,
-                confirm_crop_mm=self.profile.confirm_crop_mm,
-                allow_rotation=False,
-                shrink_auto_mm=self.profile.shrink_auto_mm,
-            )
-            for target in (expected, (expected[1], expected[0]))
-        ]
+        source_dpi = (check.dpi_x or 0.0, check.dpi_y or 0.0)
+        # Метка «без масштабирования» в имени ((SRA3), (SRA3P), (BAN)): только белые поля
+        # или центральная обрезка в исходном разрешении, без поворота.
+        check.no_scale = self.profile.is_no_scale_name(check.path.name)
+        if check.no_scale:
+            plans = [
+                analyze_canvas(
+                    actual,
+                    target,
+                    source_dpi,
+                    min_dpi=self.min_dpi,
+                    metadata_tolerance_mm=self.profile.metadata_tolerance_mm,
+                    auto_crop_mm=self.profile.auto_crop_mm,
+                    confirm_crop_mm=self.profile.confirm_crop_mm,
+                )
+                for target in (expected, (expected[1], expected[0]))
+            ]
+        else:
+            plans = [
+                analyze_resample(
+                    actual,
+                    target,
+                    source_dpi,
+                    min_dpi=self.min_dpi,
+                    metadata_tolerance_mm=self.profile.metadata_tolerance_mm,
+                    auto_crop_mm=self.profile.auto_crop_mm,
+                    confirm_crop_mm=self.profile.confirm_crop_mm,
+                    allow_rotation=False,
+                    shrink_auto_mm=self.profile.shrink_auto_mm,
+                )
+                for target in (expected, (expected[1], expected[0]))
+            ]
         decision_rank = {
             ResampleDecision.ACCEPT: 0,
             ResampleDecision.AUTO_CORRECT: 1,
             ResampleDecision.ASK_CONFIRMATION: 2,
             ResampleDecision.REJECT: 3,
         }
-        plan = min(plans, key=lambda value: (decision_rank[value.decision], max(value.crop_mm)))
+        if check.no_scale:
+            # Холст: при равном решении — меньшее изменение размера (поля или обрезка).
+            plan = min(
+                plans,
+                key=lambda value: (
+                    decision_rank[value.decision],
+                    max(abs(value.target_mm[i] - actual[i]) for i in (0, 1)),
+                ),
+            )
+        else:
+            plan = min(plans, key=lambda value: (decision_rank[value.decision], max(value.crop_mm)))
         expected = plan.target_mm
         check.resample_decision = plan.decision.value
         check.resample_reason = plan.reason
@@ -794,12 +858,20 @@ class BatchProcessor:
             plan = replace(
                 plan,
                 decision=ResampleDecision.ASK_CONFIRMATION,
-                reason="пропорциональная коррекция требует подтверждения пользователя",
+                reason=(
+                    f"коррекция {canvas_change_text(actual, expected)} требует подтверждения пользователя"
+                    if check.no_scale
+                    else "пропорциональная коррекция требует подтверждения пользователя"
+                ),
             )
             check.resample_decision = plan.decision.value
             check.resample_reason = plan.reason
 
-        crop_text = f"обрезка {plan.crop_mm[0]:.2f}x{plan.crop_mm[1]:.2f} мм"
+        crop_text = (
+            canvas_change_text(actual, expected)
+            if check.no_scale
+            else f"обрезка {plan.crop_mm[0]:.2f}x{plan.crop_mm[1]:.2f} мм"
+        )
         rotation_text = f", поворот на {plan.rotation_degrees}°" if plan.rotation_degrees else ""
         if plan.decision == ResampleDecision.AUTO_CORRECT:
             check.needs_resample = True
@@ -891,6 +963,15 @@ class BatchProcessor:
         if target is None or check.actual_width_mm is None or check.actual_height_mm is None:
             return None
         actual = (check.actual_width_mm, check.actual_height_mm)
+        if check.no_scale:
+            # Без масштабирования: белые поля и/или центральная обрезка, без поворота.
+            detail = (
+                f"{actual[0]:.1f}x{actual[1]:.1f} → {target[0]:.1f}x{target[1]:.1f} мм: "
+                f"{canvas_change_text(actual, target, separator=', ')}"
+            )
+            if not auto:
+                detail += "; подтверждено оператором"
+            return make_size_fix(METHOD_CANVAS, auto, actual, target, detail)
         scale = check.resample_scale
         method = METHOD_SHRINK if is_shrink(actual, target) else METHOD_FILL
         crop = check.resample_crop_mm
@@ -1347,7 +1428,22 @@ class BatchProcessor:
                 item, str(item.path), temporary_dir / f"flattened_{page_number}.tif"
             )
             dpi_arg = f"{item.dpi_x}x{item.dpi_y}"
-            if item.needs_resample and item.resample_target_mm:
+            canvas = _is_canvas_correction(item)
+            if canvas:
+                # Без масштабирования: белые поля / обрезка в исходном разрешении.
+                resampled_path = temporary_dir / (
+                    f"canvas_{page_number}_{ref.expected_side}{item.path.suffix}"
+                )
+                canvas_image(
+                    source_image_path,
+                    str(resampled_path),
+                    target_width_mm=item.resample_target_mm[0],
+                    target_height_mm=item.resample_target_mm[1],
+                    source_dpi=(float(item.dpi_x), float(item.dpi_y)),
+                    ignore_tiff_layers=item.tiff_layer_count == 1,
+                )
+                source_image_path = str(resampled_path)
+            elif item.needs_resample and item.resample_target_mm:
                 resampled_path = temporary_dir / (
                     f"resampled_{page_number}_{ref.expected_side}{item.path.suffix}"
                 )
@@ -1365,7 +1461,13 @@ class BatchProcessor:
 
             page_path = temporary_dir / f"{page_number}_{ref.expected_side}.pdf"
             _convert_raster_page(item, source_image_path, page_path, dpi_arg, self.strip_icc_cmyk)
-            if item.needs_resample and item.resample_target_mm:
+            if canvas:
+                item.processing_actions.append({
+                    "kind": "size_correction", "method": METHOD_CANVAS,
+                    "target_mm": list(item.resample_target_mm),
+                    "dpi": [item.dpi_x, item.dpi_y],
+                })
+            elif item.needs_resample and item.resample_target_mm:
                 if item.downsampled_from_dpi is not None:
                     item.processing_actions.append({
                         "kind": "dpi_downsample", "from_dpi": item.downsampled_from_dpi,

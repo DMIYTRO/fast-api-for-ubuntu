@@ -11,6 +11,7 @@ from config.profiles import (
     DEFAULT_AUTO_CORRECT_MAX_MM,
     DEFAULT_CORRECTION_CONFIRM_MAX_MM,
     DEFAULT_MAX_DPI,
+    DEFAULT_NO_SCALE_NAME_MARKERS,
     DEFAULT_TARGET_DPI,
 )
 
@@ -113,6 +114,21 @@ def _env_csv_set(name: str, default: str) -> frozenset[str]:
     return frozenset(item.strip() for item in raw.split(",") if item.strip())
 
 
+def _env_no_scale_markers(
+    name: str, default: tuple[str, ...] = DEFAULT_NO_SCALE_NAME_MARKERS
+) -> tuple[str, ...]:
+    """Метки «без масштабирования» через запятую; не задано — по умолчанию, пусто — выключено."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return tuple(default)
+    markers: list[str] = []
+    for item in raw.split(","):
+        marker = item.strip()
+        if marker and marker.casefold() not in {value.casefold() for value in markers}:
+            markers.append(marker)
+    return tuple(markers)
+
+
 def _callas_poll_intervals() -> tuple[float, float]:
     """Начальный и максимальный интервал опроса callas; максимум не меньше начального."""
     interval = max(0.1, float(os.environ.get("IMAGE_MAGIC_CALLAS_POLL_INTERVAL_SECONDS", "0.2")))
@@ -184,6 +200,9 @@ class Settings:
     # Растры с верным размером и разрешением выше max_dpi уменьшаются до целевого DPI.
     downsample_high_dpi_enabled: bool = True
     max_dpi: float = DEFAULT_MAX_DPI
+    # Метки в имени файла, при которых макет не масштабируется (только белые поля или
+    # обрезка), IMAGE_MAGIC_NO_SCALE_NAME_MARKERS; пустой кортеж выключает правило.
+    no_scale_name_markers: tuple[str, ...] = DEFAULT_NO_SCALE_NAME_MARKERS
     strip_icc_cmyk: bool = False
     # Автоматический перевод RGB → CMYK итогового PDF процесс-планом callas.
     callas_rgb_to_cmyk_enabled: bool = False
@@ -412,6 +431,7 @@ class Settings:
                 "IMAGE_MAGIC_DOWNSAMPLE_HIGH_DPI_ENABLED", True
             ),
             max_dpi=_env_max_dpi("IMAGE_MAGIC_MAX_DPI"),
+            no_scale_name_markers=_env_no_scale_markers("IMAGE_MAGIC_NO_SCALE_NAME_MARKERS"),
             strip_icc_cmyk=_env_bool("IMAGE_MAGIC_STRIP_ICC_CMYK", False),
             callas_rgb_to_cmyk_enabled=_env_bool(
                 "IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_ENABLED", False
