@@ -282,6 +282,18 @@ def _resized(item: FileCheck, page) -> tuple[float, float]:
     return (page.width_mm, page.height_mm)
 
 
+def _pdf_page_sizes_mm(pdf_path: Path, expected_pages: int) -> list[tuple[float, float]] | None:
+    """Размеры страниц итогового PDF по боксам (как у исходника); ``None`` — не прочитан."""
+    try:
+        inspection = inspect_pdf(pdf_path)
+    except Exception:  # noqa: BLE001 — тогда размер берётся из контрольного рендера
+        logger.warning("pdf.final_size_inspect_failed pdf=%s", Path(pdf_path).name, exc_info=True)
+        return None
+    if inspection.errors or len(inspection.pages) != expected_pages:
+        return None
+    return [(page.width_mm, page.height_mm) for page in inspection.pages]
+
+
 def _logical_side(item: FileCheck) -> str:
     """Return the production side, including a side-less 4-0 PDF."""
     return item.parsed.side or "face"
@@ -1682,29 +1694,44 @@ class BatchProcessor:
         page_refs: list[_LogicalPageRef],
         validation_dir: Path,
     ) -> None:
-        """Render the final PDF and verify readability, page count, order and page sizes."""
+        """Render the final PDF and verify readability, page count, order and page sizes.
+
+        Размер страницы берётся из боксов итогового PDF (``inspect_pdf``) — тем же способом,
+        что и ожидаемый размер исходника. Пиксели контрольного рендера 72 DPI — только
+        запасной вариант: callas округляет страницу вниз и теряет ещё до 1 px (до ~0.7 мм),
+        а ``/Rotate`` в рендере меняет ориентацию (заказы 26242148, 26241885).
+        """
         rendered_pages = self._render_pdf_pages(pdf_path, validation_dir)
         if len(rendered_pages) != len(page_refs):
             raise ValueError(
                 f"в итоговом PDF {len(rendered_pages)} страниц; ожидалось {len(page_refs)}"
             )
+        box_sizes = _pdf_page_sizes_mm(pdf_path, len(page_refs))
 
         for page_number, (rendered_page, ref) in enumerate(zip(rendered_pages, page_refs), start=1):
-            page_meta = inspect_file(str(rendered_page))
-            # Контрольный рендер callas выполняется при 72 DPI: 1 px = 1 pt.
-            width_px = getattr(page_meta, "width_px", None)
-            height_px = getattr(page_meta, "height_px", None)
             source = ref.source
             expected = (ref.expected_width_mm, ref.expected_height_mm)
             if source.needs_resample and source.resample_target_mm and not _is_pdf_content(source):
                 expected = source.resample_target_mm
-            if width_px and height_px:
-                actual = (width_px * 25.4 / 72.0, height_px * 25.4 / 72.0)
+            if box_sizes is not None:
+                actual = box_sizes[page_number - 1]
+                validation_tolerance = max(self.tolerance_mm, 0.6)
             else:
-                actual = (page_meta.width_mm, page_meta.height_mm)
-            # A 72-DPI control render has a rounding step of about 0.35 mm.
-            validation_tolerance = max(self.tolerance_mm, 0.6)
-            if any(abs(a - e) > validation_tolerance for a, e in zip(actual, expected)):
+                page_meta = inspect_file(str(rendered_page))
+                # Контрольный рендер callas выполняется при 72 DPI: 1 px = 1 pt.
+                width_px = getattr(page_meta, "width_px", None)
+                height_px = getattr(page_meta, "height_px", None)
+                if width_px and height_px:
+                    actual = (width_px * 25.4 / 72.0, height_px * 25.4 / 72.0)
+                else:
+                    actual = (page_meta.width_mm, page_meta.height_mm)
+                # Округление вниз плюс до 1 px потери рендера callas: два шага по 0.35 мм.
+                validation_tolerance = max(self.tolerance_mm, 0.75)
+            # 50×90 и 90×50 равноправны (поворот /Rotate меняет ориентацию, не размер).
+            if not any(
+                all(abs(a - e) <= validation_tolerance for a, e in zip(actual, candidate))
+                for candidate in (expected, (expected[1], expected[0]))
+            ):
                 raise ValueError(
                     f"страница {page_number} ({ref.expected_side}) имеет размер "
                     f"{actual[0]:.1f}x{actual[1]:.1f} мм; ожидалось "

@@ -127,6 +127,14 @@ def test_classify_unknown_action_and_missing_action_have_no_category():
     assert classify({"message": "x"}) is None
 
 
+def test_finding_without_action_id_matches_by_message_only():
+    """«Spot color White is used» приходит от PitStop без action_id (запуск 563b8e)."""
+    found = classify({"action_id": None, "message": "Spot color White is used (20x on page 1)"})
+    assert found is not None and found.key == "spot_colors"
+    # Шаблон без action_id не подходит находке, у которой номер есть.
+    assert classify({"action_id": "9999", "message": "Spot color White is used"}) is None
+
+
 def test_every_category_is_described_by_every_policy():
     # Новая проверка = строка в CATEGORIES + правило в каждой политике (кроме full).
     keys = [category.key for category in CATEGORIES]
