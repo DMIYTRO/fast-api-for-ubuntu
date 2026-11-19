@@ -16,6 +16,22 @@ import pymupdf
 
 
 MAX_SUPPORTED_PAGES = 2
+
+
+def pages_text(count: int) -> str:
+    """«1 страница», «3 страницы», «15 страниц»."""
+    tail = count % 100
+    if 11 <= tail <= 14:
+        word = "страниц"
+    elif count % 10 == 1:
+        word = "страница"
+    elif 2 <= count % 10 <= 4:
+        word = "страницы"
+    else:
+        word = "страниц"
+    return f"{count} {word}"
+
+
 POINTS_PER_INCH = 72.0
 MM_PER_INCH = 25.4
 
@@ -211,7 +227,7 @@ def inspect_pdf(path: str | Path) -> PdfInspection:
             errors.append("PDF contains no pages")
         elif page_count > MAX_SUPPORTED_PAGES:
             errors.append(
-                f"PDF содержит {page_count} страниц; допускается не более "
+                f"PDF содержит {pages_text(page_count)}; допускается не более "
                 f"{MAX_SUPPORTED_PAGES} (лицо и оборот) — пришлите каждую сторону "
                 "отдельной страницей одного заказа"
             )
