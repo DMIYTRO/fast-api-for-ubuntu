@@ -567,6 +567,25 @@ class RunCoordinatorTests(unittest.TestCase):
             completed["orders"]["bad-pdf"]["processing_errors"][0],
         )
 
+    def test_unexpected_order_exception_is_an_order_error_not_a_run_failure(self):
+        """Проверка e1efbce1 (19.11): исключение одного заказа (исчезнувшая копия в
+        PDF/Print) уронило всю проверку, остальные заказы остались без итога."""
+
+        class Exploding(FakeAdapter):
+            def process_order(self, order):
+                if order.order_id == "26237531":
+                    raise FileNotFoundError("PDF/Print/26237531.pdf исчез")
+                return super().process_order(order)
+
+        self.adapters["exploding"] = Exploding([make_order("26237531"), make_order("good")])
+        run_id = self.submit("exploding")["id"]
+        completed = self.coordinator.wait_for(run_id, {"completed", "failed"}, timeout=2)
+
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["orders"]["26237531"]["status"], "error")
+        self.assertIn("Сбой обработки заказа", completed["orders"]["26237531"]["processing_errors"][0])
+        self.assertEqual(completed["orders"]["good"]["status"], "passed")
+
     def test_cancel_discards_a_confirmation_resume_already_in_queue(self):
         adapter = BlockingAdapter(
             [make_order("waiting", waiting=True), make_order("slow")],

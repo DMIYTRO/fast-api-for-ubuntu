@@ -88,3 +88,52 @@ def test_failed_recheck_quarantines_previous_green_pdf_from_checked(tmp_path):
 
     assert not previous.exists()
     assert (tmp_path / "PDF" / "Failed" / f"{NAME}.pdf").read_bytes() == b"%PDF-previous"
+
+
+def test_stale_copy_vanishing_during_route_is_ignored(tmp_path, monkeypatch):
+    """Заказ 26237531: копию в Print забрали между проверкой и переносом (CIFS cache=loose)."""
+    pdf_dir = tmp_path / "PDF"
+    stale = pdf_dir / "Print" / f"{NAME}.pdf"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"%PDF-printed")
+    candidate = pdf_dir / f"{NAME}.pdf"
+    candidate.write_bytes(b"%PDF-new")
+    real_rename = Path.rename
+
+    def rename(self, target):
+        if self == stale:
+            self.unlink()  # файл исчез в тот же миг
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", rename)
+
+    routed = route_pdf(candidate, "warning")
+
+    assert routed == pdf_dir / "Rework" / f"{NAME}.pdf"
+    assert routed.read_bytes() == b"%PDF-new"
+
+
+def test_missing_source_still_fails_route(tmp_path):
+    import pytest
+
+    with pytest.raises(FileNotFoundError):
+        route_pdf(tmp_path / "PDF" / "absent.pdf", "passed")
+
+
+def test_quarantine_ignores_a_copy_that_vanished(tmp_path, monkeypatch):
+    previous = tmp_path / "PDF" / "Print" / f"{NAME}.pdf"
+    previous.parent.mkdir(parents=True)
+    previous.write_bytes(b"%PDF-previous")
+    real_replace = Path.replace
+
+    def replace(self, target):
+        if self == previous:
+            raise FileNotFoundError(2, "No such file or directory", str(self))
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    adapter = BatchProcessorAdapter(ProcessingOptions(input_path=str(tmp_path), direction="digital"))
+    order = OrderCheck("26237531", "36056", files=[FileCheck(path=tmp_path / f"{NAME}.jpg")])
+
+    adapter._quarantine_previous_print(order)  # не падает

@@ -60,6 +60,8 @@ class OrderActionCommand:
     confirm_failed_processing: bool = False
 
 
+#: Проверка завершена: заказ, оставшийся в ожидании коррекции, уже никто не подтвердит.
+FINISHED_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
 #: Сколько помним возврат комплекта: позже подзаказы снова идут через Sborka
 #: (клиент мог исправить и отправить комплект заново).
 KIT_RETURN_MEMORY = timedelta(days=3)
@@ -826,9 +828,15 @@ class OrderWorkflowService:
                     )
                     continue
                 order_status = order.get("status")
-                if action == "reject" and order_status == "waiting_confirmation":
+                if (
+                    action == "reject"
+                    and order_status == "waiting_confirmation"
+                    and str(run.get("status") or "") not in FINISHED_RUN_STATUSES
+                ):
                     # Проверка ещё ждёт решения по коррекции этого заказа: её итог перезаписал
                     # бы возврат (комплект 26237111, 19.11: «недопустимый переход заказа»).
+                    # В завершённой (упавшей, прерванной) проверке решить уже нельзя — такой
+                    # заказ возвращается как есть.
                     add_result(
                         {
                             "order_id": order_id,

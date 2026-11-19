@@ -46,7 +46,7 @@ from .pdf_resize_policy import (
 from .profile_rules import evaluate_metadata_rules
 
 from .filename_parser import parse_filename
-from .models import FileCheck, OrderCheck, make_size_fix
+from .models import FileCheck, OrderCheck, has_page_rule_violation, make_size_fix
 
 
 logger = logging.getLogger("image_magic.callas")
@@ -443,6 +443,7 @@ class BatchProcessor:
                 files=files,
             )
             self._validate_order(order)
+            self._skip_corrections_for_page_rule(order)
             return order
 
         def inspect(files: list[FileCheck]) -> None:
@@ -1085,6 +1086,7 @@ class BatchProcessor:
         order.warnings.clear()
         order.page_rule_violation = False
         self._validate_order(order)
+        self._skip_corrections_for_page_rule(order)
 
     @staticmethod
     def _validate_order(order: OrderCheck) -> None:
@@ -1168,6 +1170,20 @@ class BatchProcessor:
             order.errors.append("для двусторонней печати не найден файл back")
         if back_colors == 0 and sides["back"]:
             order.errors.append("для односторонней печати найден лишний файл back")
+
+    @staticmethod
+    def _skip_corrections_for_page_rule(order: OrderCheck) -> None:
+        """Заказ с нарушением правила страниц возвращается в любом случае: коррекцию его
+        файлов не спрашивать (заказ 26237111 ждал решения по TIFF, а проверка упала —
+        заказ застрял в ожидании)."""
+        if not has_page_rule_violation(order):
+            return
+        for item in order.files:
+            if item.resample_decision == ResampleDecision.ASK_CONFIRMATION.value:
+                item.resample_decision = ResampleDecision.REJECT.value
+                item.warnings.append(
+                    "коррекция размера не предлагается: заказ возвращается из-за числа страниц"
+                )
 
     @staticmethod
     def _validate_page_total(order: OrderCheck) -> None:
