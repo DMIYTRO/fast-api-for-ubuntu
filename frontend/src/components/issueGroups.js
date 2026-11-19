@@ -102,14 +102,19 @@ export function formatGroupMessage(base, { count = 1, objects = null, pages = []
 class GroupBuilder {
   constructor() { this.groups = new Map(); }
 
-  add({ source, severity, code, label, message, file = null, locations = [], occurrences = null }) {
+  add({ source, severity, code, label, message, file = null, locations = [], occurrences = null, policy = null }) {
     const key = `${source}\u0000${severity}\u0000${code}`;
     let group = this.groups.get(key);
     if (!group) {
-      group = { code, severity, source, label, count: 0, objectKeys: new Set(), pages: new Set(), files: [], samples: [], hasLocations: false, unknownObjects: false, occurrenceSum: 0, allOccurrences: true };
+      group = { code, severity, source, label, count: 0, objectKeys: new Set(), pages: new Set(), files: [], samples: [], hasLocations: false, unknownObjects: false, occurrenceSum: 0, allOccurrences: true, policyDemoted: false, policyUnclassified: false, categoryLabel: "" };
       this.groups.set(key, group);
     }
     group.count += 1;
+    if (policy) {
+      if (policy.demoted) group.policyDemoted = true;
+      if (policy.unclassified) group.policyUnclassified = true;
+      if (!group.categoryLabel && policy.categoryLabel) group.categoryLabel = policy.categoryLabel;
+    }
     // PitStop перечисляет не более 100 мест; точное число — в occurrences (из текста).
     if (Number.isInteger(occurrences) && occurrences > 0) group.occurrenceSum += occurrences;
     else group.allOccurrences = false;
@@ -148,6 +153,10 @@ class GroupBuilder {
           pages,
           files: [...group.files],
           samples: [...group.samples],
+          // Политика проверки (облегчённая/полная): понижено до информации, не классифицировано, категория.
+          policy_demoted: group.policyDemoted,
+          policy_unclassified: group.policyUnclassified,
+          category_label: group.categoryLabel,
         };
       });
   }
@@ -164,7 +173,13 @@ function addPitStopIssues(builder, issues) {
     let locations = typeof issue === "object" && issue ? issue.locations : null;
     if ((!locations || !locations.length) && typeof issue === "object" && issue && Number.isInteger(issue.page)) locations = [{ page: issue.page }];
     const occurrences = typeof issue === "object" && issue ? issue.occurrences : null;
-    builder.add({ source: "pitstop", severity, code, label: message, message, locations: locations || [], occurrences });
+    const object = typeof issue === "object" && issue ? issue : {};
+    const policy = {
+      demoted: object.policy_demoted === true,
+      unclassified: object.policy_unclassified === true,
+      categoryLabel: typeof object.policy_category_label === "string" ? object.policy_category_label : "",
+    };
+    builder.add({ source: "pitstop", severity, code, label: message, message, locations: locations || [], occurrences, policy });
   }
 }
 

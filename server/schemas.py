@@ -33,6 +33,8 @@ class CheckOptions(BaseModel):
     create_pdfs: bool = True
     generate_previews: bool = True
     copy_failures: bool = True
+    # "auto" — политика проверки по папке файла; "full" — полная проверка всего запуска.
+    check_policy: Literal["auto", "full"] = "auto"
 
 
 class CorrectionRequest(BaseModel):

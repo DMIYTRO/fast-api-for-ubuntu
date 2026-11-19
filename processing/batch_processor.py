@@ -53,6 +53,11 @@ logger = logging.getLogger("image_magic.callas")
 # Сколько заказов одновременно ждут полей Callas при осмотре (см. iter_inspect_orders).
 AUTO_BLEED_ORDER_WINDOW = 4
 
+#: Папки результатов под входной папкой: не могут быть папкой исходников (``strict_source_dirs``).
+RESERVED_FOLDER_NAMES = frozenset(
+    name.casefold() for name in ("PDF", "Previews", "Troubles", "Processed", "output_report")
+)
+DUPLICATE_NAME_ERROR_PREFIX = "файл с таким же именем"
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".pdf"}
 REJECTED_EXTENSIONS = {".psd", ".bmp", ".heic", ".heif"}
 # PDF point / pixel arithmetic can undershoot an exact boundary by several
@@ -315,7 +320,11 @@ class BatchProcessor:
         pdf_resizer: "Callable[[Path, Path, dict[int, tuple[float, float]], float, str], object] | None" = None,
         auto_bleed: "Callable[[FileCheck, BatchProcessor], FileCheck | None] | None" = None,
         auto_bleed_max_concurrent: int = 2,
+        strict_source_dirs: "Sequence[str]" = (),
     ):
+        # Подпапки входной папки, которые проверяются полностью и просматриваются наравне
+        # с корнем (config/check_policies.py); вложенные папки не сканируются.
+        self.strict_source_dirs: tuple[str, ...] = tuple(strict_source_dirs)
         # Поля вылета Callas при осмотре файла (services/callas_auto_bleed.py): хук
         # возвращает новую проверку файла из принятого исправления или None. Только
         # при correction_policy == "auto"; None — шаг не выполняется (CLI, тесты).
@@ -379,18 +388,65 @@ class BatchProcessor:
         return max(1, min(item_count, requested, os.cpu_count() or 1))
 
     def scan(self) -> list[Path]:
+        """Исходные файлы: корень входной папки и папки полной проверки (``strict_source_dirs``).
+
+        Подпапки просматриваются без вложенности; отсутствующую папку из
+        ``strict_source_dirs`` создаём (сбой создания не роняет проверку).
+        """
         if not self.input_dir.is_dir():
             raise FileNotFoundError(f"Входная папка не найдена: {self.input_dir}")
+        found = self._scan_folder(self.input_dir)
+        for name in self.strict_source_dirs:
+            if name.casefold() in RESERVED_FOLDER_NAMES:
+                logger.warning("scan.strict_dir_reserved folder=%s", name)
+                continue
+            folder = self.input_dir / name
+            try:
+                folder.mkdir(exist_ok=True)
+                found.extend(self._scan_folder(folder))
+            except OSError as exc:
+                logger.warning("scan.strict_dir_unavailable folder=%s error=%s", folder, exc)
+        return sorted(found)
+
+    @staticmethod
+    def _scan_folder(folder: Path) -> list[Path]:
         wanted = SUPPORTED_EXTENSIONS | REJECTED_EXTENSIONS
         # os.scandir entries carry the file type from the directory listing, so
         # is_file() costs no extra stat per entry (matters on a network share);
         # the cheap suffix test runs first and spares even that for junk files.
-        with os.scandir(self.input_dir) as entries:
-            return sorted(
-                self.input_dir / entry.name
+        with os.scandir(folder) as entries:
+            return [
+                folder / entry.name
                 for entry in entries
                 if Path(entry.name).suffix.lower() in wanted and entry.is_file()
-            )
+            ]
+
+    def source_folder_of(self, path: Path) -> str:
+        """Подпапка входной папки, в которой лежит файл (``""`` — корень)."""
+        return "" if path.parent == self.input_dir else path.parent.name
+
+    @staticmethod
+    def _flag_duplicate_names(checks: list[FileCheck]) -> None:
+        """Файл с тем же именем в корне и в папке полной проверки — ошибка обоим.
+
+        Иначе обе копии столкнулись бы по имени позже, в ``Processed`` и ``Troubles``.
+        """
+        by_name: dict[str, list[FileCheck]] = defaultdict(list)
+        for check in checks:
+            by_name[check.path.name.casefold()].append(check)
+        for items in by_name.values():
+            # Только копии из РАЗНЫХ папок: файлы одной папки сравнение не трогает.
+            if len({item.source_folder for item in items}) < 2:
+                continue
+            for check in items:
+                others = [item for item in items if item is not check]
+                places = ", ".join(
+                    f"папке {item.source_folder}" if item.source_folder else "корне входной папки"
+                    for item in others
+                )
+                check.errors.append(
+                    f"{DUPLICATE_NAME_ERROR_PREFIX} есть и в {places}: оставьте одну копию"
+                )
 
     def inspect_orders(self) -> list[OrderCheck]:
         """Inspect all orders, preserving the legacy list-returning API."""
@@ -412,8 +468,13 @@ class BatchProcessor:
         with self._troubles_extras_lock:
             self._troubles_extras_claimed = set()
 
-        for path in self.scan():
-            check = FileCheck(path=path)
+        checks = [
+            FileCheck(path=path, source_folder=self.source_folder_of(path))
+            for path in self.scan()
+        ]
+        self._flag_duplicate_names(checks)
+        for check in checks:
+            path = check.path
             if path.suffix.lower() in REJECTED_EXTENSIONS:
                 check.errors.append(
                     f"формат {path.suffix.lower().lstrip('.').upper()} исключён из обработки"
@@ -1043,7 +1104,16 @@ class BatchProcessor:
         """
         if content_path is not None and Path(content_path).suffix.lower() != ".pdf":
             raise ValueError("исправленный файл стороны должен быть PDF")
-        check = FileCheck(path=item.path, parsed=item.parsed, content_path=content_path)
+        check = FileCheck(
+            path=item.path,
+            parsed=item.parsed,
+            content_path=content_path,
+            source_folder=item.source_folder,
+        )
+        # Копия с тем же именем в другой папке остаётся ошибкой и после замены содержимого.
+        check.errors.extend(
+            error for error in item.errors if error.startswith(DUPLICATE_NAME_ERROR_PREFIX)
+        )
         try:
             if content_path is None:
                 if _is_pdf_content(check):
@@ -1358,11 +1428,12 @@ class BatchProcessor:
             order.prepress = {"status": "failed", "error": str(exc).strip() or exc.__class__.__name__}
 
     def _convert_rgb_to_cmyk(self, pdf_path: Path, order: OrderCheck) -> None:
-        """RGB → CMYK итогового PDF; при успехе снимает предупреждения про RGB."""
+        """RGB → CMYK (или снятие ICC) итогового PDF; при успехе снимает предупреждения про RGB."""
         if self.pdf_color_converter is None:
             return
         from services.callas.color_conversion import (
             STATUS_CONVERTED,
+            color_failure_warning,
             convert_rgb_to_cmyk,
             rgb_warning,
         )
@@ -1372,13 +1443,16 @@ class BatchProcessor:
             return
         order.color_conversion = record
         if record["status"] == STATUS_CONVERTED:
-            order.warnings[:] = [text for text in order.warnings if not rgb_warning(text)]
-            for item in order.files:
-                item.warnings[:] = [text for text in item.warnings if not rgb_warning(text)]
+            # Локальных предупреждений про ICC-профиль у проверок нет (его находит только
+            # PitStop, он идёт уже по результату), поэтому снимаем лишь предупреждения про RGB.
+            if record.get("reason") != "icc":
+                order.warnings[:] = [text for text in order.warnings if not rgb_warning(text)]
+                for item in order.files:
+                    item.warnings[:] = [text for text in item.warnings if not rgb_warning(text)]
         else:
-            order.warnings.append(
-                f"Не удалось перевести RGB в CMYK: {record['error']}. PDF оставлен в RGB."
-            )
+            warning = color_failure_warning(record)
+            if warning:
+                order.warnings.append(warning)
 
     def _render_pdf_with_callas(
         self,

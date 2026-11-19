@@ -8,6 +8,8 @@ const form = reactive({
   input_path: "", direction: "digital", create_pdfs: true, generate_previews: true,
   copy_failures: true, correction_policy: "ask",
 });
+// «Полная проверка для всех файлов» → check_policy: "full"; иначе "auto" (по папке: Input — облегчённая, CorelDRAW — полная).
+const fullCheck = ref(false);
 const browsing = ref(false);
 const folderData = ref(null);
 const folderError = ref("");
@@ -31,7 +33,7 @@ function choose() {
   form.input_path = folderData.value?.path || folderData.value?.current_path || form.input_path;
   browsing.value = false;
 }
-function submit() { emit("start", { ...form, approve_corrections: form.correction_policy === "auto" }); }
+function submit() { emit("start", { ...form, check_policy: fullCheck.value ? "full" : "auto", approve_corrections: form.correction_policy === "auto" }); }
 </script>
 
 <template>
@@ -54,6 +56,10 @@ function submit() { emit("start", { ...form, approve_corrections: form.correctio
             <label class="radio"><input v-model="form.correction_policy" value="ask" type="radio"> Запрашивать решение по каждой коррекции</label>
             <label class="radio" title="Порядок коррекции размера: открыть скрытые поля → дорисовать поля Callas → растянуть (PDF) → сжать → подогнать. Файлы с (SRA3), (SRA3P) или (BAN) в имени не масштабируются: только белые поля или обрезка."><input v-model="form.correction_policy" value="auto" type="radio"> Автоматически принимать малые коррекции (поля, до {{ correctionLimit }} мм обрезки; до {{ correctionCap }} мм — с подтверждением)</label>
             <label class="radio"><input v-model="form.correction_policy" value="reject" type="radio"> Не применять коррекции</label>
+          </fieldset>
+          <fieldset><legend>Проверка файлов</legend>
+            <label class="check"><input v-model="fullCheck" type="checkbox"> Полная проверка для всех файлов</label>
+            <small class="policy-field">Иначе файлы из папки Input проверяются облегчённо, из CorelDRAW — полностью</small>
           </fieldset>
           <div class="safe-note">Исходные файлы не изменяются. Результаты сохраняются в отдельные папки.</div>
           <button class="button primary wide" :disabled="busy">{{ busy ? "Запускаем…" : "Начать проверку" }}</button>

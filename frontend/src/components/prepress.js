@@ -121,6 +121,45 @@ export function iccOff(order) {
   return `${parts.join("; ")}. Исходный ICC/Lab больше не действует: проверьте цвета по превью.`;
 }
 
+// Политика проверки заказа (order.check_policy: { key, label, reason }); у старых запусков её нет.
+export function checkPolicyBadge(order) {
+  const policy = order?.check_policy;
+  if (!policy || typeof policy !== "object" || !policy.label) return null;
+  const basic = policy.key === "basic";
+  const title = basic
+    ? "Файлы из папки Input: замечания PitStop вроде прозрачности и обтравки записаны как информация и не влияют на статус"
+    : "Полная проверка: все замечания PitStop влияют на статус";
+  return { key: basic ? "basic" : "full", label: policy.label, title };
+}
+
+// Автоматическая коррекция цвета (order.color_conversion): модель RGB → CMYK и/или снятие ICC.
+// reason отсутствует у старых записей: это RGB. Возвращает строки допечатных замечаний.
+export function colorConversionNotes(order) {
+  const info = order?.color_conversion;
+  if (!info || typeof info !== "object") return [];
+  const iccReason = info.reason === "icc";
+  const pages = (info.pages || []).join(", ");
+  const where = pages ? ` (стр. ${pages})` : "";
+  if (info.status === "converted") {
+    if (iccReason) {
+      return [{ key: "color_icc", level: "info", text: `Цветовой профиль: ICC снят (CMYK без пересчёта)${where}` }];
+    }
+    const notes = [{ key: "color_rgb", level: "info", text: `Цветовая модель: RGB → CMYK скорректирована${where}` }];
+    if (info.icc_removed === true) notes.push({ key: "color_icc", level: "info", text: "Цветовой профиль: ICC снят" });
+    return notes;
+  }
+  if (info.status === "failed") {
+    const reason = info.error ? `: ${info.error}` : "";
+    return [iccReason
+      ? { key: "color_icc_failed", level: "warning", text: `Не удалось снять ICC-профиль${reason}` }
+      : { key: "color_rgb_failed", level: "warning", text: `Не удалось перевести RGB в CMYK${reason}` }];
+  }
+  if (info.status === "skipped" && info.skip_message) {
+    return [{ key: "color_skipped", level: "info", text: `Цветовой профиль: ${info.skip_message}` }];
+  }
+  return [];
+}
+
 export function fontsInfo(order) {
   const block = order?.prepress?.fonts;
   if (!ok(block)) return null;
@@ -158,7 +197,16 @@ export function prepressNotices(order) {
     notices.push({ key, level: black.detected ? "warning" : "info", text: black.message });
   }
   const clip = clippingGroup(order);
-  if (clip) notices.push({ key: "clipping", level: "warning", text: `${clip.message}. Источник: Enfocus PitStop. Снятие обтравки может проявить скрытое содержимое.` });
+  if (clip) {
+    // Понижено политикой облегчённой проверки: информация, статус заказа не меняется.
+    const demoted = clip.policy_demoted === true;
+    notices.push({
+      key: "clipping",
+      level: demoted ? "info" : "warning",
+      text: `${clip.message}. Источник: Enfocus PitStop.${demoted ? " Не влияет на статус (облегчённая проверка)." : ""} Снятие обтравки может проявить скрытое содержимое.`,
+    });
+  }
+  notices.push(...colorConversionNotes(order));
   const fonts = fontsInfo(order);
   if (fonts && fonts.count > 0 && fonts.notEmbedded > 0) {
     notices.push({ key: "fonts_not_embedded", level: "warning", text: "Шрифты не встроены, перевод в кривые невозможен, нужна проверка." });

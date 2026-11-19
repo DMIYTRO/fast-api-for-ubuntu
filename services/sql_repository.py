@@ -13,6 +13,7 @@ from typing import Any, Callable
 from sqlalchemy import exists, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
+from config.check_policies import CHECK_POLICY_FIELDS, ISSUE_POLICY_FIELDS
 from server.models import (
     ArchivedRunEvent,
     CheckRun,
@@ -1091,6 +1092,9 @@ class SqlRunRepository:
         order_extra["__pitstop_fields__"] = sorted(
             key for key in _PITSTOP_ORDER_KEYS if key in order
         )
+        policy_extras = _pitstop_policy_extras(order.get("pitstop"))
+        if policy_extras:
+            order_extra["__pitstop_policy__"] = policy_extras
         order_extra["__storage_key__"] = storage_key
         file_extra = {
             str(ordered_file_ids[index]): {
@@ -1281,6 +1285,7 @@ class SqlRunRepository:
                 or {}
             )
             pitstop_fields = set(order.pop("__pitstop_fields__", []))
+            pitstop_policy = order.pop("__pitstop_policy__", None)
             files = []
             extras_for_files = (
                 file_extras.get(composite_key)
@@ -1366,6 +1371,7 @@ class SqlRunRepository:
                         current_revision.revision_number,
                         current_revision.sha256,
                     )
+                    _restore_pitstop_policy(order["pitstop"], pitstop_policy)
             for field_name in (
                 "source_status",
                 "pitstop_status",
@@ -1461,6 +1467,38 @@ def _issue_baseline_values(issue: dict[str, Any]) -> dict[str, Any]:
         "hidden_by_baseline": None if hidden is None else bool(hidden),
         "original_severity": _optional_str(issue.get("original_severity")),
     }
+
+
+def _pitstop_policy_extras(pitstop: Any) -> dict[str, Any] | None:
+    """Поля политики проверки (services/check_policy.py), которым нет столбцов в БД.
+
+    Находки хранятся по порядку списка; вердикт и счётчики после политики лежат в
+    столбцах, а «до политики» и пометки находок — здесь (в конверте запуска).
+    """
+    if not isinstance(pitstop, dict):
+        return None
+    check = {name: pitstop[name] for name in CHECK_POLICY_FIELDS if name in pitstop}
+    issues = [
+        {name: issue[name] for name in ISSUE_POLICY_FIELDS if name in issue}
+        if isinstance(issue, dict)
+        else {}
+        for issue in pitstop.get("issues") or ()
+    ]
+    if not check and not any(issues):
+        return None
+    return {"check": check, "issues": issues}
+
+
+def _restore_pitstop_policy(pitstop: dict[str, Any], extras: Any) -> None:
+    """Вернуть в DTO PitStop, собранный из столбцов, поля политики проверки."""
+    if not isinstance(extras, dict):
+        return
+    pitstop.update(extras.get("check") or {})
+    stored = extras.get("issues") or []
+    issues = pitstop.get("issues") or []
+    if len(stored) == len(issues):
+        for issue, fields in zip(issues, stored):
+            issue.update(fields)
 
 
 def _issue_to_dto(issue: PitstopIssue) -> dict[str, Any]:

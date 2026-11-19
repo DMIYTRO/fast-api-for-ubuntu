@@ -97,6 +97,7 @@ def file_check_to_dto(
         "rotation_degrees": value.rotation_degrees,
         "orientation_verified": value.orientation_verified,
         "passed": value.passed,
+        "source_folder": value.source_folder,
     }
     if value.callas_source_fix is not None:
         # Файл собирается из принятого исправления Callas (``pdf_path``), а не из исходника.
@@ -180,6 +181,8 @@ def order_check_to_dto(
         result["color_conversion"] = value.color_conversion
     if value.prepress is not None:
         result["prepress"] = value.prepress
+    if value.check_policy is not None:
+        result["check_policy"] = dict(value.check_policy)
     if current_pdf_revision is not None:
         result["current_pdf_revision"] = current_pdf_revision
     if current_pdf_sha256 is not None:

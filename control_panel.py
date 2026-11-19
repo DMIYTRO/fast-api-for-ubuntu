@@ -66,6 +66,7 @@ from services.sborka_integration import (
     build_rework_sender,
     build_sender,
 )
+from services.check_policy import PolicySettings, set_strict_source_dirs, source_output_root
 from services.callas_fix import comparison_payload as callas_fix_payload, read_state_file as read_callas_fix_state
 from services.callas_source_fix import fixable_source_path, source_comparison as source_fix_comparison
 from services.print_readiness import print_blockers, print_mode
@@ -325,11 +326,11 @@ def _safe_result_path(run: dict[str, Any], raw_path: str | None) -> Path:
 
 
 def _layered_tiff_export_path(source: Path) -> Path:
-    return source.parent / "PDF" / f"{source.stem}_layered-composite.pdf"
+    return source_output_root(source) / "PDF" / f"{source.stem}_layered-composite.pdf"
 
 
 def _layered_tiff_export_preview_path(source: Path) -> Path:
-    return source.parent / "Previews" / f"{source.stem}_layered-composite.png"
+    return source_output_root(source) / "Previews" / f"{source.stem}_layered-composite.png"
 
 
 def _layered_tiff_export_urls(run_id: str, order_id: str, file_id: str) -> dict[str, str]:
@@ -747,7 +748,9 @@ def _callas_rgb_to_cmyk_converter(settings: Settings, client=None):
     from services.callas.color_conversion import CallasRgbToCmykConverter
 
     return CallasRgbToCmykConverter(
-        client or _shared_callas_client(settings), settings.callas_rgb_to_cmyk_profile
+        client or _shared_callas_client(settings),
+        settings.callas_rgb_to_cmyk_profile,
+        strip_icc=getattr(settings, "callas_strip_icc_enabled", True),
     )
 
 
@@ -904,6 +907,8 @@ def _pitstop_adapter_factory(settings: Settings, callas_fix_service=None):
             ink_coverage_checker=ink_checker,
             pitstop_fix_baseline=_pitstop_fix_baseline_policy(settings),
             auto_bleed=auto_bleed,
+            input_check_policy=settings.input_check_policy,
+            strict_source_dirs=settings.strict_source_dirs,
             correction_limit_mm=settings.auto_correct_max_mm,
             correction_confirm_max_mm=settings.correction_confirm_max_mm,
             max_dpi=settings.max_dpi,
@@ -941,6 +946,8 @@ def _default_adapter_factory(settings: Settings, callas_fix_service=None):
         order_info_fetcher=fetcher,
         ink_coverage_checker=ink_checker,
         auto_bleed=auto_bleed,
+        input_check_policy=settings.input_check_policy,
+        strict_source_dirs=settings.strict_source_dirs,
         correction_limit_mm=settings.auto_correct_max_mm,
         correction_confirm_max_mm=settings.correction_confirm_max_mm,
         max_dpi=settings.max_dpi,
@@ -960,6 +967,7 @@ def create_app(
     initialize_schema: bool = False,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
+    set_strict_source_dirs(settings.strict_source_dirs)
     log_path = configure_logging(settings)
     logger.info("application.initializing")
     if not initialize_schema:
@@ -1075,6 +1083,10 @@ def create_app(
         pdf_prepress_checker=_callas_prepress_checker(settings),
         pdf_page_extractor=_callas_page_extractor(settings),
         pitstop_fix_baseline=_pitstop_fix_baseline_policy(settings),
+        policy_settings=PolicySettings(
+            input_check_policy=settings.input_check_policy,
+            strict_source_dirs=settings.strict_source_dirs,
+        ),
         accepted_pdf_provider=(
             callas_fix_service.publish_accepted if callas_fix_service else None
         ),
@@ -1225,6 +1237,7 @@ def create_app(
                 create_pdfs=options.create_pdfs,
                 generate_previews=options.generate_previews,
                 copy_failures=options.copy_failures,
+                check_policy=options.check_policy,
             )
         )
         return _public_run(result)

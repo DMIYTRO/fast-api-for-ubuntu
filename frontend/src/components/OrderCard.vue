@@ -10,7 +10,7 @@ import OrderActions from "./OrderActions.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import { orderIssueGroups } from "./issueGroups.js";
 import InkCoverage from "./InkCoverage.vue";
-import { availableFixes, fontLabel, fontsInfo, iccOff, prepressNotices, recommendedFixes, sizeFixBadge } from "./prepress.js";
+import { availableFixes, checkPolicyBadge, fontLabel, fontsInfo, iccOff, prepressNotices, recommendedFixes, sizeFixBadge } from "./prepress.js";
 import { inkCoverageFlagLabel, inkCoverageMainFlag, inkCoverageTitle } from "./inkCoverage.js";
 
 const props = defineProps({ order: Object, runId: String, selected: Boolean, reasons: Array, paidDesign: { type: Boolean, default: true }, designCost: { type: String, default: "0" } });
@@ -59,7 +59,8 @@ const expectedSize = computed(() => {
 const issueText = (value) => typeof value === "string" ? value : value?.message || value?.code;
 // Локальные проблемы группируются по типу (order.issue_groups с бэкенда, иначе на месте);
 // проблемы PitStop показывает PitStopReport.
-const rgbConverted = computed(() => props.order.color_conversion?.status === "converted");
+const rgbConverted = computed(() => props.order.color_conversion?.status === "converted" && props.order.color_conversion?.reason !== "icc");
+const policyBadge = computed(() => checkPolicyBadge(props.order));
 const rgbConvertedTitle = computed(() => {
   const info = props.order.color_conversion || {};
   const pages = (info.pages || []).join(", ");
@@ -82,6 +83,7 @@ const fontsOutlinedTitle = computed(() => fonts.value?.converted ? "Шрифты
 const fonts = computed(() => fontsInfo(props.order));
 const fontsList = computed(() => (fonts.value?.fonts || []).map(fontLabel).join("; "));
 const prepressNotes = computed(() => prepressNotices(props.order));
+const prepressHasWarning = computed(() => prepressNotes.value.some((note) => note.level === "warning"));
 const fixButtons = computed(() => availableFixes(props.order));
 const recommendedButtons = computed(() => recommendedFixes(props.order));
 const localIssueGroups = computed(() => orderIssueGroups({ ...props.order, files: files.value }).filter((group) => group.source !== "pitstop"));
@@ -235,6 +237,7 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
         <span class="rgb-cmyk-indicator" :class="{ inactive: !rgbConverted }" :title="rgbConvertedTitle" :aria-label="rgbConvertedTitle" role="img"><b class="c-r">R</b><b class="c-g">G</b><b class="c-b">B</b></span>
         <span class="icc-off-indicator" :class="{ inactive: !iccOffTitle }" :title="iccTitle" :aria-label="iccTitle" role="img">ICC off</span>
         <span class="fonts-outlined-indicator" :class="{ inactive: !fonts?.converted }" :title="fontsOutlinedTitle" :aria-label="fontsOutlinedTitle" role="img"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 16 9 4h2l5 12M6.5 11.5h7" /></svg></span>
+        <span v-if="policyBadge" class="check-policy-indicator" :class="`policy-${policyBadge.key}`" :title="policyBadge.title" :aria-label="policyBadge.title">{{ policyBadge.label }}</span>
         <span v-if="kit" class="kit-indicator" :title="kitTitle" :aria-label="kitTitle">Комплект {{ kit.position }}/{{ kit.size }}<template v-if="kit.position !== 1"> · {{ kit.main_id }}</template></span>
         <span v-if="sizeBadge" class="callas-source-fix-indicator size-fix-indicator" :title="sizeBadge.title" :aria-label="sizeBadge.title">{{ sizeBadge.label }}</span>
         <span v-if="flattenedTiffs.length" class="tiff-flatten-indicator" :title="tiffFlattenTitle" :aria-label="tiffFlattenTitle">
@@ -328,8 +331,8 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
             </li>
           </ul>
         </div>
-        <div v-if="prepressNotes.length" class="issue-list warnings prepress-notes">
-          <strong>Допечатные замечания</strong>
+        <div v-if="prepressNotes.length" class="issue-list prepress-notes" :class="prepressHasWarning ? 'warnings' : 'info-notes'">
+          <strong>{{ prepressHasWarning ? "Допечатные замечания" : "Допечатная обработка" }}</strong>
           <ul><li v-for="note in prepressNotes" :key="note.key" class="issue-group" :class="`note-${note.level}`" :data-note="note.key">{{ note.text }}</li></ul>
         </div>
         <div v-if="successful && !groupedErrors.length && !groupedWarnings.length" class="issue-list success-note"><strong>Заказ соответствует требованиям допечатной подготовки.</strong></div>

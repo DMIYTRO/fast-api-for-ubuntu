@@ -168,3 +168,87 @@ describe("OrderCard kit badge", () => {
     expect(host.querySelector(".kit-indicator")).toBeNull();
   });
 });
+
+describe("OrderCard check policy", () => {
+  const base = { order_id: "1", customer_id: "2", status: "passed", errors: [], files: [] };
+
+  it("shows the policy label as a badge and hides it for old runs", async () => {
+    const basic = mount({ ...base, check_policy: { key: "basic", label: "Облегчённая проверка (Input)", reason: "input_root" } });
+    const full = mount({ ...base, check_policy: { key: "full", label: "Полная проверка (CorelDRAW)", reason: "strict_folder" } });
+    const old = mount(base);
+    await nextTick();
+    expect(basic.querySelector(".check-policy-indicator")?.textContent).toBe("Облегчённая проверка (Input)");
+    expect(basic.querySelector(".check-policy-indicator")?.classList.contains("policy-basic")).toBe(true);
+    expect(full.querySelector(".check-policy-indicator")?.textContent).toBe("Полная проверка (CorelDRAW)");
+    expect(old.querySelector(".check-policy-indicator")).toBeNull();
+  });
+
+  it("shows the source folder chip next to the file name in the details", async () => {
+    const host = mount({ ...base, files: [{ id: "f1", filename: "a.pdf", source_folder: "CorelDRAW" }, { id: "f2", filename: "b.pdf", source_folder: "" }] });
+    await nextTick();
+    host.querySelector(".details-toggle").click();
+    await nextTick();
+    const chips = host.querySelectorAll(".source-folder-chip");
+    expect(chips).toHaveLength(1);
+    expect(chips[0].textContent).toBe("CorelDRAW");
+  });
+
+  it("shows a demoted clipping group as an info note, not a warning", async () => {
+    const host = mount({
+      ...base,
+      issue_groups: [{ code: "action:2079", severity: "info", source: "pitstop", message: "Clipping objects found — 3 объекта", count: 1, samples: [], files: [], pages: [], policy_demoted: true, fix_plan: "remove_clipping" }],
+    });
+    await nextTick();
+    const notes = host.querySelector(".prepress-notes");
+    expect(notes?.classList.contains("warnings")).toBe(false);
+    expect(notes?.querySelector("[data-note=clipping]")?.classList.contains("note-info")).toBe(true);
+    expect(notes?.textContent).toContain("Не влияет на статус (облегчённая проверка)");
+  });
+});
+
+describe("OrderCard color correction lines", () => {
+  const base = { order_id: "1", customer_id: "2", status: "passed", errors: [], files: [] };
+  const noteText = (host) => host.querySelector(".prepress-notes")?.textContent || "";
+
+  it("rgb conversion and old records without reason", async () => {
+    const withReason = mount({ ...base, color_conversion: { status: "converted", reason: "rgb", pages: [1] } });
+    const old = mount({ ...base, color_conversion: { status: "converted", pages: [1, 2] } });
+    await nextTick();
+    expect(noteText(withReason)).toContain("Цветовая модель: RGB → CMYK скорректирована");
+    expect(noteText(old)).toContain("Цветовая модель: RGB → CMYK скорректирована");
+    expect(withReason.querySelector(".prepress-notes")?.classList.contains("warnings")).toBe(false);
+    expect(old.querySelector(".rgb-cmyk-indicator")?.classList.contains("inactive")).toBe(false);
+  });
+
+  it("rgb conversion with icc removed adds an ICC line", async () => {
+    const host = mount({ ...base, color_conversion: { status: "converted", reason: "rgb", icc_removed: true } });
+    await nextTick();
+    expect(noteText(host)).toContain("Цветовая модель: RGB → CMYK скорректирована");
+    expect(noteText(host)).toContain("Цветовой профиль: ICC снят");
+  });
+
+  it("icc-only conversion does not light the RGB badge", async () => {
+    const host = mount({ ...base, color_conversion: { status: "converted", reason: "icc", icc_removed: true, from: "ICC", to: "DeviceCMYK", pages: [1] } });
+    await nextTick();
+    expect(noteText(host)).toContain("Цветовой профиль: ICC снят (CMYK без пересчёта)");
+    expect(noteText(host)).not.toContain("RGB → CMYK");
+    expect(host.querySelector(".rgb-cmyk-indicator")?.classList.contains("inactive")).toBe(true);
+    expect(host.querySelector(".icc-off-indicator")?.classList.contains("inactive")).toBe(false);
+  });
+
+  it("skipped icc strip is a neutral note, not a warning", async () => {
+    const host = mount({ ...base, color_conversion: { status: "skipped", reason: "icc", skip_reason: "lab", skip_message: "В PDF есть Lab" } });
+    await nextTick();
+    expect(noteText(host)).toContain("Цветовой профиль: В PDF есть Lab");
+    expect(host.querySelector(".prepress-notes")?.classList.contains("warnings")).toBe(false);
+  });
+
+  it("failed conversion is an actionable warning with the error", async () => {
+    const icc = mount({ ...base, color_conversion: { status: "failed", reason: "icc", error: "профиль callas недоступен" } });
+    const rgb = mount({ ...base, color_conversion: { status: "failed", error: "таймаут" } });
+    await nextTick();
+    expect(noteText(icc)).toContain("Не удалось снять ICC-профиль: профиль callas недоступен");
+    expect(icc.querySelector(".prepress-notes")?.classList.contains("warnings")).toBe(true);
+    expect(noteText(rgb)).toContain("Не удалось перевести RGB в CMYK: таймаут");
+  });
+});

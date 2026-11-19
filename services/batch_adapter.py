@@ -11,6 +11,7 @@ import threading
 import time
 from typing import Any, Callable, Sequence
 
+from config.check_policies import POLICY_FULL
 from config.profiles import get_profile
 from processing.batch_processor import BatchProcessor
 from processing.models import FileCheck, OrderCheck, has_page_rule_violation
@@ -24,6 +25,7 @@ from services.pitstop.baseline import (
     apply_fix_baseline,
     merge_source_checks,
 )
+from services.check_policy import PolicySettings, apply_check_policy, resolve_order_policy
 from services.callas_fix import source_signature_matches
 from services.callas_source_fix import STALE_SOURCE_WARNING
 from services.pdf_routing import CHECKED_FOLDER, FAILED_FOLDER, PRINT_FOLDER, completed_status, route_pdf
@@ -43,6 +45,9 @@ class ProcessingOptions:
     create_pdfs: bool = True
     generate_previews: bool = True
     copy_failures: bool = True
+    # "auto" — политика по папке файла (config/check_policies.py); "full" — полная
+    # проверка всего запуска.
+    check_policy: str = "auto"
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -53,6 +58,7 @@ class ProcessingOptions:
             "create_pdfs": self.create_pdfs,
             "generate_previews": self.generate_previews,
             "copy_failures": self.copy_failures,
+            "check_policy": self.check_policy,
         }
 
 
@@ -100,8 +106,16 @@ class BatchProcessorAdapter:
         no_scale_name_markers: Sequence[str] | None = None,
         pitstop_fix_baseline: FixBaselinePolicy | None = None,
         auto_bleed: Callable[[FileCheck, BatchProcessor], FileCheck | None] | None = None,
+        input_check_policy: str = POLICY_FULL,
+        strict_source_dirs: Sequence[str] = (),
     ) -> None:
         self.options = options
+        # Политика проверки заказов (services/check_policy.py). По умолчанию — полная,
+        # как раньше (CLI, тесты); control_panel передаёт значения из настроек.
+        self.policy_settings = PolicySettings(
+            input_check_policy=input_check_policy,
+            strict_source_dirs=tuple(strict_source_dirs),
+        )
         # None — сравнение с проверкой исходников не подключено (тесты, CLI).
         self.pitstop_fix_baseline = pitstop_fix_baseline
         self.input_dir = Path(options.input_path)
@@ -142,6 +156,8 @@ class BatchProcessorAdapter:
             # Поля вылета Callas (services/callas_auto_bleed.py) — только в режиме
             # «Автоматически»; в остальных режимах «Размер» запускает оператор.
             processor_options["auto_bleed"] = auto_bleed
+        if strict_source_dirs:
+            processor_options["strict_source_dirs"] = tuple(strict_source_dirs)
         self.processor = processor_factory(
             self.input_dir,
             self.pdf_dir,
@@ -179,8 +195,29 @@ class BatchProcessorAdapter:
             if self._order_info_future is None:
                 # Processor did not report the order ids up front.
                 self._start_order_info_fetch([order.order_id])
+            self._assign_check_policy(order)
             self._apply_postpress(order, wait=False)
             yield order
+
+    def _assign_check_policy(self, order: OrderCheck) -> dict[str, str]:
+        """Политика проверки заказа — по папкам его файлов и опции запуска (один раз)."""
+        if order.check_policy is None:
+            order.check_policy = resolve_order_policy(
+                [item.source_folder for item in order.files],
+                self.options.check_policy,
+                self.policy_settings,
+            )
+        return order.check_policy
+
+    def _finalize_pitstop(self, order: OrderCheck, result: OrderArtifacts) -> None:
+        """Вердикт PitStop заказа: сравнение с исходником, затем политика проверки.
+
+        До итогового статуса, раскладки PDF и превью — в КАЖДОЙ ветке с проверкой PitStop.
+        """
+        self._apply_source_fix_baseline(order, result)
+        if result.pitstop:
+            policy = self._assign_check_policy(order)
+            result.pitstop = apply_check_policy(result.pitstop, policy["key"])
 
     def _start_order_info_fetch(self, order_ids: list[str]) -> None:
         if self.order_info_fetcher is None or self._order_info_future is not None:
@@ -429,7 +466,7 @@ class BatchProcessorAdapter:
         result.current_pdf_sha256 = pitstop_result.input_sha256
         # Как и в производственной ветке: до итогового статуса и раскладки PDF —
         # вердикт без находок, добавленных принятым исправлением Callas исходника.
-        self._apply_source_fix_baseline(order, result)
+        self._finalize_pitstop(order, result)
 
     def _process_order_unrouted(self, order: OrderCheck) -> OrderArtifacts:
         # Fold overlays and previews depend on postpress; wait for Sborka here
@@ -535,7 +572,7 @@ class BatchProcessorAdapter:
                 result.current_pdf_sha256 = pitstop_result.input_sha256
                 # До итогового статуса и превью: вердикт без находок, добавленных
                 # принятым исправлением Callas исходника.
-                self._apply_source_fix_baseline(order, result)
+                self._finalize_pitstop(order, result)
 
                 # The operator must review the exact production PDF checked by
                 # PitStop. Replace source previews with revision-bound previews

@@ -12,6 +12,7 @@ import pymupdf
 
 from core.tool_runner import run_command
 from services.callas.renderer import dpi_for_longest_side, render_pdf_to_pngs
+from services.check_policy import source_output_root
 
 
 class ReviewedLayeredPdfError(ValueError):
@@ -62,7 +63,7 @@ def _create_layered_export(source: Path, artifact: Path, preview: Path) -> None:
 
 
 def _review_pdf_path(source_path: Path) -> Path:
-    return source_path.parent / "PDF" / f"{source_path.stem}_layered-composite.pdf"
+    return source_output_root(source_path) / "PDF" / f"{source_path.stem}_layered-composite.pdf"
 
 
 def _page_index(file: dict[str, Any], ordered_files: list[dict[str, Any]]) -> int:
@@ -118,7 +119,7 @@ def build_reviewed_layered_print_pdf(
         if not artifact.is_relative_to(input_root):
             raise ReviewedLayeredPdfError("Просмотренный PDF находится за пределами папки заказа.")
         if not artifact.is_file():
-            preview_path = source.parent / "Previews" / f"{source.stem}_layered-composite.png"
+            preview_path = source_output_root(source) / "Previews" / f"{source.stem}_layered-composite.png"
             if not preview_path.resolve().is_relative_to(input_root):
                 raise ReviewedLayeredPdfError(
                     "Папка превью находится за пределами выбранного заказа."

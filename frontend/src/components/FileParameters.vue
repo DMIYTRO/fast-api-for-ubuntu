@@ -12,7 +12,7 @@ const dpi = (file) => {
 </script>
 <template>
   <div class="file-params">
-    <strong :title="file.filename">{{ file.filename }}</strong>
+    <strong :title="file.filename">{{ file.filename }}<span v-if="file.source_folder" class="source-folder-chip" :title="`Файл найден в подпапке ${file.source_folder}`">{{ file.source_folder }}</span></strong>
     <dl>
       <div><dt>Размер</dt><dd>{{ number(file.width_mm ?? file.actual_width_mm) }} × {{ number(file.height_mm ?? file.actual_height_mm) }} мм</dd></div>
       <div v-if="file.size_fix?.detail"><dt>Коррекция</dt><dd>{{ file.size_fix.detail }}</dd></div>
