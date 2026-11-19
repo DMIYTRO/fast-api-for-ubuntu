@@ -607,7 +607,8 @@ class OrderWorkflowService:
                         "status": "rejected",
                         "code": "kit_main_failed",
                         "message": (
-                            f"Комплект {main_id} не возвращён: Sborka не подтвердила возврат. {failed}"
+                            f"Комплект {main_id} не возвращён: не удалось вернуть главный заказ "
+                            f"{carrier.get('order_id')}. {failed}"
                         ).strip(),
                     }
                     for order_id in selected_ids if order_id != str(carrier.get("order_id"))
@@ -825,6 +826,22 @@ class OrderWorkflowService:
                     )
                     continue
                 order_status = order.get("status")
+                if action == "reject" and order_status == "waiting_confirmation":
+                    # Проверка ещё ждёт решения по коррекции этого заказа: её итог перезаписал
+                    # бы возврат (комплект 26237111, 19.11: «недопустимый переход заказа»).
+                    add_result(
+                        {
+                            "order_id": order_id,
+                            "status": "rejected",
+                            "code": "correction_pending",
+                            "message": (
+                                f"Заказ {order_id} ждёт решения по коррекции размера: сначала "
+                                "нажмите «Применить» или «Отклонить» в карточке заказа, дождитесь "
+                                "окончания его проверки и повторите возврат."
+                            ),
+                        }
+                    )
+                    continue
                 fix_state = (
                     read_callas_fix_state(order["pdf_path"])
                     if order.get("pdf_path")
