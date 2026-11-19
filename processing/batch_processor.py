@@ -1099,10 +1099,20 @@ class BatchProcessor:
         if len(duplex_files) > 1:
             order.page_rule_violation = True
             order.errors.append("найдено несколько двухстраничных PDF в одном заказе")
-        if duplex_files and len(order.files) > 1:
-            order.page_rule_violation = True
+        if len(duplex_files) == 1 and len(order.files) > 1:
+            # Несоответствие техтребованиям, а не сбой: клиент прислал полный двухстраничный
+            # PDF и ещё файлы сторон (заказ 26237111: «…_1.pdf» на 2 страницы и старый
+            # «…_1-back.tif»). Диагностический PDF собирается только из двухстраничного PDF
+            # (``_diagnostic_files``), итог — предупреждение: оператор решает, печатать его
+            # или вернуть заказ клиенту.
+            extra = ", ".join(
+                f"«{item.path.name}»" for item in order.files if item is not duplex_files[0]
+            )
             order.errors.append(
-                "двухстраничный PDF является полным заказом; дополнительные стороны запрещены"
+                "двухстраничный PDF является полным заказом (лицо и оборот), а в заказе есть ещё "
+                f"файлы сторон: {extra}. Несоответствие техтребованиям по числу страниц: "
+                f"проверяется только «{duplex_files[0].path.name}», лишние файлы в PDF не "
+                "вошли — проверьте, какой вариант верный, или верните заказ клиенту"
             )
 
         color_modes = {(item.parsed.front_colors, item.parsed.back_colors) for item in order.files}
@@ -1234,11 +1244,10 @@ class BatchProcessor:
         Returns ``(path, note)``; ``path`` is ``None`` when nothing could be
         read, ``note`` lists skipped files (or the reason nothing was built).
         """
-        ordered_files = self._ordered_files_for_creation(order)
+        ordered_files, skipped = self._diagnostic_files(order)
         output_dir.mkdir(parents=True, exist_ok=True)
         self._sweep_temp_dirs(output_dir)
         output_path = output_dir / f"{self._output_stem(order, ordered_files)}.pdf"
-        skipped: list[str] = []
         with share_temp_dir(
             prefix=f".{order.order_id}_diag_", dir=output_dir
         ) as temporary_dir:
@@ -1378,6 +1387,22 @@ class BatchProcessor:
             return copied
         finally:
             self._cleanup_callas_job(job_id, client)
+
+    @classmethod
+    def _diagnostic_files(cls, order: OrderCheck) -> tuple[list[FileCheck], list[str]]:
+        """Файлы диагностического PDF и пропущенные (с причиной).
+
+        Двухстраничный PDF — полный заказ: если рядом лежат ещё файлы сторон, они не
+        приклеиваются к нему (иначе 2 + 1 = 3 страницы, заказ 26237111).
+        """
+        duplex = [item for item in order.files if item.page_count == 2]
+        if len(duplex) == 1 and len(order.files) > 1:
+            skipped = [
+                f"{item.path.name}: лишний файл стороны при двухстраничном PDF"
+                for item in order.files if item is not duplex[0]
+            ]
+            return duplex, skipped
+        return cls._ordered_files_for_creation(order), []
 
     @staticmethod
     def _ordered_files_for_creation(order: OrderCheck) -> list[FileCheck]:

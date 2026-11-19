@@ -153,7 +153,10 @@ def test_two_page_pdf_with_extra_side_fails(tmp_path: Path) -> None:
     order = _processor(tmp_path).inspect_orders()[0]
 
     assert not order.passed
-    assert any("дополнительные стороны" in error for error in order.errors)
+    assert any(
+        "Несоответствие техтребованиям по числу страниц" in error and "job_(90x50)_4-4_(1-104)_back.pdf" in error
+        for error in order.errors
+    )
 
 
 def test_two_page_pdf_is_rejected_for_4_0(tmp_path: Path) -> None:
