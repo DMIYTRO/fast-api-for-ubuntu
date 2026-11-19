@@ -71,7 +71,10 @@ CHECK_POLICY_FIELDS = ("check_policy", "verdict_before_policy", "counts_before_p
 
 @dataclass(frozen=True)
 class PitStopMatch:
-    """Находка PitStop: ``action_id`` и, при необходимости, регулярное выражение сообщения."""
+    """Находка PitStop: ``action_id`` и, при необходимости, регулярное выражение сообщения.
+
+    ``action_id=""`` — находка без номера действия: сопоставляется только по сообщению.
+    """
 
     action_id: str
     message_pattern: str | None = None
@@ -121,7 +124,13 @@ CATEGORIES: tuple[CheckCategory, ...] = (
     CheckCategory("page_size", "Размер и поворот страниц", _actions("1164", "4501")),
     CheckCategory("ink_coverage", "Суммарное покрытие краски", _actions("1153")),
     CheckCategory(
-        "spot_colors", "Цветность / плашечные цвета", _actions("3159", "3156", "3184")
+        "spot_colors",
+        "Цветность / плашечные цвета",
+        (
+            *_actions("3159", "3156", "3184"),
+            # PitStop отдаёт «Spot color White is used» без action_id.
+            PitStopMatch("", r"^Spot color .+ is used"),
+        ),
     ),
     CheckCategory(
         "fonts_missing", "Шрифты не встроены или неполные", _actions("1180", "1185")

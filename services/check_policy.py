@@ -64,14 +64,19 @@ def classify(issue: Mapping[str, Any]) -> CheckCategory | None:
     """Категория находки PitStop или ``None``, если ни одна не подошла."""
     raw_action = issue.get("action_id")
     action = "" if raw_action is None or isinstance(raw_action, bool) else str(raw_action).strip()
-    if not action:
-        return None
     message = str(issue.get("message") or "")
+    if not action and not message:
+        return None
     for category in CATEGORIES:
         for match in category.matches:
             if match.action_id != action:
                 continue
-            if match.message_pattern is None or _compiled(match.message_pattern).search(message):
+            # Находка без action_id подходит только под шаблон сообщения.
+            if match.message_pattern is None:
+                if action:
+                    return category
+                continue
+            if _compiled(match.message_pattern).search(message):
                 return category
     return None
 
