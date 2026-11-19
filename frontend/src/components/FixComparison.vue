@@ -17,11 +17,37 @@ const summary = computed(() => props.comparison.summary || {});
 const planTitle = computed(() => props.comparison.plan?.title || props.comparison.plan?.key || "План не указан");
 const hasResult = computed(() => ["ready", "accepted", "rejected"].includes(status.value));
 const decided = computed(() => ["accepted", "rejected"].includes(status.value));
-const tiles = computed(() => [
-  { key: "original", label: "Оригинал", url: props.comparison.original_url },
-  { key: "result", label: "Результат", url: props.comparison.result_url },
-  { key: "overlay", label: "Наложение", url: props.comparison.overlay_url },
-]);
+const TILE_KINDS = [
+  ["original", "Оригинал"],
+  ["result", "Результат"],
+  ["overlay", "Наложение"],
+];
+const tilesOf = (source, side = "") => TILE_KINDS.map(([key, label]) => ({
+  key,
+  label,
+  zoomLabel: side ? `${side} · ${label}` : label,
+  url: source?.[`${key}_url`] || null,
+}));
+// Страницы сравнения от бэкенда (лицо и оборот); старые ответы без них — одна страница.
+const comparedPages = computed(() => (Array.isArray(props.comparison.pages) ? props.comparison.pages : [])
+  .filter((page) => page && Number.isInteger(page.page) && (page.original_url || page.result_url || page.overlay_url)));
+const pageCount = computed(() => {
+  const count = Number(summary.value.original_page_count);
+  return Number.isInteger(count) && count > 0 ? count : comparedPages.value.length;
+});
+const sideLabel = (number) => {
+  if (pageCount.value <= 2) return number === 1 ? "Лицо" : "Оборот";
+  return `Стр. ${number}`;
+};
+const rows = computed(() => {
+  if (comparedPages.value.length < 2) return [{ key: "page-1", side: "", changed: "", tiles: tilesOf(props.comparison) }];
+  return comparedPages.value.map((page) => {
+    const side = sideLabel(page.page);
+    const percent = number(page.changed_percent, 1);
+    return { key: `page-${page.page}`, side, changed: percent ? `изменено ${percent} %` : "", tiles: tilesOf(page, side) };
+  });
+});
+const multiPage = computed(() => rows.value.length > 1);
 
 const number = (value, maxDecimals) => {
   const parsed = Number(value);
@@ -45,6 +71,7 @@ const sizeText = computed(() => {
   return "";
 });
 const changedText = computed(() => {
+  if (multiPage.value) return "";
   const percent = number(summary.value.changed_percent, 1);
   return percent ? `Изменено ${percent} % площади` : "";
 });
@@ -55,10 +82,13 @@ const distortionText = computed(() => {
   return `Макет растянут неравномерно${axes}. Проверьте наложение перед принятием`;
 });
 // Исправление структурное (шрифты в кривые, обтравка…): картинка не изменилась, наложение пустое — это норма.
-const noVisibleChange = computed(() => {
-  const overlay = Number(summary.value.overlay_changed_percent);
-  return Number.isFinite(overlay) && overlay === 0 && !(Number(summary.value.changed_percent) > 0);
-});
+// Учитываются все сравнённые страницы: изменение может быть только на обороте.
+const unchanged = (page) => {
+  const overlay = Number(page?.overlay_changed_percent);
+  return Number.isFinite(overlay) && overlay === 0 && !(Number(page?.changed_percent) > 0);
+};
+const noVisibleChange = computed(() => unchanged(summary.value)
+  && comparedPages.value.filter((page) => page.page > 1).every(unchanged));
 // Исходный PDF заказа без собранного PDF: принять можно, только когда бэкенд это разрешил
 // (заказ ждёт решения по коррекции), иначе результат только для просмотра и скачивания.
 const sourceOnly = computed(() => Boolean(props.comparison.source_only));
@@ -121,23 +151,26 @@ function close() {
     </div>
 
     <template v-if="hasResult">
-      <div class="fix-tiles">
-        <figure v-for="tile in tiles" :key="tile.key" class="fix-tile" :class="`fix-tile-${tile.key}`">
-          <figcaption>{{ tile.label }}</figcaption>
-          <div
-            v-if="tile.url"
-            class="preview-image"
-            role="button"
-            tabindex="0"
-            :aria-label="`Открыть крупно: ${tile.label}`"
-            @click="open(tile, $event)"
-            @keydown.enter.self.prevent="open(tile, $event)"
-            @keydown.space.self.prevent="open(tile, $event)"
-          >
-            <PreviewImage :src="tile.url" :alt="`${tile.label}: ${planTitle}`" />
-          </div>
-          <div v-else class="preview-empty">Нет изображения</div>
-        </figure>
+      <div v-for="row in rows" :key="row.key" class="fix-page" :class="{ 'fix-page-multi': multiPage }" :role="multiPage ? 'group' : null" :aria-label="multiPage ? row.side : null">
+        <p v-if="multiPage" class="fix-page-title"><b>{{ row.side }}</b><span v-if="row.changed" class="muted">{{ row.changed }}</span></p>
+        <div class="fix-tiles">
+          <figure v-for="tile in row.tiles" :key="tile.key" class="fix-tile" :class="`fix-tile-${tile.key}`">
+            <figcaption>{{ tile.label }}</figcaption>
+            <div
+              v-if="tile.url"
+              class="preview-image"
+              role="button"
+              tabindex="0"
+              :aria-label="`Открыть крупно: ${tile.zoomLabel}`"
+              @click="open(tile, $event)"
+              @keydown.enter.self.prevent="open(tile, $event)"
+              @keydown.space.self.prevent="open(tile, $event)"
+            >
+              <PreviewImage :src="tile.url" :alt="`${tile.zoomLabel}: ${planTitle}`" />
+            </div>
+            <div v-else class="preview-empty">Нет изображения</div>
+          </figure>
+        </div>
       </div>
 
       <p class="fix-legend muted" aria-label="Обозначения наложения">
@@ -174,9 +207,9 @@ function close() {
     </template>
   </section>
   <Teleport to="body">
-    <div v-if="zoomed" class="lightbox" role="dialog" aria-modal="true" :aria-label="`${zoomed.label}: крупный просмотр`" tabindex="-1" @click.self="close" @keydown.esc="close">
+    <div v-if="zoomed" class="lightbox" role="dialog" aria-modal="true" :aria-label="`${zoomed.zoomLabel}: крупный просмотр`" tabindex="-1" @click.self="close" @keydown.esc="close">
       <button ref="closeButton" type="button" class="icon-button" aria-label="Закрыть просмотр" @click="close">✕</button>
-      <PreviewImage :src="zoomed.url" :alt="`${zoomed.label}: ${planTitle}`" :eager="true" />
+      <PreviewImage :src="zoomed.url" :alt="`${zoomed.zoomLabel}: ${planTitle}`" :eager="true" />
     </div>
   </Teleport>
 </template>

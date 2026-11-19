@@ -53,6 +53,9 @@ SOURCE_PDF_NAME = "source.pdf"
 RASTER_SOURCE_SUFFIXES = frozenset({".tif", ".tiff", ".jpg", ".jpeg", ".png"})
 COMPARE_DIR = "compare"
 IMAGE_KINDS = ("original", "result", "overlay")
+#: Сколько страниц показывать в сравнении «до / после» (лицо и оборот, как ``MAX_SUPPORTED_PAGES``).
+#: Коррекция размера сравнивает все страницы: вердикту ``bleed_only`` нужна каждая.
+PREVIEW_PAGES = 2
 
 STATUS_PROCESSING = "processing"
 STATUS_READY = "ready"
@@ -188,7 +191,40 @@ def comparison_payload(
         "result_url": f"{base_url}/files/result{version}" if "result" in images else None,
         "overlay_url": f"{base_url}/files/overlay{version}" if "overlay" in images else None,
         "pdf_url": f"{base_url}/files/pdf{version}" if state.get("fixed_pdf") else None,
+        "pages": _page_tiles(state, base_url, version),
     }
+
+
+def _page_tiles(state: Mapping[str, Any], base_url: str, version: str) -> list[dict[str, Any]]:
+    """Картинки «до / после» по страницам: 1 — основные, 2… — ``summary["pages"][i]["images"]``.
+
+    Старые результаты (до сравнения оборота) дают только первую страницу.
+    """
+    images = state.get("images") or {}
+    summary = state.get("summary") if isinstance(state.get("summary"), Mapping) else {}
+
+    def tile(page: int, kinds: Mapping[str, Any], described: Mapping[str, Any]) -> dict[str, Any]:
+        suffix = "" if page == 1 else f"{'&' if version else '?'}page={page}"
+        return {
+            "page": page,
+            **{
+                f"{kind}_url": f"{base_url}/files/{kind}{version}{suffix}" if kinds.get(kind) else None
+                for kind in IMAGE_KINDS
+            },
+            "changed_percent": described.get("changed_percent"),
+            "overlay_changed_percent": described.get("overlay_changed_percent"),
+        }
+
+    if not any(images.get(kind) for kind in IMAGE_KINDS):
+        return []
+    pages = [tile(1, images, summary)]
+    for extra in summary.get("pages") or ():
+        if not isinstance(extra, Mapping) or not isinstance(extra.get("page"), int) or extra["page"] < 2:
+            continue
+        kinds = extra.get("images")
+        if isinstance(kinds, Mapping) and any(kinds.get(kind) for kind in IMAGE_KINDS):
+            pages.append(tile(extra["page"], kinds, extra))
+    return pages
 
 
 class CallasFixService:
@@ -363,10 +399,14 @@ class CallasFixService:
             summary["callas"] = callas_summary
             summary["callas_status"] = result.status
             summary["plan_key"] = plan.key
-            if plan.key == BLEED_PLAN_KEY:
-                extra_pages = self._compare_extra_pages(source_pdf, fixed, compare_dir, summary)
-                if extra_pages:
-                    summary["pages"] = extra_pages
+            # Оборот виден оператору при любом плане (шрифты, обтравка, сжатие картинок…),
+            # коррекция размера сравнивает все страницы ради вердикта ``bleed_only``.
+            extra_pages = self._compare_extra_pages(
+                source_pdf, fixed, compare_dir, summary,
+                limit=None if plan.key == BLEED_PLAN_KEY else PREVIEW_PAGES,
+            )
+            if extra_pages:
+                summary["pages"] = extra_pages
             bleed = profile_bleed_mm(None) if bleed_mm is None else float(bleed_mm)
             bleed_only, bleed_reasons = bleed_only_verdict(summary, format_mm=format_mm, bleed_mm=bleed)
             summary["bleed_only"] = bleed_only
@@ -438,14 +478,21 @@ class CallasFixService:
         return target
 
     def _compare_extra_pages(
-        self, source_pdf: Path, fixed: Path, compare_dir: Path, summary: Mapping[str, Any]
+        self,
+        source_pdf: Path,
+        fixed: Path,
+        compare_dir: Path,
+        summary: Mapping[str, Any],
+        *,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Сводки страниц 2…N (для вердикта ``bleed_only`` нужна каждая страница)."""
+        """Сводки и картинки страниц 2…N (``limit`` — не дальше этой страницы)."""
         count = summary.get("original_page_count")
         if not isinstance(count, int) or count < 2 or summary.get("result_page_count") != count:
             return []
+        last = count if limit is None else min(count, limit)
         pages = []
-        for number in range(2, count + 1):
+        for number in range(2, last + 1):
             try:
                 comparison = self._compare(source_pdf, fixed, compare_dir / f"page-{number}", page=number)
             except Exception:  # noqa: BLE001 — несравнённая страница даёт bleed_only = False
@@ -453,6 +500,9 @@ class CallasFixService:
                 continue
             described = dict(comparison.summary)
             described["page"] = number
+            described["images"] = {
+                kind: Path(getattr(comparison, f"{kind}_image")).name for kind in IMAGE_KINDS
+            }
             pages.append(described)
         return pages
 
@@ -613,18 +663,30 @@ class CallasFixService:
             temporary.unlink(missing_ok=True)
         return target
 
-    def file_path(self, pdf_path: Path | str, kind: str) -> Path | None:
-        """Путь к картинке сравнения (``original|result|overlay``) или к ``pdf`` результата."""
+    def file_path(self, pdf_path: Path | str, kind: str, *, page: int = 1) -> Path | None:
+        """Путь к картинке сравнения (``original|result|overlay``) страницы ``page``
+        или к ``pdf`` результата."""
         state = read_state_file(pdf_path)
         if not state:
             return None
         directory = fix_dir_for(pdf_path)
         if kind == "pdf":
-            name = state.get("fixed_pdf")
+            name = state.get("fixed_pdf") if page == 1 else None
             target = directory / str(name) if name else None
-        elif kind in IMAGE_KINDS:
+        elif kind in IMAGE_KINDS and page == 1:
             name = (state.get("images") or {}).get(kind)
             target = directory / COMPARE_DIR / str(name) if name else None
+        elif kind in IMAGE_KINDS and isinstance(page, int) and page >= 2:
+            summary = state.get("summary") or {}
+            extra = next(
+                (
+                    item for item in summary.get("pages") or ()
+                    if isinstance(item, Mapping) and item.get("page") == page
+                ),
+                None,
+            )
+            name = ((extra or {}).get("images") or {}).get(kind)
+            target = directory / COMPARE_DIR / f"page-{page}" / str(name) if name else None
         else:
             return None
         return target if target is not None and target.is_file() else None
