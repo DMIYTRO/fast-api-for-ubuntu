@@ -230,7 +230,9 @@ class EnabledTests(CallasFixApiTests):
         self.assertEqual(order["status"], "passed")
         self.assertEqual(order["current_pdf_revision"], 2)
         self.assertEqual(order["revision_check"]["errors"], [])
-        self.assertEqual(Path(order["pdf_path"]).parent.name, "Print")
+        # Зелёная ревизия ждёт решения оператора в Checked, в Print — только после «в печать».
+        self.assertEqual(Path(order["pdf_path"]).parent.name, "Checked")
+        self.assertFalse((self.root / "PDF" / "Print" / "sample.pdf").exists())
         self.assertFalse((self.root / "PDF" / "Rework" / "sample.pdf").exists())
         self.assertTrue(all("r0002" in value for value in order["preview_paths"]))
 
@@ -316,7 +318,7 @@ class EnabledTests(CallasFixApiTests):
         run_id = self.make_run()
         self.client.post(self.url(run_id), json={"plan": "size_correction"})
         self.client.post(self.url(run_id, "/decision"), json={"decision": "accept"})
-        make_pdf(self.root / "PDF" / "Print" / "sample.pdf", 99, 210)  # текущий PDF изменён
+        make_pdf(self.root / "PDF" / "Checked" / "sample.pdf", 99, 210)  # текущий PDF изменён
         self.client.post("/api/orders/prepare-print", json={"run_id": run_id, "order_ids": ["1001"]})
         import time
 

@@ -13,6 +13,7 @@ import filecmp
 from pathlib import Path
 import shutil
 from typing import Any
+from services.pdf_routing import PRINT_FOLDER
 
 
 class FileLifecycleError(RuntimeError):
@@ -43,7 +44,7 @@ class FileLifecycle:
         self.preview_dir = self.input_dir / "Previews"
         self.troubles_dir = self.input_dir / "Troubles"
         self.processed_dir = self.input_dir / "Processed"
-        self.print_pdf_dir = self.pdf_dir / "Print"
+        self.print_pdf_dir = self.pdf_dir / PRINT_FOLDER
         self.processed_preview_dir = self.preview_dir / "Processed"
 
     def initialize(self) -> None:

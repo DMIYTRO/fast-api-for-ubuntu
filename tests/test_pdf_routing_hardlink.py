@@ -62,12 +62,12 @@ def test_fast_path_links_instead_of_copying_and_publishes_same_bytes(root, no_co
 
 
 def test_fast_path_when_source_is_already_the_destination(root, no_copy):
-    pdf = root / "Print" / "1001.pdf"
+    pdf = root / "Checked" / "1001.pdf"
     pdf.parent.mkdir()
     pdf.write_bytes(b"ready")
     assert route_pdf(pdf, "passed") == pdf
     assert pdf.read_bytes() == b"ready" and pdf.stat().st_nlink == 1
-    assert _files(root) == ["Print/1001.pdf"]
+    assert _files(root) == ["Checked/1001.pdf"]
 
 
 def test_fallback_to_copy_when_hard_links_are_not_possible(root, monkeypatch):
@@ -86,9 +86,9 @@ def test_fallback_to_copy_when_hard_links_are_not_possible(root, monkeypatch):
     routed = route_pdf(source, "passed")
 
     assert len(copies) == 1
-    assert routed == root / "Print" / "1001.pdf" and routed.read_bytes() == b"new"
+    assert routed == root / "Checked" / "1001.pdf" and routed.read_bytes() == b"new"
     assert not source.exists() and not old.exists()
-    assert _files(root) == ["Print/1001.pdf"]
+    assert _files(root) == ["Checked/1001.pdf"]
 
 
 def test_fallback_to_copy_across_filesystems(root, monkeypatch):

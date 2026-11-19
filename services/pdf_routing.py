@@ -3,21 +3,25 @@
 Every PDF the checker produces lives in exactly one of three folders, chosen
 from the order's current status:
 
-======== ============== =====================================================
-status   folder         meaning
-======== ============== =====================================================
-passed   ``PDF/Print``  passed every mandatory check; the only "ready to
-                        print" folder (operator acceptance keeps the PDF here)
-warning  ``PDF/Rework`` readable result requiring correction (local findings
-                        or PitStop errors/warnings)
-error    ``PDF/Failed`` unreadable result or technical processing/check failure
-======== ============== =====================================================
+======== =============== ====================================================
+status   folder          meaning
+======== =============== ====================================================
+passed   ``PDF/Checked`` passed every mandatory check, waits for the operator
+warning  ``PDF/Rework``  readable result requiring correction (local findings
+                         or PitStop errors/warnings)
+error    ``PDF/Failed``  unreadable result or technical processing/check failure
+======== =============== ====================================================
+
+``PDF/Print`` is not a status folder: only the operator's «в печать»
+(``FileLifecycle.accept_for_print``) moves a PDF there, so a check never puts
+a PDF into Print before the decision (order 26237201, 2026-11-19: a green PDF
+sat in Print for 18 s before anyone pressed the button).
 
 Invariant: ``PDF/Print`` never contains a PDF whose current status is
 ``warning`` or ``error``.  ``route_pdf`` therefore writes the destination
 atomically (temporary file + ``os.replace``) while staging the source and
-any stale copy of the same name from the other status folders and from the
-legacy ``PDF/`` root.
+any stale copy of the same name from the other folders (Print included) and
+from the legacy ``PDF/`` root.
 """
 
 from __future__ import annotations
@@ -31,14 +35,17 @@ from core.share_tempdir import share_temp_dir
 
 
 PDF_FOLDER_BY_STATUS: dict[str, str] = {
-    "passed": "Print",
+    "passed": "Checked",
     "warning": "Rework",
     "error": "Failed",
 }
-PRINT_FOLDER = PDF_FOLDER_BY_STATUS["passed"]
+CHECKED_FOLDER = PDF_FOLDER_BY_STATUS["passed"]
 REWORK_FOLDER = PDF_FOLDER_BY_STATUS["warning"]
 FAILED_FOLDER = PDF_FOLDER_BY_STATUS["error"]
-STATUS_FOLDERS: tuple[str, ...] = tuple(PDF_FOLDER_BY_STATUS.values())
+#: Отправленные оператором в печать; сюда переносит только ``accept_for_print``.
+PRINT_FOLDER = "Print"
+#: Все папки собранных PDF под ``PDF/`` (статусы проверки и Print).
+STATUS_FOLDERS: tuple[str, ...] = (*PDF_FOLDER_BY_STATUS.values(), PRINT_FOLDER)
 
 
 def folder_for_status(status: str) -> str:
