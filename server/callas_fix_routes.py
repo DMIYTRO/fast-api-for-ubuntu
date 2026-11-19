@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import quote
 from typing import Any, Callable, Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -299,11 +299,16 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
         dependencies=[Depends(protected)],
     )
     def callas_fix_file(
-        request: Request, run_id: str, order_id: str, kind: str, file_id: str | None = None
+        request: Request,
+        run_id: str,
+        order_id: str,
+        kind: str,
+        file_id: str | None = None,
+        page: int = Query(1, ge=1, le=999),
     ) -> FileResponse:
         service = _service(request)
         _run, _order, pdf = resolve_order(request, run_id, order_id, file_id)
-        target = service.file_path(pdf, kind)
+        target = service.file_path(pdf, kind, page=page)
         if target is None:
             raise APIError(404, "file_not_found", "Файл исправления не найден.")
         if kind == "pdf":

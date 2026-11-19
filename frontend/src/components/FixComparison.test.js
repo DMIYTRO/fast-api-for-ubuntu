@@ -222,4 +222,50 @@ describe("FixComparison", () => {
     await nextTick();
     expect(document.querySelector(".lightbox")).toBeNull();
   });
+
+  describe("front and back", () => {
+    const duplex = (front, back) => ({
+      ...base,
+      status: "ready",
+      plan: { key: "remove_clipping", title: "Удалить обтравочные маски" },
+      summary: { original_page_count: 2, changed_percent: front, overlay_changed_percent: front },
+      pages: [
+        { page: 1, original_url: "/o.png", result_url: "/r.png", overlay_url: "/v.png", changed_percent: front, overlay_changed_percent: front },
+        { page: 2, original_url: "/o.png?page=2", result_url: "/r.png?page=2", overlay_url: "/v.png?page=2", changed_percent: back, overlay_changed_percent: back },
+      ],
+    });
+
+    it("shows a row of three tiles for each side", async () => {
+      setup();
+      const host = mount({ comparison: duplex(0, 3.5) });
+      await nextTick();
+      const rows = [...host.querySelectorAll(".fix-page")];
+      expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual(["Лицо", "Оборот"]);
+      expect(rows.map((row) => row.querySelectorAll(".fix-tile").length)).toEqual([3, 3]);
+      expect(rows[1].querySelector(".fix-page-title").textContent).toContain("изменено 3,5 %");
+      expect(rows[1].querySelector(".fix-tile-overlay .preview-image").getAttribute("aria-label")).toBe("Открыть крупно: Оборот · Наложение");
+      // Изменение только на обороте — это не «внешний вид не изменился».
+      expect(host.textContent).not.toContain("Внешний вид макета не изменился");
+      expect(host.textContent).not.toContain("площади");
+    });
+
+    it("keeps the empty-overlay note when neither side changed", async () => {
+      setup();
+      const host = mount({ comparison: duplex(0, 0) });
+      await nextTick();
+      expect(host.textContent).toContain("Внешний вид макета не изменился");
+    });
+
+    it("shows one untitled row for a single page or an old payload", async () => {
+      setup();
+      const single = mount({ comparison: { ...base, status: "ready", pages: [{ page: 1, original_url: "/o.png", result_url: "/r.png", overlay_url: "/v.png" }] } });
+      const old = mount({ comparison: { ...base, status: "ready" } });
+      await nextTick();
+      for (const host of [single, old]) {
+        expect(host.querySelectorAll(".fix-page").length).toBe(1);
+        expect(host.querySelector(".fix-page-title")).toBeNull();
+        expect(host.querySelectorAll(".fix-tile").length).toBe(3);
+      }
+    });
+  });
 });
