@@ -76,7 +76,7 @@ class CallasFixError(Exception):
 def fix_dir_for(pdf_path: Path | str) -> Path:
     """Папка результата исправления.
 
-    Для собранного PDF (лежит в ``PDF/`` или в папке статуса ``PDF/Print|Rework|Failed/``) —
+    Для собранного PDF (лежит в ``PDF/`` или в папке ``PDF/Checked|Rework|Failed|Print/``) —
     ``PDF/CallasFix/<имя>``. Для исходного
     PDF заказа, который лежит вне ``PDF/``, результат кладётся в ``PDF/CallasFix/<имя>.source``,
     чтобы не писать в папку с исходниками и не пересекаться с собранным PDF.

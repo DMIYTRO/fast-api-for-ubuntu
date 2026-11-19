@@ -290,7 +290,7 @@ class AdapterBleedFixTests(unittest.TestCase):
         self.assertEqual(result.pdf_kind, "production")
         self.assert_order_26124497_is_clean(order, result)
         self.assertEqual(_completed_order_status(order, result), "passed")
-        self.assertEqual(result.pdf_path.parent.name, "Print")
+        self.assertEqual(result.pdf_path.parent.name, "Checked")
         (line,) = self.baseline_lines()
         self.assertIn("branch=production scope=all status=applied", line)
 

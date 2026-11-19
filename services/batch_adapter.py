@@ -26,7 +26,7 @@ from services.pitstop.baseline import (
 )
 from services.callas_fix import source_signature_matches
 from services.callas_source_fix import STALE_SOURCE_WARNING
-from services.pdf_routing import FAILED_FOLDER, completed_status, route_pdf
+from services.pdf_routing import CHECKED_FOLDER, FAILED_FOLDER, PRINT_FOLDER, completed_status, route_pdf
 from services.order_kits import kits_from_order_info
 from services.postpress import normalize_postpress
 
@@ -370,11 +370,12 @@ class BatchProcessorAdapter:
         ordered = sorted(order.files, key=lambda item: 0 if item.parsed and item.parsed.side == "face" else 1)
         if not ordered:
             return
-        source = self.pdf_dir / "Print" / f"{ordered[0].path.stem}.pdf"
-        if source.is_file():
-            failed = self.pdf_dir / FAILED_FOLDER / source.name
-            failed.parent.mkdir(parents=True, exist_ok=True)
-            source.replace(failed)
+        for folder in (CHECKED_FOLDER, PRINT_FOLDER):
+            source = self.pdf_dir / folder / f"{ordered[0].path.stem}.pdf"
+            if source.is_file():
+                failed = self.pdf_dir / FAILED_FOLDER / source.name
+                failed.parent.mkdir(parents=True, exist_ok=True)
+                source.replace(failed)
 
     def _build_diagnostic_pdf(self, order: OrderCheck, result: OrderArtifacts) -> None:
         """First-stage failure: build an "as is" PDF into PDF/Failed and run PitStop on it."""

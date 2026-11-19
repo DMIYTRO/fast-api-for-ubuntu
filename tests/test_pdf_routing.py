@@ -22,7 +22,8 @@ def _pdf_dir(tmp_path: Path) -> Path:
 
 
 def test_status_to_folder_mapping_is_fixed():
-    assert folder_for_status("passed") == "Print"
+    # Зелёный PDF ждёт решения в Checked; в Print переносит только «в печать» (заказ 26237201).
+    assert folder_for_status("passed") == "Checked"
     assert folder_for_status("warning") == "Rework"
     assert folder_for_status("error") == "Failed"
     with pytest.raises(ValueError):
@@ -49,7 +50,7 @@ def test_route_moves_pdf_into_status_folder_and_removes_stale_copies(tmp_path: P
 
 def test_route_same_location_is_a_no_op(tmp_path: Path):
     pdf_dir = _pdf_dir(tmp_path)
-    pdf = pdf_dir / "Print" / "1001.pdf"
+    pdf = pdf_dir / "Checked" / "1001.pdf"
     pdf.parent.mkdir()
     pdf.write_bytes(b"ready")
 
@@ -67,7 +68,7 @@ def test_corrected_pdf_takes_over_production_name_and_folder(tmp_path: Path):
 
     routed = route_pdf(fixed, "passed", pdf_dir=pdf_root_for(production), name=production.name)
 
-    assert routed == pdf_dir / "Print" / "1001.pdf"
+    assert routed == pdf_dir / "Checked" / "1001.pdf"
     assert routed.read_bytes() == b"fixed"
     assert not production.exists()
     assert not fixed.exists()
@@ -117,7 +118,7 @@ def test_local_error_is_never_lifted_by_pitstop():
 def test_callas_fix_dir_is_shared_across_status_folders(tmp_path: Path):
     expected = tmp_path / "PDF" / "CallasFix" / "1001"
     assert fix_dir_for(tmp_path / "PDF" / "1001.pdf") == expected
-    for folder in ("Print", "Rework", "Failed"):
+    for folder in ("Checked", "Print", "Rework", "Failed"):
         assert fix_dir_for(tmp_path / "PDF" / folder / "1001.pdf") == expected
     assert fix_dir_for(tmp_path / "1001-face.pdf") == tmp_path / "PDF" / "CallasFix" / "1001-face.source"
 
@@ -138,7 +139,8 @@ def test_repeated_corrections_replace_in_place_and_remove_previous_status(tmp_pa
         assert current.read_bytes() == f"revision-{number}".encode()
         assert list(root.glob("*/job.pdf")) == [current]
         if status != "passed":
-            assert not (root / "Print" / "job.pdf").exists()
+            assert not (root / "Checked" / "job.pdf").exists()
+        assert not (root / "Print" / "job.pdf").exists()
 
 
 def test_failed_downgrade_keeps_last_committed_green_revision(tmp_path, monkeypatch):
