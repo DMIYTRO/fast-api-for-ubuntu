@@ -9,11 +9,46 @@ their own, subtly different file-moving rules.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import errno
 import filecmp
+import logging
+import time
 from pathlib import Path
 import shutil
 from typing import Any
 from services.pdf_routing import PRINT_FOLDER
+
+logger = logging.getLogger("image_magic.file_lifecycle")
+
+#: Ошибки CIFS, когда файл держит открытым другой клиент сетевого диска (Callas, PitStop,
+#: открытый у кого-то PDF): на SMB это приходит как EIO/EBUSY/EACCES (заказ 26237531, 19.11).
+_LOCKED_ERRNOS = frozenset({errno.EIO, errno.EBUSY, errno.EACCES, errno.ETXTBSY})
+#: Паузы между повторами операции с занятым файлом, с.
+_LOCK_RETRY_PAUSES = (0.5, 1.0, 2.0, 4.0)
+
+
+def _retry_locked(operation, path: Path):
+    """Повторить операцию с файлом, который на SMB временно занят другим клиентом."""
+    for pause in (*_LOCK_RETRY_PAUSES, None):
+        try:
+            return operation()
+        except OSError as exc:
+            if exc.errno not in _LOCKED_ERRNOS or pause is None:
+                raise
+            logger.warning(
+                "file_lifecycle.locked_retry path=%s errno=%s pause=%.1f", path, exc.errno, pause
+            )
+            time.sleep(pause)
+
+
+def _locked_message(exc: Exception) -> str:
+    if isinstance(exc, OSError) and exc.errno in _LOCKED_ERRNOS and exc.filename:
+        return (
+            f"файл «{Path(str(exc.filename)).name}» занят другой программой на сетевом диске "
+            f"([Errno {exc.errno}]): закройте его (Acrobat, Callas, PitStop) или подождите "
+            "минуту и повторите"
+        )
+    return str(exc)
 
 
 class FileLifecycleError(RuntimeError):
@@ -228,14 +263,14 @@ class FileLifecycle:
                         # An earlier check may already have copied this same
                         # failed file to Troubles.  Remove the duplicate source
                         # so the final state still contains one canonical copy.
-                        source.unlink()
+                        _retry_locked(source.unlink, source)
                         completed.append((source, destination, True))
                     else:
-                        source.unlink()
+                        _retry_locked(source.unlink, source)
                         completed.append((source, destination, True))
                     continue
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(source), str(destination))
+                _retry_locked(lambda: shutil.move(str(source), str(destination)), source)
                 completed.append((source, destination, reused))
         except Exception as exc:
             for source, destination, reused in reversed(completed):
@@ -247,7 +282,7 @@ class FileLifecycle:
                             shutil.move(str(destination), str(source))
                     except OSError:
                         pass
-            raise FileLifecycleError(f"Не удалось переместить файлы заказа: {exc}") from exc
+            raise FileLifecycleError(f"Не удалось переместить файлы заказа: {_locked_message(exc)}") from exc
         return completed
 
     @staticmethod

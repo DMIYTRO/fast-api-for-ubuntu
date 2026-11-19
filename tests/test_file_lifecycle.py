@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from services.file_lifecycle import FileLifecycle, FileLifecycleError
+import pytest
 
 
 class FileLifecycleTests(unittest.TestCase):
@@ -241,3 +242,57 @@ def test_yellow_pdf_is_accepted_for_print(tmp_path):
         }
     )
     assert (tmp_path / "PDF" / "Print" / "job.pdf").is_file()
+
+
+def _eio(path):
+    import errno as _errno
+    return OSError(_errno.EIO, "Input/output error", str(path))
+
+
+def test_return_retries_a_file_locked_on_the_share(tmp_path, monkeypatch):
+    """Заказ 26237531 (19.11): исходник держал другой клиент SMB — [Errno 5] при удалении."""
+    from services import file_lifecycle
+
+    monkeypatch.setattr(file_lifecycle.time, "sleep", lambda _s: None)
+    source = tmp_path / "job_(36056-26237531).pdf"
+    source.write_bytes(b"%PDF")
+    copy = tmp_path / "Troubles" / "26237531" / source.name
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(b"%PDF")  # копия, сделанная при проверке
+    real_unlink = Path.unlink
+    calls = {"n": 0}
+
+    def flaky_unlink(self, *args, **kwargs):
+        if self == source and calls["n"] < 2:
+            calls["n"] += 1
+            raise _eio(self)
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+    order = {"order_id": "26237531", "files": [{"path": str(source)}], "pdf_path": None, "preview_paths": []}
+
+    FileLifecycle(tmp_path).return_for_rework(order)
+
+    assert not source.exists() and copy.is_file()
+    assert calls["n"] == 2
+
+
+def test_persistently_locked_file_gets_an_actionable_message(tmp_path, monkeypatch):
+    from services import file_lifecycle
+
+    monkeypatch.setattr(file_lifecycle.time, "sleep", lambda _s: None)
+    source = tmp_path / "job_(36056-26237531).pdf"
+    source.write_bytes(b"%PDF")
+
+    def locked_move(src, dst, *args, **kwargs):
+        raise _eio(src)
+
+    monkeypatch.setattr(file_lifecycle.shutil, "move", locked_move)
+    order = {"order_id": "26237531", "files": [{"path": str(source)}], "pdf_path": None, "preview_paths": []}
+
+    with pytest.raises(FileLifecycleError) as error:
+        FileLifecycle(tmp_path).return_for_rework(order)
+
+    assert "занят другой программой на сетевом диске" in str(error.value)
+    assert "job_(36056-26237531).pdf" in str(error.value)
+    assert source.is_file()
