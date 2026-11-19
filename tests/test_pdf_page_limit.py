@@ -87,11 +87,12 @@ def test_issue_group_names_the_page_limit_for_new_and_stored_messages():
         assert any(group.get("code") == "pdf_too_many_pages" for group in dto["issue_groups"]), dto
 
 
-def test_two_page_pdf_next_to_extra_side_is_a_warning_built_from_the_pdf_alone(tmp_path):
-    """Заказ 26237111: «…_1.pdf» на 2 страницы и старый «…_1-back.tif» — 3 страницы в PDF.
 
-    Это несоответствие техтребованиям, а не жёсткая ошибка: диагностический PDF — только
-    двухстраничный PDF, лишний файл перечислен как не вошедший, итог — предупреждение.
+def test_two_page_pdf_next_to_extra_side_is_a_hard_error(tmp_path):
+    """Заказ 26237111: «…_1.pdf» на 2 страницы и ещё «…_1-back.tif» — 3 страницы для 4-4.
+
+    Страниц в файлах больше, чем сторон печати: грубое нарушение, заказ красный при любом
+    PitStop. Для просмотра лишний файл не приклеивается к PDF (не 3 страницы).
     """
     from tests.fake_callas import FakeCallasMerger
 
@@ -101,23 +102,48 @@ def test_two_page_pdf_next_to_extra_side_is_a_warning_built_from_the_pdf_alone(t
     processor = BatchProcessor(tmp_path, tmp_path / "PDF", pdf_merger=FakeCallasMerger())
     order = processor.inspect_orders()[0]
 
-    assert not order.passed
-    assert not has_page_rule_violation(order)
-    message = next(error for error in order.errors if "Несоответствие техтребованиям" in error)
-    assert f"«{stem}-back.pdf»" in message and f"«{stem}.pdf»" in message
+    assert has_page_rule_violation(order)
+    message = next(error for error in order.errors if error.startswith("в заказе 3 страницы"))
+    assert "для двусторонней печати допускается 2 (лицо и оборот)" in message
+    assert f"«{stem}.pdf» — 2 страницы" in message and f"«{stem}-back.pdf» — 1 страница" in message
+    assert "верните заказ на доработку" in message
+    status = _completed_order_status(order, OrderArtifacts(pdf_kind="diagnostic", pitstop=PITSTOP_ERROR))
+    assert status == "error"
 
     path, note = processor.create_diagnostic_pdf(order, tmp_path / "PDF" / "Failed")
-
-    assert path is not None and path.name == f"{stem}.pdf"
     with pymupdf.open(path) as document:
         assert document.page_count == 2
     assert note and f"{stem}-back.pdf: лишний файл стороны при двухстраничном PDF" in note
-    status = _completed_order_status(order, OrderArtifacts(pdf_kind="diagnostic", pitstop=PITSTOP_ERROR))
-    assert status == "warning"
 
     dto = {"errors": list(order.errors), "warnings": [], "files": []}
     attach_issue_groups(dto)
-    assert any(group.get("code") == "two_page_pdf_extra_sides" for group in dto["issue_groups"])
+    assert any(group.get("code") == "order_too_many_pages" for group in dto["issue_groups"])
+
+
+def test_three_side_files_for_duplex_are_a_hard_error(tmp_path):
+    for name in ("a_face", "b_back", "c_face"):
+        _pdf(tmp_path / f"job_(90x50)_4-4_(1-301)_{name}.pdf", 1)
+    order = BatchProcessor(tmp_path, tmp_path / "PDF").inspect_orders()[0]
+
+    assert has_page_rule_violation(order)
+    assert any(error.startswith("в заказе 3 страницы") for error in order.errors)
+
+
+def test_two_files_for_one_sided_are_a_hard_error(tmp_path):
+    _pdf(tmp_path / "job_(90x50)_4-0_(1-302)_face.pdf", 1)
+    _pdf(tmp_path / "job_(90x50)_4-0_(1-302)_back.pdf", 1)
+    order = BatchProcessor(tmp_path, tmp_path / "PDF").inspect_orders()[0]
+
+    assert has_page_rule_violation(order)
+    assert any("для односторонней печати допускается 1 (одна сторона)" in error for error in order.errors)
+
+
+def test_face_and_back_for_duplex_are_fine(tmp_path):
+    _pdf(tmp_path / "job_(90x50)_4-4_(1-303)_face.pdf", 1)
+    _pdf(tmp_path / "job_(90x50)_4-4_(1-303)_back.pdf", 1)
+    order = BatchProcessor(tmp_path, tmp_path / "PDF").inspect_orders()[0]
+
+    assert not has_page_rule_violation(order) and order.passed
 
 
 def test_several_two_page_pdfs_stay_a_hard_error(tmp_path):
@@ -126,5 +152,15 @@ def test_several_two_page_pdfs_stay_a_hard_error(tmp_path):
     order = BatchProcessor(tmp_path, tmp_path / "PDF").inspect_orders()[0]
 
     assert has_page_rule_violation(order)
+    assert any(error.startswith("в заказе 4 страницы") for error in order.errors)
     status = _completed_order_status(order, OrderArtifacts(pdf_kind="diagnostic", pitstop=PITSTOP_ERROR))
     assert status == "error"
+
+
+def test_page_count_message_uses_russian_plural():
+    from core.pdf_inspector import pages_text
+
+    assert [pages_text(n) for n in (1, 2, 3, 5, 11, 15, 21, 22)] == [
+        "1 страница", "2 страницы", "3 страницы", "5 страниц", "11 страниц", "15 страниц",
+        "21 страница", "22 страницы",
+    ]

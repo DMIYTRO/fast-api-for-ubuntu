@@ -16,7 +16,7 @@ if TYPE_CHECKING:  # services.__init__ imports this module; avoid a cycle
     from services.callas import CallasClient
 
 from core.inspector import inspect_file, inspect_raster
-from core.pdf_inspector import MAX_SUPPORTED_PAGES, inspect_pdf
+from core.pdf_inspector import MAX_SUPPORTED_PAGES, inspect_pdf, pages_text
 from core.pdf_exporter import convert_image_to_pdf
 from core.preview_cache import preview_extension
 from core.preview_generator import generate_preview
@@ -287,6 +287,8 @@ CALLAS_MERGE_UNAVAILABLE_MESSAGE = (
     "Задайте IMAGE_MAGIC_CALLAS_URL (и общий ресурс IMAGE_MAGIC_CALLAS_SHARE) "
     "и перезапустите службу; локальная склейка PyMuPDF отключена."
 )
+
+
 
 
 class BatchProcessor:
@@ -1096,24 +1098,7 @@ class BatchProcessor:
                 sides[item.parsed.side].append(item)
 
         duplex_files = [item for item in order.files if item.page_count == 2]
-        if len(duplex_files) > 1:
-            order.page_rule_violation = True
-            order.errors.append("найдено несколько двухстраничных PDF в одном заказе")
-        if len(duplex_files) == 1 and len(order.files) > 1:
-            # Несоответствие техтребованиям, а не сбой: клиент прислал полный двухстраничный
-            # PDF и ещё файлы сторон (заказ 26237111: «…_1.pdf» на 2 страницы и старый
-            # «…_1-back.tif»). Диагностический PDF собирается только из двухстраничного PDF
-            # (``_diagnostic_files``), итог — предупреждение: оператор решает, печатать его
-            # или вернуть заказ клиенту.
-            extra = ", ".join(
-                f"«{item.path.name}»" for item in order.files if item is not duplex_files[0]
-            )
-            order.errors.append(
-                "двухстраничный PDF является полным заказом (лицо и оборот), а в заказе есть ещё "
-                f"файлы сторон: {extra}. Несоответствие техтребованиям по числу страниц: "
-                f"проверяется только «{duplex_files[0].path.name}», лишние файлы в PDF не "
-                "вошли — проверьте, какой вариант верный, или верните заказ клиенту"
-            )
+        BatchProcessor._validate_page_total(order)
 
         color_modes = {(item.parsed.front_colors, item.parsed.back_colors) for item in order.files}
         if len(color_modes) != 1:
@@ -1183,6 +1168,34 @@ class BatchProcessor:
             order.errors.append("для двусторонней печати не найден файл back")
         if back_colors == 0 and sides["back"]:
             order.errors.append("для односторонней печати найден лишний файл back")
+
+    @staticmethod
+    def _validate_page_total(order: OrderCheck) -> None:
+        """Страниц во всех файлах заказа не больше, чем сторон печати: 2 для 4-4, 1 для 4-0.
+
+        Больше — грубое нарушение техтребований и жёсткая ошибка (``page_rule_violation``):
+        заказ красный, только возврат на доработку. Заказ 26237111: «…_1.pdf» на 2 страницы
+        и ещё «…_1-back.tif» — 3 страницы для двусторонней печати. Один файл с лишними
+        страницами отмечают проверки самого файла (больше 2 страниц, 2 страницы для 4-0).
+        """
+        if len(order.files) < 2:
+            return
+        two_sided = any(
+            item.parsed is not None and item.parsed.back_colors > 0 for item in order.files
+        )
+        allowed = 2 if two_sided else 1
+        pages = [(item, item.page_count or 1) for item in order.files]
+        total = sum(count for _item, count in pages)
+        if total <= allowed:
+            return
+        order.page_rule_violation = True
+        listed = ", ".join(f"«{item.path.name}» — {pages_text(count)}" for item, count in pages)
+        sides = "лицо и оборот" if two_sided else "одна сторона"
+        order.errors.append(
+            f"в заказе {pages_text(total)}, а для "
+            f"{'двусторонней' if two_sided else 'односторонней'} печати допускается {allowed} "
+            f"({sides}): {listed}. Грубое нарушение техтребований — верните заказ на доработку"
+        )
 
     @staticmethod
     def _orientation(width_mm: float, height_mm: float) -> str:
@@ -1392,8 +1405,9 @@ class BatchProcessor:
     def _diagnostic_files(cls, order: OrderCheck) -> tuple[list[FileCheck], list[str]]:
         """Файлы диагностического PDF и пропущенные (с причиной).
 
-        Двухстраничный PDF — полный заказ: если рядом лежат ещё файлы сторон, они не
-        приклеиваются к нему (иначе 2 + 1 = 3 страницы, заказ 26237111).
+        Двухстраничный PDF — полный заказ: если рядом лежат ещё файлы сторон, заказ
+        красный (``_validate_page_total``), а для просмотра лишние файлы не приклеиваются
+        к PDF (иначе 2 + 1 = 3 страницы, заказ 26237111); их превью есть у самих файлов.
         """
         duplex = [item for item in order.files if item.page_count == 2]
         if len(duplex) == 1 and len(order.files) > 1:

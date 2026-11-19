@@ -163,3 +163,12 @@ describe("PitStop object counts", () => {
     expect(group.objects).toBe(100);
   });
 });
+
+describe("page count rules", () => {
+  it("names an order with more pages than printed sides and keeps the PDF page group", () => {
+    expect(normalizeIssueMessage("в заказе 3 страницы, а для двусторонней печати допускается 2 (лицо и оборот): «a.pdf» — 2 страницы, «b.tif» — 1 страница. Грубое нарушение техтребований — верните заказ на доработку").code)
+      .toBe("order_too_many_pages");
+    expect(normalizeIssueMessage("PDF содержит 3 страницы; допускается не более 2 (лицо и оборот)").code).toBe("pdf_too_many_pages");
+    expect(normalizeIssueMessage("PDF содержит 15 страниц; допускается не более 2 (лицо и оборот)").code).toBe("pdf_too_many_pages");
+  });
+});
