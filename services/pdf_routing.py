@@ -152,7 +152,14 @@ def route_pdf(
                     continue
                 seen.add(resolved)
                 backup = Path(backup_dir) / str(len(staged))
-                candidate.rename(backup)
+                try:
+                    candidate.rename(backup)
+                except FileNotFoundError:
+                    if candidate == source:
+                        raise
+                    # Старая копия исчезла сама: её забрали из Print, а CIFS с
+                    # cache=loose ещё показывал файл (заказ 26237531, 19.11). Убирать нечего.
+                    continue
                 staged.append((candidate, backup))
             os.replace(temporary, destination)
         except BaseException:

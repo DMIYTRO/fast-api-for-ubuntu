@@ -1424,7 +1424,19 @@ class RunCoordinator:
         context = context or self._contexts.get(run_id)
         if context is None:
             return
-        artifacts = context.adapter.process_order(order)
+        try:
+            artifacts = context.adapter.process_order(order)
+        except Exception as exc:  # noqa: BLE001 — сбой одного заказа не роняет проверку
+            # Заказ 26237531 (19.11): исчезнувшая копия в PDF/Print уронила всю проверку,
+            # и остальные заказы остались без итога и без возможности решения.
+            logger.exception(
+                "order.processing_failed run_id=%s order_id=%s", run_id, order.order_id
+            )
+            artifacts = OrderArtifacts(
+                pdf_path=None,
+                preview_paths=[],
+                errors=[f"Сбой обработки заказа: {str(exc).strip() or type(exc).__name__}"],
+            )
         with self._lock:
             key = context.key_for(order)
             if self._contexts.get(run_id) is not context or key in context.timed_out_keys:

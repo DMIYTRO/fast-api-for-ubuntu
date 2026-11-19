@@ -381,6 +381,21 @@ class KitReturnTests(unittest.TestCase):
         self.assertIn("ждёт решения по коррекции", member["message"])
         self.assertNotIn("Sborka не подтвердила", member["message"])
 
+    def test_kit_with_main_stuck_waiting_in_finished_run_is_returned(self):
+        """Проверка e1efbce1 упала, главный 26237111 остался «ждёт подтверждения» —
+        решить коррекцию уже нельзя, возврат комплекта должен пройти."""
+        self.run["status"] = "failed"
+        self.run["orders"][MAIN]["status"] = "waiting_confirmation"
+        with self.database.session_factory() as session, session.begin():
+            session.get(OrderResult, 1).status = "waiting_confirmation"
+
+        items = self._reject(self._service(), MAIN)
+
+        self.assertEqual(self.sent, [(MAIN, "Низька роздільна здатність")])
+        for order_id in (MAIN, SECOND, THIRD):
+            self.assertEqual(self._status(order_id), "returned_for_rework")
+        self.assertEqual({item["status"] for item in items}, {"prepared"})
+
     def test_plain_order_waiting_for_correction_is_refused_clearly(self):
         self.run["orders"][PLAIN]["status"] = "waiting_confirmation"
 

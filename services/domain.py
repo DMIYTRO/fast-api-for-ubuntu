@@ -64,6 +64,9 @@ _OPERATOR_TRANSITIONS = {
     },
     OrderStatus.ERROR: {OrderStatus.RETURNED_FOR_REWORK},
     OrderStatus.ACCEPTED_FOR_PRINT: {OrderStatus.RETURNED_FOR_REWORK},
+    # Только в завершённой проверке, где подтвердить коррекцию уже нельзя
+    # (OrderWorkflowService отказывает, пока проверка идёт).
+    OrderStatus.WAITING_CONFIRMATION: {OrderStatus.RETURNED_FOR_REWORK},
 }
 
 

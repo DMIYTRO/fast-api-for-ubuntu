@@ -164,3 +164,27 @@ def test_page_count_message_uses_russian_plural():
         "1 страница", "2 страницы", "3 страницы", "5 страниц", "11 страниц", "15 страниц",
         "21 страница", "22 страницы",
     ]
+
+
+def test_page_rule_order_does_not_wait_for_a_size_correction(tmp_path):
+    """Заказ 26237111: красный по числу страниц, но ждал решения по коррекции TIFF —
+    проверка упала, и заказ застрял в ожидании без возможности решения."""
+    order = OrderCheck("26237111", "214", files=[
+        FileCheck(
+            path=Path("/x/job_(90x50)_4-4_(214-26237111)_1.pdf"),
+            parsed=ParsedFilename("214", "26237111", 90, 50, 4, 4, ""),
+            page_count=2,
+        ),
+        FileCheck(
+            path=Path("/x/job_(90x50)_4-4_(214-26237111)_1-back.tif"),
+            parsed=ParsedFilename("214", "26237111", 90, 50, 4, 4, "back"),
+            resample_decision="ask_confirmation",
+        ),
+    ])
+    BatchProcessor(tmp_path, tmp_path / "PDF").revalidate_order(order)
+
+    tif = order.files[1]
+    assert has_page_rule_violation(order)
+    assert tif.resample_decision == "reject"
+    assert any("коррекция размера не предлагается" in warning for warning in tif.warnings)
+    assert not any(item.resample_decision == "ask_confirmation" for item in order.files)

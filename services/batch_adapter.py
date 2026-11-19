@@ -375,7 +375,10 @@ class BatchProcessorAdapter:
             if source.is_file():
                 failed = self.pdf_dir / FAILED_FOLDER / source.name
                 failed.parent.mkdir(parents=True, exist_ok=True)
-                source.replace(failed)
+                try:
+                    source.replace(failed)
+                except FileNotFoundError:
+                    continue  # копию уже забрали из папки — помечать нечего
 
     def _build_diagnostic_pdf(self, order: OrderCheck, result: OrderArtifacts) -> None:
         """First-stage failure: build an "as is" PDF into PDF/Failed and run PitStop on it."""
