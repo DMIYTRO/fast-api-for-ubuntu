@@ -231,6 +231,59 @@ class BaselineFixTests(CallasFixApiTests):
         self.assertTrue(pitstop_ready(order))
         self.assertEqual(print_blockers(order), [])
 
+    def test_start_request_passes_the_check_policy_run_option(self):
+        body = {"input_path": str(self.root), "direction": "digital", "generate_previews": False,
+                "copy_failures": False}
+        response = self.client.post("/api/checks", json={**body, "check_policy": "full"})
+        self.assertEqual(response.status_code, 202, response.text)
+        run_id = response.json()["id"]
+        self.client.app.state.coordinator.wait_for(run_id, timeout=3)
+        run = self.client.app.state.coordinator.get_run(run_id)
+        self.assertEqual(run["options"]["check_policy"], "full")
+        self.assertEqual(self.client.post("/api/checks", json={**body, "check_policy": "bogus"}).status_code, 422)
+        default = self.client.post("/api/checks", json=body)
+        self.assertEqual(default.status_code, 202, default.text)
+        self.client.app.state.coordinator.wait_for(default.json()["id"], timeout=3)
+        self.assertEqual(
+            self.client.app.state.coordinator.get_run(default.json()["id"])["options"]["check_policy"], "auto"
+        )
+
+    def test_recheck_applies_the_basic_policy_after_the_baseline(self):
+        from services.check_policy import PolicySettings
+
+        self.original_report = report((TRANSPARENCY, 90))
+        run_id = self.make_run()
+        self.workflow.policy_settings = PolicySettings("basic", ("CorelDRAW",))
+        order, pitstop, _revision, _sha = self.recheck(run_id, report((TRANSPARENCY, 90), (CLIPPING, 5)))
+        transparency = self.issue(pitstop, 3004)
+        # Клиентская прозрачность сохранена сравнением, но для облегчённой проверки справочная.
+        self.assertEqual((transparency["severity"], transparency["policy_demoted"]), ("information", True))
+        self.assertEqual(transparency["policy_original_severity"], "error")
+        self.assertEqual(pitstop["check_policy"], "basic")
+        self.assertEqual(pitstop["baseline_status"], "applied")
+        self.assertEqual((pitstop["verdict_before_policy"], pitstop["verdict"]), ("error", "passed"))
+        self.assertEqual(order["status"], "passed")
+
+    def test_recheck_uses_the_policy_stored_with_the_order(self):
+        from services.check_policy import PolicySettings
+
+        self.original_report = report((TRANSPARENCY, 90))
+        run_id = self.make_run()
+        self.workflow.policy_settings = PolicySettings("basic", ("CorelDRAW",))
+        run = self.client.app.state.coordinator.get_run(run_id)
+        order = next(iter(run["orders"].values()))
+        order["check_policy"] = {
+            "key": "full", "label": "Полная проверка (CorelDRAW)", "reason": "strict_folder",
+        }
+        candidate = make_pdf(self.root / "PDF" / "callas-candidate.pdf", 103, 214)
+        self.pitstop.reports.append(report((TRANSPARENCY, 90)))
+        updated, pitstop, _revision, _sha = self.workflow.recheck_pdf_revision(
+            run, order, candidate, callas_fix=True
+        )
+        self.assertEqual(pitstop["check_policy"], "full")
+        self.assertEqual(self.issue(pitstop, 3004)["severity"], "error")
+        self.assertEqual(updated["status"], "warning")
+
     def test_bleed_only_fix_keeps_client_findings_and_their_severity(self):
         self.original_report = report((TRANSPARENCY, 90), (LOWRES, 3))
         run_id = self.make_run()

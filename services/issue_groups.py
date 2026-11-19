@@ -125,6 +125,7 @@ class _Group:
     __slots__ = (
         "code", "severity", "source", "label", "count", "objects",
         "pages", "files", "samples", "has_locations", "unknown_objects", "fix_plan",
+        "policy_seen", "policy_demoted", "policy_unclassified", "category_label",
     )
 
     def __init__(self, code: str, severity: str, source: str, label: str) -> None:
@@ -140,6 +141,20 @@ class _Group:
         self.has_locations = False
         self.unknown_objects = False
         self.fix_plan: str | None = None
+        # Политика проверки (services/check_policy.py): метки находок PitStop.
+        self.policy_seen = False
+        self.policy_demoted = False
+        self.policy_unclassified = False
+        self.category_label: str | None = None
+
+    def add_policy(self, issue: Mapping[str, Any]) -> None:
+        if issue.get("policy_category") is not None or issue.get("policy_unclassified"):
+            self.policy_seen = True
+        self.policy_demoted = self.policy_demoted or issue.get("policy_demoted") is True
+        self.policy_unclassified = self.policy_unclassified or issue.get("policy_unclassified") is True
+        label = issue.get("policy_category_label")
+        if label and self.category_label is None:
+            self.category_label = str(label)
 
     def add(
         self,
@@ -192,6 +207,10 @@ class _Group:
         }
         if self.fix_plan:
             result["fix_plan"] = self.fix_plan
+        if self.policy_seen:
+            result["policy_demoted"] = self.policy_demoted
+            result["policy_unclassified"] = self.policy_unclassified
+            result["category_label"] = self.category_label
         return result
 
 
@@ -278,13 +297,16 @@ def build_issue_groups(
             code = f"action:{action_id}"
         else:
             code = _NUMBER_RE.sub("#", message)
-        key = (SOURCE_PITSTOP, severity, code)
+        # Понижённая политикой находка не сливается с обычной справочной.
+        demoted = "policy_demoted" if issue.get("policy_demoted") is True else ""
+        key = (SOURCE_PITSTOP, severity, f"{code}|{demoted}" if demoted else code)
         group = groups.get(key)
         if group is None:
             known = _PITSTOP_ACTIONS.get(str(action_id)) if action_id not in (None, "") else None
             group = groups[key] = _Group(code, severity, SOURCE_PITSTOP, known[0] if known else message)
             if known:
                 group.fix_plan = known[1]
+        group.add_policy(issue)
         locations = issue.get("locations") or ()
         group.add(
             message,

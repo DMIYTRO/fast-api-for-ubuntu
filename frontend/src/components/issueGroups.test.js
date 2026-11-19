@@ -172,3 +172,17 @@ describe("page count rules", () => {
     expect(normalizeIssueMessage("PDF содержит 15 страниц; допускается не более 2 (лицо и оборот)").code).toBe("pdf_too_many_pages");
   });
 });
+
+describe("policy fields in pitstop groups", () => {
+  it("carries demoted, unclassified and category label", () => {
+    const groups = groupPitStopIssues([
+      { severity: "information", action_id: 2080, message: "Transparency", policy_demoted: true, policy_category_label: "Прозрачность", locations: [] },
+      { severity: "warning", action_id: 9999, message: "New", policy_unclassified: true, locations: [] },
+      { severity: "error", action_id: 1, message: "Plain", locations: [] },
+    ]);
+    const by = Object.fromEntries(groups.map((group) => [group.code, group]));
+    expect(by["action:2080"]).toMatchObject({ severity: "info", policy_demoted: true, policy_unclassified: false, category_label: "Прозрачность" });
+    expect(by["action:9999"]).toMatchObject({ policy_demoted: false, policy_unclassified: true, category_label: "" });
+    expect(by["action:1"]).toMatchObject({ policy_demoted: false, policy_unclassified: false, category_label: "" });
+  });
+});

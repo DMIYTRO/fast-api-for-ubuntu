@@ -295,3 +295,101 @@ def find_rgb_pages(path: str | Path) -> tuple[int, ...]:
             if has_rgb:
                 found.append(index + 1)
     return tuple(found)
+
+
+# --------------------------------------------------------------------------- ICC / Lab
+_REF = re.compile(r"(\d+)\s+0\s+R")
+_ICC_REF = re.compile(r"/ICCBased\s+(\d+)\s+0\s+R")
+_PARENT_REF = re.compile(r"/Parent\s+\d+\s+0\s+R")
+_LAB = re.compile(r"/Lab(?![A-Za-z0-9])")
+#: Числа компонентов ICC-профилей, которые снимает перевод в CMYK: CMYK (4) и Gray (1).
+#: ICC-RGB (3) сюда не входит: RGB обрабатывает основная ветка конвертации.
+ICC_STRIP_COMPONENTS = (4, 1)
+_MAX_COLOR_OBJECTS = 20000
+
+
+@dataclass(frozen=True)
+class ColorProfileScan:
+    """Страницы (с 1) с ICC-профилем CMYK/Gray и с цветовым пространством Lab."""
+
+    icc_pages: tuple[int, ...] = ()
+    lab_pages: tuple[int, ...] = ()
+
+
+def _page_resources(document: pymupdf.Document, page_xref: int) -> str:
+    """Текст словаря Resources страницы (с учётом наследования от родителей); пусто, если нет."""
+    xref = page_xref
+    for _ in range(32):
+        kind, value = document.xref_get_key(xref, "Resources")
+        if kind in ("dict", "xref") and value.strip():
+            return value
+        parent_kind, parent = document.xref_get_key(xref, "Parent")
+        match = _REF.search(parent) if parent_kind == "xref" else None
+        if not match:
+            return ""
+        xref = int(match.group(1))
+    return ""
+
+
+def _scan_page_colors(
+    document: pymupdf.Document, page_xref: int, components: tuple[int, ...], cache: dict[int, int | None]
+) -> tuple[bool, bool]:
+    """(есть ICC с нужным числом компонентов, есть Lab) среди ресурсов страницы."""
+    has_icc = has_lab = False
+    queue = [_page_resources(document, page_xref)]
+    seen: set[int] = set()
+    while queue and len(seen) < _MAX_COLOR_OBJECTS:
+        text = queue.pop()
+        if _LAB.search(text):
+            has_lab = True
+        icc_refs = {int(number) for number in _ICC_REF.findall(text)}
+        for xref in icc_refs:
+            if xref not in cache:
+                try:
+                    kind, value = document.xref_get_key(xref, "N")
+                    cache[xref] = int(value) if kind == "int" else None
+                except Exception:  # noqa: BLE001
+                    cache[xref] = None
+            if cache[xref] in components:
+                has_icc = True
+        for match in _REF.finditer(_PARENT_REF.sub("", text)):
+            xref = int(match.group(1))
+            if xref in seen or xref in icc_refs:
+                continue
+            seen.add(xref)
+            try:
+                queue.append(document.xref_object(xref, compressed=True))
+            except Exception:  # noqa: BLE001
+                continue
+    return has_icc, has_lab
+
+
+def scan_color_profiles(
+    path: str | Path, components: tuple[int, ...] = ICC_STRIP_COMPONENTS
+) -> ColorProfileScan:
+    """Один проход по ресурсам страниц: где ICCBased с *components* компонентами и где Lab.
+
+    Только чтение. Обходятся словари ресурсов, изображения, Form XObject, паттерны и шейдинги
+    (по ссылкам, без ``/Parent``); содержимое страниц не разбирается.
+    """
+    icc: list[int] = []
+    lab: list[int] = []
+    with pymupdf.open(str(path)) as document:
+        cache: dict[int, int | None] = {}
+        for index in range(document.page_count):
+            has_icc, has_lab = _scan_page_colors(document, document[index].xref, components, cache)
+            if has_icc:
+                icc.append(index + 1)
+            if has_lab:
+                lab.append(index + 1)
+    return ColorProfileScan(tuple(icc), tuple(lab))
+
+
+def find_icc_pages(path: str | Path, components: tuple[int, ...] = ICC_STRIP_COMPONENTS) -> list[int]:
+    """Номера страниц (с 1) с ICC-профилем CMYK (N=4) или Gray (N=1) в ресурсах."""
+    return list(scan_color_profiles(path, components).icc_pages)
+
+
+def find_lab_pages(path: str | Path) -> list[int]:
+    """Номера страниц (с 1) с цветовым пространством Lab в ресурсах."""
+    return list(scan_color_profiles(path).lab_pages)

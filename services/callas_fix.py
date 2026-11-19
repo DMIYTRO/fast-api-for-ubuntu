@@ -78,8 +78,9 @@ def fix_dir_for(pdf_path: Path | str) -> Path:
 
     Для собранного PDF (лежит в ``PDF/`` или в папке ``PDF/Checked|Rework|Failed|Print/``) —
     ``PDF/CallasFix/<имя>``. Для исходного
-    PDF заказа, который лежит вне ``PDF/``, результат кладётся в ``PDF/CallasFix/<имя>.source``,
-    чтобы не писать в папку с исходниками и не пересекаться с собранным PDF.
+    PDF заказа, который лежит вне ``PDF/``, результат кладётся в ``PDF/CallasFix/<имя>.source``
+    входной папки (и для файла из папки полной проверки ``CorelDRAW``), чтобы не писать в
+    папку с исходниками и не пересекаться с собранным PDF.
     """
     pdf = Path(pdf_path)
     if pdf.parent.name == "PDF":
@@ -87,7 +88,9 @@ def fix_dir_for(pdf_path: Path | str) -> Path:
     if pdf.parent.name in STATUS_FOLDERS and pdf.parent.parent.name == "PDF":
         # Собранный PDF, разложенный по папке статуса (Print/Rework/Failed).
         return pdf.parent.parent / "CallasFix" / pdf.stem
-    return pdf.parent / "PDF" / "CallasFix" / f"{pdf.stem}.source"
+    from services.check_policy import source_output_root
+
+    return source_output_root(pdf) / "PDF" / "CallasFix" / f"{pdf.stem}.source"
 
 
 def is_raster_source(path: Path | str) -> bool:

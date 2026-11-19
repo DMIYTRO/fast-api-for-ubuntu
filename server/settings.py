@@ -6,7 +6,14 @@ from dataclasses import dataclass, field
 import os
 import math
 from pathlib import Path
+import logging
 
+from config.check_policies import (
+    DEFAULT_INPUT_CHECK_POLICY,
+    DEFAULT_STRICT_SOURCE_DIRS,
+    POLICIES,
+    POLICY_FULL,
+)
 from config.profiles import (
     DEFAULT_AUTO_CORRECT_MAX_MM,
     DEFAULT_CORRECTION_CONFIRM_MAX_MM,
@@ -129,6 +136,39 @@ def _env_no_scale_markers(
     return tuple(markers)
 
 
+def _env_input_check_policy(name: str) -> str:
+    """Политика проверки корня входной папки; неизвестное значение — ``full`` (как раньше)."""
+    raw = os.environ.get(name, "").strip().casefold()
+    if not raw:
+        return DEFAULT_INPUT_CHECK_POLICY
+    if raw not in POLICIES:
+        logging.getLogger("image_magic").warning(
+            "%s=%r неизвестна (доступны: %s); включена полная проверка",
+            name,
+            raw,
+            ", ".join(POLICIES),
+        )
+        return POLICY_FULL
+    return raw
+
+
+def _env_strict_source_dirs(
+    name: str, default: tuple[str, ...] = DEFAULT_STRICT_SOURCE_DIRS
+) -> tuple[str, ...]:
+    """Папки полной проверки через запятую; не задано — по умолчанию, пусто — нет таких папок."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return tuple(default)
+    names: list[str] = []
+    for item in raw.split(","):
+        folder = item.strip().strip("/\\")
+        if not folder or folder in {".", ".."} or "/" in folder or "\\" in folder:
+            continue
+        if folder.casefold() not in {value.casefold() for value in names}:
+            names.append(folder)
+    return tuple(names)
+
+
 def _callas_poll_intervals() -> tuple[float, float]:
     """Начальный и максимальный интервал опроса callas; максимум не меньше начального."""
     interval = max(0.1, float(os.environ.get("IMAGE_MAGIC_CALLAS_POLL_INTERVAL_SECONDS", "0.2")))
@@ -203,10 +243,19 @@ class Settings:
     # Метки в имени файла, при которых макет не масштабируется (только белые поля или
     # обрезка), IMAGE_MAGIC_NO_SCALE_NAME_MARKERS; пустой кортеж выключает правило.
     no_scale_name_markers: tuple[str, ...] = DEFAULT_NO_SCALE_NAME_MARKERS
+    # Политика проверки файлов из корня входной папки (config/check_policies.py):
+    # "basic" — облегчённая, "full" — как раньше (выключатель), IMAGE_MAGIC_INPUT_CHECK_POLICY.
+    input_check_policy: str = DEFAULT_INPUT_CHECK_POLICY
+    # Подпапки входной папки с полной проверкой, IMAGE_MAGIC_STRICT_SOURCE_DIRS
+    # (через запятую; пусто — таких папок нет).
+    strict_source_dirs: tuple[str, ...] = DEFAULT_STRICT_SOURCE_DIRS
     strip_icc_cmyk: bool = False
     # Автоматический перевод RGB → CMYK итогового PDF процесс-планом callas.
     callas_rgb_to_cmyk_enabled: bool = False
     callas_rgb_to_cmyk_profile: str = DEFAULT_RGB_TO_CMYK_PROFILE
+    # Снимать ICC-профили CMYK/Gray и OutputIntent у PDF без RGB тем же профилем
+    # конвертации; действует, только если конвертер RGB → CMYK создан.
+    callas_strip_icc_enabled: bool = True
     # Коррекция размера PDF QuickFix callas (те же правила, что у растра); выключена по умолчанию.
     callas_pdf_resize_enabled: bool = False
     callas_pdf_resize_profile: str = DEFAULT_PDF_RESIZE_PROFILE
@@ -432,10 +481,13 @@ class Settings:
             ),
             max_dpi=_env_max_dpi("IMAGE_MAGIC_MAX_DPI"),
             no_scale_name_markers=_env_no_scale_markers("IMAGE_MAGIC_NO_SCALE_NAME_MARKERS"),
+            input_check_policy=_env_input_check_policy("IMAGE_MAGIC_INPUT_CHECK_POLICY"),
+            strict_source_dirs=_env_strict_source_dirs("IMAGE_MAGIC_STRICT_SOURCE_DIRS"),
             strip_icc_cmyk=_env_bool("IMAGE_MAGIC_STRIP_ICC_CMYK", False),
             callas_rgb_to_cmyk_enabled=_env_bool(
                 "IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_ENABLED", False
             ),
+            callas_strip_icc_enabled=_env_bool("IMAGE_MAGIC_CALLAS_STRIP_ICC_ENABLED", True),
             callas_rgb_to_cmyk_profile=os.environ.get(
                 "IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_PROFILE", ""
             ).strip()

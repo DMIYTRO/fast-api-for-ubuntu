@@ -99,3 +99,40 @@ describe("PitStopReport fix baseline", () => {
     expect(items[0].textContent).toContain("страницы: 1");
   });
 });
+
+describe("PitStopReport check policy", () => {
+  const demoted = { severity: "information", policy_demoted: true, policy_original_severity: "warning", policy_category: "transparency", policy_category_label: "Прозрачность", action_id: 2080, message: "Transparency used", locations: [] };
+  const unclassified = { severity: "warning", policy_unclassified: true, action_id: 9999, message: "Brand new check", locations: [] };
+
+  it("shows a demoted issue as information with a note and the category", async () => {
+    const host = mount({ execution_status: "completed", verdict: "passed", check_policy: "basic", counts: { errors: 0, warnings: 0 }, issues: [demoted] });
+    await nextTick();
+    host.querySelector(".pitstop-toggle").click();
+    await nextTick();
+    const item = host.querySelector(".pitstop-issues li");
+    expect(item.classList.contains("issue-info")).toBe(true);
+    expect(item.textContent).toContain("не влияет на статус (облегчённая проверка)");
+    expect(item.textContent).toContain("Прозрачность");
+    expect(host.querySelector(".pitstop-report").classList.contains("pitstop-passed")).toBe(true);
+    expect(host.querySelector(".pitstop-policy-note")?.textContent).toContain("Облегчённая проверка (Input)");
+  });
+
+  it("hints that an unclassified issue needs a category", async () => {
+    const host = mount({ execution_status: "completed", verdict: "warning", check_policy: "basic", counts: { warnings: 1 }, issues: [unclassified] });
+    await nextTick();
+    host.querySelector(".pitstop-toggle").click();
+    await nextTick();
+    const item = host.querySelector(".pitstop-issues li");
+    expect(item.textContent).toContain("новая проверка: не классифицирована");
+    expect(item.textContent).not.toContain("не влияет на статус");
+  });
+
+  it("shows no policy notes for full checks and old reports", async () => {
+    const host = mount({ execution_status: "completed", verdict: "error", counts: { errors: 1 }, issues: [{ severity: "error", action_id: 1, message: "Bad", locations: [] }] });
+    await nextTick();
+    host.querySelector(".pitstop-toggle").click();
+    await nextTick();
+    expect(host.querySelector(".policy-note")).toBeNull();
+    expect(host.querySelector(".pitstop-policy-note")).toBeNull();
+  });
+});

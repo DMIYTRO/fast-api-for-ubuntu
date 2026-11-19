@@ -69,3 +69,27 @@ describe("StartCheckPanel correction policy", () => {
     expect(started[0]).toMatchObject({ correction_policy: "ask", approve_corrections: false });
   });
 });
+
+describe("StartCheckPanel check policy", () => {
+  const checkbox = () => [...document.body.querySelectorAll("input[type=checkbox]")].find((input) => input.closest("label").textContent.includes("Полная проверка для всех файлов"));
+
+  it("sends check_policy auto by default and shows the hint", async () => {
+    const { started } = mount();
+    expect(document.body.textContent).toContain("Иначе файлы из папки Input проверяются облегчённо, из CorelDRAW — полностью");
+    expect(checkbox().checked).toBe(false);
+    document.body.querySelector("form").dispatchEvent(new Event("submit"));
+    await nextTick();
+    expect(started[0].check_policy).toBe("auto");
+  });
+
+  it("sends check_policy full when the checkbox is ticked", async () => {
+    const { started } = mount();
+    const box = checkbox();
+    box.checked = true;
+    box.dispatchEvent(new Event("change"));
+    await nextTick();
+    document.body.querySelector("form").dispatchEvent(new Event("submit"));
+    await nextTick();
+    expect(started[0]).toMatchObject({ check_policy: "full", correction_policy: "ask" });
+  });
+});

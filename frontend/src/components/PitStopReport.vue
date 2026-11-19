@@ -20,6 +20,17 @@ const groupDetails = (group) => {
   if (group.pages?.length) parts.push(`страницы: ${group.pages.join(", ")}`);
   return parts.join(", ");
 };
+// Облегчённая проверка: часть замечаний записана как информация и не влияет на вердикт.
+const policyNote = computed(() => {
+  if (props.pitstop.check_policy !== "basic") return "";
+  const demoted = groupedIssues.value.filter((group) => group.policy_demoted).length;
+  const before = props.pitstop.verdict_before_policy;
+  if (!demoted && !before) return "Облегчённая проверка (Input)";
+  const parts = ["Облегчённая проверка (Input)"];
+  if (demoted) parts.push(`замечаний как информация: ${demoted}`);
+  if (before && before !== props.pitstop.verdict) parts.push(`вердикт по полной проверке: ${before}`);
+  return parts.join(" · ");
+});
 const executionStatus = computed(() => String(props.pitstop.execution_status || "").toLowerCase());
 const verdict = computed(() => String(props.pitstop.verdict || "").toLowerCase());
 const pending = computed(() => ["", "not_started", "queued", "pending", "running", "checking", "processing"].includes(executionStatus.value));
@@ -76,12 +87,18 @@ const profileLabel = computed(() => {
       <div v-if="checkedAt"><dt>Проверено</dt><dd>{{ checkedAt }}</dd></div>
     </dl>
 
+    <p v-if="policyNote" class="pitstop-policy-note">{{ policyNote }}</p>
     <button v-if="issues.length" type="button" class="pitstop-toggle" @click="expanded = !expanded">
       {{ expanded ? "Скрыть проблемы" : `Показать проблемы (${groupedIssues.length})` }}
     </button>
     <ul v-if="expanded" class="pitstop-issues">
       <li v-for="issue in groupedIssues" :key="issue.key" :class="`issue-${issue.severity}`">
-        <span>{{ issue.samples?.[0] || issue.message }}</span>
+        <span>
+          {{ issue.samples?.[0] || issue.message }}
+          <em v-if="issue.category_label" class="policy-category">{{ issue.category_label }}</em>
+          <small v-if="issue.policy_demoted" class="policy-note policy-demoted">не влияет на статус (облегчённая проверка)</small>
+          <small v-if="issue.policy_unclassified" class="policy-note policy-unclassified">новая проверка: не классифицирована</small>
+        </span>
         <small v-if="groupDetails(issue)" class="pitstop-issue-count">{{ groupDetails(issue) }}</small>
       </li>
     </ul>

@@ -32,6 +32,7 @@ from .domain import validate_operator_transition
 from .order_kits import KitResolver, run_orders
 from .file_lifecycle import FileConflictError, FileLifecycle, FileLifecycleError
 from .callas_fix import read_state_file as read_callas_fix_state
+from .check_policy import PolicySettings, apply_check_policy, stored_order_policy
 from .print_readiness import is_forced_print, pitstop_ready, print_blockers
 from .pdf_routing import completed_status, pdf_root_for, route_pdf
 from .pdf_revision_validation import readable_pdf, validate_pdf_revision
@@ -90,7 +91,13 @@ class OrderWorkflowService:
         pdf_prepress_checker: Callable[..., dict[str, Any]] | None = None,
         pitstop_fix_baseline: FixBaselinePolicy | None = None,
         kit_resolver: KitResolver | None = None,
+        policy_settings: PolicySettings | None = None,
     ) -> None:
+        # Политика проверки для заказов без записанной политики (services/check_policy.py);
+        # по умолчанию — полная, как раньше.
+        self.policy_settings = policy_settings or PolicySettings(
+            input_check_policy="full", strict_source_dirs=()
+        )
         # Комплекты Sborka (services/order_kits.py); None — заказы без комплектов.
         self.kit_resolver = kit_resolver
         self._kit_locks_guard = Lock()
@@ -174,14 +181,13 @@ class OrderWorkflowService:
             except Exception as exc:  # noqa: BLE001
                 prepress = {"status": "failed", "error": str(exc).strip() or exc.__class__.__name__}
         inspection = validate_pdf_revision(candidate, order, direction)
-        if conversion is not None and conversion.get("status") != "converted":
-            inspection = replace(
-                inspection,
-                warnings=(
-                    *inspection.warnings,
-                    f"Не удалось перевести RGB в CMYK: {conversion.get('error')}. PDF оставлен в RGB.",
-                ),
-            )
+        failure_warning = None
+        if conversion is not None:
+            from .callas.color_conversion import color_failure_warning
+
+            failure_warning = color_failure_warning(conversion)
+        if failure_warning:
+            inspection = replace(inspection, warnings=(*inspection.warnings, failure_warning))
         revision = int(order.get("current_pdf_revision") or 0) + 1
         pitstop = None
         if readable_pdf(inspection) and self.reviewed_pdf_pitstop_service_factory is not None:
@@ -223,6 +229,10 @@ class OrderWorkflowService:
                 pitstop.get("verdict_raw") if pitstop else None,
                 pitstop.get("verdict") if pitstop else None,
             )
+        if pitstop is not None:
+            # После сравнения с исходником: справочные находки политики не влияют на статус.
+            policy = stored_order_policy(order, run["options"], self.policy_settings)
+            pitstop = apply_check_policy(pitstop, policy["key"])
         status = completed_status(
             local_errors=not readable_pdf(inspection),
             local_warnings=bool(inspection.errors or inspection.warnings),

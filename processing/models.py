@@ -108,6 +108,9 @@ class FileCheck:
     # Пометка коррекции размера (``make_size_fix``): способ лестницы, авто/подтверждено,
     # размер до и после, пояснение. Заменяет строки предупреждений о коррекции.
     size_fix: Optional[dict[str, object]] = None
+    # Подпапка входной папки, из которой взят файл ("" — корень), например "CorelDRAW":
+    # от неё зависит политика проверки (config/check_policies.py).
+    source_folder: str = ""
 
     @property
     def input_path(self) -> Path:
@@ -136,6 +139,8 @@ class OrderCheck:
     color_conversion: dict[str, object] | None = None
     # Допечатные проверки callas итогового PDF: шрифты, ppi, плашка K100 (services/callas/prepress.py).
     prepress: dict[str, object] | None = None
+    # Политика проверки заказа {"key", "label", "reason"} (services/check_policy.py).
+    check_policy: dict[str, str] | None = None
 
     @property
     def aggregate_id(self) -> str:

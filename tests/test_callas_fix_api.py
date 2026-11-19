@@ -65,6 +65,8 @@ class CallasFixApiTests(unittest.TestCase):
             login_failure_delay_seconds=0,
             log_dir=self.root / "logs",
             log_heartbeat_seconds=10,
+            # Тесты исправлений Callas проверяют вердикт PitStop целиком (полная проверка).
+            input_check_policy="full",
         )
         app = control_panel.create_app(
             settings=settings,
