@@ -363,6 +363,33 @@ class KitReturnTests(unittest.TestCase):
         self.assertNotIn(f"print:{SECOND}", Lifecycle.calls)
         self.assertEqual(self.orderinfo_calls, [])  # печать не ходит в Sborka за составом
 
+    def test_main_waiting_for_correction_gets_actionable_message(self):
+        """Комплект 26237111 (19.11): главный ждёт решения по коррекции TIFF."""
+        self.run["orders"][MAIN]["status"] = "waiting_confirmation"
+
+        items = self._reject(self._service(), SECOND)
+
+        self.assertEqual(self.sent, [])
+        for order_id in (MAIN, SECOND, THIRD):
+            self.assertNotEqual(self._status(order_id), "returned_for_rework")
+        main = next(item for item in items if item["order_id"] == MAIN)
+        self.assertEqual(main["code"], "correction_pending")
+        self.assertIn("«Применить» или «Отклонить»", main["message"])
+        member = next(item for item in items if item["order_id"] == SECOND)
+        self.assertEqual(member["code"], "kit_main_failed")
+        self.assertIn(f"не удалось вернуть главный заказ {MAIN}", member["message"])
+        self.assertIn("ждёт решения по коррекции", member["message"])
+        self.assertNotIn("Sborka не подтвердила", member["message"])
+
+    def test_plain_order_waiting_for_correction_is_refused_clearly(self):
+        self.run["orders"][PLAIN]["status"] = "waiting_confirmation"
+
+        (item,) = self._reject(self._service(), PLAIN)
+
+        self.assertEqual(self.sent, [])
+        self.assertEqual(item["code"], "correction_pending")
+        self.assertEqual(self._status(PLAIN), "waiting_confirmation")
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -417,3 +444,4 @@ def test_resolver_looks_up_orders_that_appear_later_in_a_running_check():
     assert resolver.for_run(run)[THIRD]["main_id"] == MAIN
     assert resolver.for_run(run)[SECOND]["main_id"] == MAIN
     assert calls == [[SECOND], [MAIN], [THIRD], [MAIN]]
+
