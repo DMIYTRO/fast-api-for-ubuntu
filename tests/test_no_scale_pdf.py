@@ -95,8 +95,10 @@ def test_portrait_page_keeps_its_orientation() -> None:
 
 def test_thresholds_accept_ask_reject() -> None:
     assert _plan((94.05, 54.0)).decision == ResampleDecision.ACCEPT
-    assert _plan((88.0, 48.0)).decision == ResampleDecision.ASK_CONFIRMATION  # 6 мм
-    rejected = _plan((80.0, 40.0))  # 14 мм > 10
+    # Пределы — на каждый край: 6 мм по стороне = 3 мм с края, автоматически.
+    assert _plan((88.0, 48.0)).decision == ResampleDecision.AUTO_CORRECT
+    assert _plan((84.0, 44.0)).decision == ResampleDecision.ASK_CONFIRMATION  # 5 мм с края
+    rejected = _plan((76.0, 36.0))  # 9 мм с края > 8
     assert rejected.decision == ResampleDecision.REJECT and rejected.method == METHOD_CANVAS
 
 
@@ -279,11 +281,11 @@ def test_marked_mixed_detail_mentions_margins_and_crop(tmp_path: Path) -> None:
 
 def test_marked_pdf_asks_and_confirmation_marks_canvas(tmp_path: Path) -> None:
     item = _inspect(
-        tmp_path, MARKED, lambda path: _make_pdf(path, [(88.0, 48.0)])  # 6 мм > авто 4 мм
+        tmp_path, MARKED, lambda path: _make_pdf(path, [(84.0, 44.0)])  # 5 мм с края > авто 4 мм
     )
     assert item.resample_decision == "ask_confirmation" and not item.needs_resample
     assert item.size_fix is None
-    assert any("белые поля 3.00/3.00 мм" in warning for warning in item.warnings)
+    assert any("белые поля 5.00/5.00 мм" in warning for warning in item.warnings)
 
     BatchProcessor.confirm_resample(item, True)
     assert item.needs_resample
@@ -291,7 +293,7 @@ def test_marked_pdf_asks_and_confirmation_marks_canvas(tmp_path: Path) -> None:
 
 
 def test_marked_pdf_too_far_off_is_rejected(tmp_path: Path) -> None:
-    item = _inspect(tmp_path, MARKED, lambda path: _make_pdf(path, [(80.0, 40.0)]))
+    item = _inspect(tmp_path, MARKED, lambda path: _make_pdf(path, [(76.0, 36.0)]))  # 9 мм с края
     assert item.resample_decision == "reject" and not item.needs_resample
     assert item.errors and "пришлите макет нужного размера" in item.errors[-1]
 

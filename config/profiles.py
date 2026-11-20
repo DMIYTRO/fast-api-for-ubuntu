@@ -95,6 +95,12 @@ class PrePressProfile:
     # (reveal, Callas-поля, stretch, shrink, fill): только белые поля или обрезка
     # по центру, способ ``canvas``. Пустой кортеж выключает правило.
     no_scale_name_markers: tuple[str, ...] = DEFAULT_NO_SCALE_NAME_MARKERS
+    # Пределы ``canvas`` для таких файлов считаются ПО КАЖДОМУ КРАЮ (обрезка или поля
+    # по центру делятся поровну): до ``canvas_auto_edge_mm`` — автоматически, до
+    # ``canvas_confirm_edge_mm`` — с подтверждением оператора, больше — отказ. Заказ
+    # 262422481: лист 330×487 при (SRA3P) 324×471 — по 3 и по 8 мм с краёв → подтверждение.
+    canvas_auto_edge_mm: float = 4.0
+    canvas_confirm_edge_mm: float = 8.0
 
     # Эталонный размер файла (с вылетами) по метке в имени — см. ``expected_size_mm``.
     reference_sizes_mm: Mapping[str, tuple[float, float]] = DEFAULT_REFERENCE_SIZES_MM

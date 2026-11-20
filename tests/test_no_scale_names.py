@@ -35,7 +35,7 @@ needs_magick = pytest.mark.skipif(not MAGICK, reason="requires ImageMagick")
 
 TARGET = (438.0, 318.0)  # 434x314 + вылеты 2 мм ((BAN): эталона нет, формат из имени)
 DPI = (300.0, 300.0)
-LIMITS = dict(min_dpi=250.0, metadata_tolerance_mm=0.1, auto_crop_mm=4.0, confirm_crop_mm=10.0)
+LIMITS = dict(min_dpi=250.0, metadata_tolerance_mm=0.1, auto_edge_mm=4.0, confirm_edge_mm=8.0)
 MARKED = "28_NP(K)_(BAN)_Glam10_450_mel_(434x314)_4-0_L5_T1_(3773-26162382)_1-face.tif"
 UNMARKED = "06_NP(K)_Glam10_450_mel_(434x314)_4-0_L5_T1_(3773-26162382)_1-face.tif"
 
@@ -109,14 +109,26 @@ def test_canvas_accepts_metadata_noise():
     assert plan.decision == ResampleDecision.ACCEPT
 
 
-def test_canvas_between_limits_needs_confirmation_and_above_is_rejected():
-    ask = _canvas((430.0, 318.0))  # 8 мм полей
+def test_canvas_limits_are_per_edge():
+    # Поля и обрезка делятся поровну на два края: 8 мм по стороне — по 4 мм с края.
+    assert _canvas((430.0, 318.0)).decision == ResampleDecision.AUTO_CORRECT
+    ask = _canvas((426.0, 318.0))  # 12 мм полей — по 6 мм с края
     assert ask.decision == ResampleDecision.ASK_CONFIRMATION
-    assert "подтверждение" in ask.reason
-    rejected = _canvas((426.0, 318.0))  # 12 мм полей
+    assert "подтверждение" in ask.reason and "6.0 мм с края" in ask.reason
+    edge = _canvas((422.0, 318.0))  # 16 мм — ровно 8 мм с края
+    assert edge.decision == ResampleDecision.ASK_CONFIRMATION
+    rejected = _canvas((420.0, 318.0))  # 18 мм — 9 мм с края
     assert rejected.decision == ResampleDecision.REJECT
     assert "пришлите макет нужного размера" in rejected.reason
-    assert "максимум коррекции 10.0 мм" in rejected.reason
+    assert "максимум коррекции 8.0 мм с каждого края" in rejected.reason
+
+
+def test_sra3plus_sheet_for_sra3p_asks_for_confirmation():
+    """Заказ 262422481: лист 330×487 при (SRA3P) 324×471 — по 3 и 8 мм с краёв."""
+    plan = _canvas((330.0, 487.0), target=(324.0, 471.0), dpi=(math.inf, math.inf))
+    assert plan.decision == ResampleDecision.ASK_CONFIRMATION
+    assert plan.crop_mm == pytest.approx((6.0, 16.0))
+    assert "8.0 мм с края" in plan.reason
 
 
 def test_canvas_has_no_shrink_rule_and_ignores_low_dpi():
@@ -175,11 +187,17 @@ def test_marked_raster_gets_canvas_size_fix_without_scaling():
     assert check.passed
 
 
-def test_marked_raster_with_8mm_gap_needs_confirmation_like_crop_limits():
-    # 8 мм полей по высоте — выше предела авто 4 мм.
-    check = _validate(MARKED, (438.0, 310.0))
+def test_marked_raster_with_12mm_gap_needs_confirmation():
+    # 12 мм полей по высоте — по 6 мм с края, выше предела авто 4 мм с края.
+    check = _validate(MARKED, (438.0, 306.0))
     assert check.resample_decision == "ask_confirmation"
-    assert any("белые поля 0.00x8.00 мм" in warning for warning in check.warnings)
+    assert any("белые поля 0.00x12.00 мм" in warning for warning in check.warnings)
+
+
+def test_marked_raster_with_8mm_gap_is_automatic():
+    # 8 мм полей по высоте — по 4 мм с края: в пределах автоматической коррекции.
+    check = _validate(MARKED, (438.0, 310.0))
+    assert check.resample_decision == "auto_correct"
 
 
 def test_unmarked_raster_with_same_geometry_still_uses_cover_scaling():
@@ -241,13 +259,13 @@ def test_ask_modes_turn_canvas_auto_into_confirmation(policy):
 
 
 def test_confirm_resample_produces_confirmed_canvas_size_fix():
-    check = _validate(MARKED, (434.0, 310.0), "auto")  # 8 мм полей: выше авто 4 мм
+    check = _validate(MARKED, (434.0, 306.0), "auto")  # 12 мм полей: 6 мм с края > авто 4 мм
     assert check.resample_decision == "ask_confirmation"
 
     BatchProcessor.confirm_resample(check, True)
 
     assert check.size_fix["detail"] == (
-        "434.0x310.0 → 438.0x318.0 мм: без масштабирования, белые поля 4.00x8.00 мм; "
+        "434.0x306.0 → 438.0x318.0 мм: без масштабирования, белые поля 4.00x12.00 мм; "
         "подтверждено оператором"
     )
 
