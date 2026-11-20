@@ -49,8 +49,8 @@ const order = (ink_coverage) => ({
 describe("inkCoverage helpers", () => {
   it("builds the operator title with percent, page and threshold", () => {
     expect(inkCoverageFlagTitle({ kind: "overflow", page: 2, percent: 262, threshold: 250 })).toBe("Перелив: 262% на стр. 2 (порог 250%)");
-    expect(inkCoverageFlagTitle({ kind: "underflow", page: 1, percent: 11.1, threshold: 20 })).toBe("Недолив: 11.1% на стр. 1 (порог 20%)");
-    expect(inkCoverageTitle({ status: "completed", flags: [...underflowData.flags, ...overflowData.flags] })).toBe("Недолив: 11.1% на стр. 1 (порог 20%); Перелив: 262% на стр. 2 (порог 250%)");
+    expect(inkCoverageFlagTitle({ kind: "underflow", page: 1, percent: 11.1, threshold: 20 })).toBe("Низкая средняя красочность: 11.1% на стр. 1 (порог 20%)");
+    expect(inkCoverageTitle({ status: "completed", flags: [...underflowData.flags, ...overflowData.flags] })).toBe("Низкая средняя красочность: 11.1% на стр. 1 (порог 20%); Перелив: 262% на стр. 2 (порог 250%)");
   });
 
   it("prefers overflow as the main flag and ignores missing data", () => {
@@ -72,7 +72,7 @@ describe("InkCoverage details", () => {
     expect(rows[1].classList.contains("overflow")).toBe(true);
     expect(rows[1].textContent).toContain("262%");
     expect(rows[1].textContent).toContain("Перелив");
-    expect(host.textContent).toContain("порог 20%–250%");
+    expect(host.textContent).toContain("светлые участки: сумма красок ниже 20% · перелив: выше 250%");
     expect(host.textContent).toContain("не TAC");
   });
 
@@ -96,13 +96,38 @@ describe("OrderCard ink coverage pictogram", () => {
     expect(badge.getAttribute("aria-label")).toBe("Перелив: 262% на стр. 2 (порог 250%)");
   });
 
-  it("shows Недолив for an underflow flag", async () => {
+  it("shows Светлые участки on every page with light areas", async () => {
+    const data = {
+      ...overflowData,
+      flags: [
+        { kind: "light_areas", page: 1, percent: 18.1, threshold: 20 },
+        { kind: "light_areas", page: 2, percent: 51.9, threshold: 20 },
+      ],
+      light_areas: { status: "completed", tac_max_percent: 20, floor_percent: 1, min_area_percent: 5, min_width_mm: 2.5,
+        pages: [{ page: 1, area_percent: 18.1 }, { page: 2, area_percent: 51.9 }] },
+    };
+    const host = mount(OrderCard, { order: order(data), runId: "run-1", selected: false, reasons: [] });
+    await nextTick();
+    const badge = host.querySelector(".order-meta .ink-indicator");
+    expect(badge.classList.contains("light_areas")).toBe(true);
+    expect(badge.textContent).toContain("Светлые участки");
+    expect(badge.textContent).not.toContain("Недолив");
+    expect(badge.getAttribute("title")).toBe("Светлые участки: 18.1% площади стр. 1 светлее 20%; Светлые участки: 51.9% площади стр. 2 светлее 20%");
+    const details = mount(InkCoverage, { data });
+    await nextTick();
+    const rows = details.querySelectorAll("tbody tr");
+    expect(rows[0].textContent).toContain("18.1% площади");
+    expect(rows[1].textContent).toContain("51.9% площади");
+    expect(rows[0].classList.contains("light_areas") && rows[1].classList.contains("light_areas")).toBe(true);
+  });
+
+  it("shows the old underflow flag of stored runs under its new name", async () => {
     const host = mount(OrderCard, { order: order(underflowData), runId: "run-1", selected: false, reasons: [] });
     await nextTick();
     const badge = host.querySelector(".order-meta .ink-indicator");
     expect(badge.classList.contains("underflow")).toBe(true);
-    expect(badge.textContent).toContain("Недолив");
-    expect(badge.getAttribute("title")).toBe("Недолив: 11.1% на стр. 1 (порог 20%)");
+    expect(badge.textContent).toContain("Низкая средняя красочность");
+    expect(badge.getAttribute("title")).toBe("Низкая средняя красочность: 11.1% на стр. 1 (порог 20%)");
   });
 
   it("hides the pictogram without flags or data but still offers details", async () => {
