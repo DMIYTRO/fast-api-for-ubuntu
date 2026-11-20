@@ -70,9 +70,10 @@ class PrePressProfile:
     # ``with_downsample`` (IMAGE_MAGIC_MAX_DPI и IMAGE_MAGIC_DOWNSAMPLE_HIGH_DPI_ENABLED).
     max_dpi: float = DEFAULT_MAX_DPI
     downsample_high_dpi: bool = True
-    # Пороги красочности (callas inkcoverage): минимум и максимум
-    # ``total_sum_percent`` страницы — суммы СРЕДНИХ покрытий красок по рамке,
-    # не TAC. Ниже минимума — «Недолив», выше максимума — «Перелив».
+    # Пороги красочности (callas). Минимум — сумма красок В ТОЧКЕ (TAC), ниже которой
+    # участок считается светлым: «Светлые участки» ищутся по цветоделениям, не по
+    # среднему (services/callas/ink_coverage.py). Максимум сравнивается с
+    # ``total_sum_percent`` страницы (сумма средних покрытий по рамке): выше — «Перелив».
     # Пороги задаются производственным профилем или настройками;
     # демонстрационные 20/250 не являются производственными нормативами.
     ink_min_percent: float | None = None

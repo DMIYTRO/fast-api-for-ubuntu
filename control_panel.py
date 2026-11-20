@@ -805,12 +805,16 @@ def _ink_coverage_checker(settings: Settings):
     """Проверка красочности callas ``inkcoverage`` или None, если выключена/не настроена."""
     if not (settings.callas_inkcoverage_enabled and settings.callas_url):
         return None
-    from services.callas.ink_coverage import build_ink_coverage_checker
+    from services.callas.ink_coverage import LightAreaSettings, build_ink_coverage_checker
 
     return build_ink_coverage_checker(
         _shared_callas_client(settings),
         min_percent_override=settings.ink_min_percent,
         max_percent_override=settings.ink_max_percent,
+        light_areas=LightAreaSettings(
+            min_area_percent=settings.ink_light_min_area_percent,
+            min_width_mm=settings.ink_light_min_width_mm,
+        ),
     )
 
 
