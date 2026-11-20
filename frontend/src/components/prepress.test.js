@@ -4,7 +4,7 @@ import OrderCard from "./OrderCard.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import FixComparison from "./FixComparison.vue";
 import { api } from "../services/api.js";
-import { ALL_FIXES, NOT_DETECTED_NOTE, availableFixes, blackFixAvailable, callasSourceFixTitle, fontLabel, iccOff, prepressNotices, recommendedFixes, sizeFixBadge } from "./prepress.js";
+import { ALL_FIXES, NOT_DETECTED_NOTE, availableFixes, blackFixAvailable, callasSourceFixTitle, fontLabel, iccOff, prepressDisplay, prepressNotices, recommendedFixes, sizeFixBadge } from "./prepress.js";
 
 const mounted = [];
 function mountComponent(component, props) {
@@ -19,9 +19,11 @@ const card = (order) => mountComponent(OrderCard, { order: { order_id: "1", cust
 const flush = async () => { for (let i = 0; i < 6; i += 1) { await Promise.resolve(); await nextTick(); } };
 
 beforeEach(() => {
+  prepressDisplay.showInfoNotes = true;  // тексты справочных строк проверяются при включённом показе
   vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({ ok: true, status: 200, blob: async () => new Blob(["x"]) })));
 });
 afterEach(() => {
+  prepressDisplay.showInfoNotes = false;
   mounted.splice(0).forEach((unmount) => unmount());
   vi.restoreAllMocks();
   vi.unstubAllGlobals();

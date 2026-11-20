@@ -184,6 +184,17 @@ export function clippingGroup(order) {
   return groups.find((group) => group.code === CLIPPING_CODE || group.fix_plan === "remove_clipping") || null;
 }
 
+// Справочные строки (уровень info: понижённая обтравка, «RGB → CMYK скорректирована», «ICC снят»…)
+// в карточке пока не показываются: серый блок «Допечатная обработка» дублирует отчёт PitStop,
+// а исправления цвета видны по значкам RGB→CMYK / ICC off. Вернуть — showInfoNotes: true.
+export const prepressDisplay = { showInfoNotes: false };
+
+// Строки блока допечатных замечаний в карточке: без справочных, пока они скрыты.
+export function visiblePrepressNotices(order) {
+  const notices = prepressNotices(order);
+  return prepressDisplay.showInfoNotes ? notices : notices.filter((note) => note.level === "warning");
+}
+
 // Сгруппированные допечатные замечания (по одному на тип) и доступные исправления.
 export function prepressNotices(order) {
   const prepress = order?.prepress || {};

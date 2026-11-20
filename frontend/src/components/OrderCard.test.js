@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp, nextTick } from "vue";
 import OrderCard from "./OrderCard.vue";
+import { prepressDisplay } from "./prepress.js";
 
 const mounted = [];
 function mount(order) {
@@ -17,7 +18,9 @@ function mount(order) {
   return host;
 }
 
-afterEach(() => mounted.splice(0).forEach((unmount) => unmount()));
+// Содержимое справочных строк проверяется с включённым показом; по умолчанию они скрыты.
+beforeEach(() => { prepressDisplay.showInfoNotes = true; });
+afterEach(() => { mounted.splice(0).forEach((unmount) => unmount()); prepressDisplay.showInfoNotes = false; });
 
 describe("OrderCard processing failures", () => {
   it("shows PDF processing errors and explains why PitStop has no report", async () => {
@@ -203,6 +206,32 @@ describe("OrderCard check policy", () => {
     expect(notes?.classList.contains("warnings")).toBe(false);
     expect(notes?.querySelector("[data-note=clipping]")?.classList.contains("note-info")).toBe(true);
     expect(notes?.textContent).toContain("Не влияет на статус (облегчённая проверка)");
+  });
+
+  it("hides the grey info block by default: it repeats the PitStop report", async () => {
+    prepressDisplay.showInfoNotes = false;
+    const host = mount({
+      ...base,
+      color_conversion: { status: "converted", reason: "rgb", icc_removed: true },
+      issue_groups: [{ code: "action:2079", severity: "info", source: "pitstop", message: "Clipping objects found — 43 объекта", count: 1, samples: [], files: [], pages: [], policy_demoted: true, fix_plan: "remove_clipping" }],
+    });
+    await nextTick();
+    expect(host.querySelector(".prepress-notes")).toBeNull();
+    expect(host.textContent).not.toContain("Допечатная обработка");
+  });
+
+  it("still shows prepress warnings when info lines are hidden", async () => {
+    prepressDisplay.showInfoNotes = false;
+    const host = mount({
+      ...base,
+      color_conversion: { status: "failed", reason: "icc", error: "callas недоступен" },
+      issue_groups: [{ code: "action:2079", severity: "info", source: "pitstop", message: "Clipping objects found — 3 объекта", count: 1, samples: [], files: [], pages: [], policy_demoted: true, fix_plan: "remove_clipping" }],
+    });
+    await nextTick();
+    const notes = host.querySelector(".prepress-notes");
+    expect(notes?.classList.contains("warnings")).toBe(true);
+    expect(notes?.textContent).toContain("Не удалось снять ICC-профиль: callas недоступен");
+    expect(notes?.querySelector("[data-note=clipping]")).toBeNull();
   });
 });
 

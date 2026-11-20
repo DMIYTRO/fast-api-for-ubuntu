@@ -10,7 +10,7 @@ import OrderActions from "./OrderActions.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import { orderIssueGroups } from "./issueGroups.js";
 import InkCoverage from "./InkCoverage.vue";
-import { availableFixes, checkPolicyBadge, fontLabel, fontsInfo, iccOff, prepressNotices, recommendedFixes, sizeFixBadge } from "./prepress.js";
+import { availableFixes, checkPolicyBadge, fontLabel, fontsInfo, iccOff, recommendedFixes, sizeFixBadge, visiblePrepressNotices } from "./prepress.js";
 import { inkCoverageFlagLabel, inkCoverageMainFlag, inkCoverageTitle } from "./inkCoverage.js";
 
 const props = defineProps({ order: Object, runId: String, selected: Boolean, reasons: Array, paidDesign: { type: Boolean, default: true }, designCost: { type: String, default: "0" } });
@@ -82,7 +82,7 @@ const iccTitle = computed(() => iccOffTitle.value || "ICC-профиль не с
 const fontsOutlinedTitle = computed(() => fonts.value?.converted ? "Шрифты переведены в кривые" : "Шрифты в кривые не переводились");
 const fonts = computed(() => fontsInfo(props.order));
 const fontsList = computed(() => (fonts.value?.fonts || []).map(fontLabel).join("; "));
-const prepressNotes = computed(() => prepressNotices(props.order));
+const prepressNotes = computed(() => visiblePrepressNotices(props.order));
 const prepressHasWarning = computed(() => prepressNotes.value.some((note) => note.level === "warning"));
 const fixButtons = computed(() => availableFixes(props.order));
 const recommendedButtons = computed(() => recommendedFixes(props.order));
