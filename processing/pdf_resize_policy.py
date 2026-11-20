@@ -121,6 +121,9 @@ class PdfResizeLimits:
     stretch_confirm_pct: float = 0.0
     #: Предел автоматического уменьшения, мм (``PrePressProfile.shrink_auto_mm``).
     shrink_auto_mm: float = DEFAULT_SHRINK_AUTO_MAX_MM
+    #: ``canvas`` (метки без масштабирования): пределы на ОДИН край, мм.
+    canvas_auto_edge_mm: float = 4.0
+    canvas_confirm_edge_mm: float = 8.0
 
 
 def page_min_dpi(images: Iterable[Any]) -> float:
@@ -214,8 +217,8 @@ def _canvas_plan(actual, target, dpi, limits) -> PdfPagePlan:
         actual, target, (dpi, dpi),
         min_dpi=limits.min_dpi,
         metadata_tolerance_mm=limits.metadata_tolerance_mm,
-        auto_crop_mm=limits.auto_mm,
-        confirm_crop_mm=limits.confirm_mm,
+        auto_edge_mm=limits.canvas_auto_edge_mm,
+        confirm_edge_mm=limits.canvas_confirm_edge_mm,
     )
     offset = ((target[0] - actual[0]) / 2.0, (target[1] - actual[1]) / 2.0)
     return PdfPagePlan(

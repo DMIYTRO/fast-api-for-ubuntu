@@ -722,6 +722,8 @@ class BatchProcessor:
             metadata_tolerance_mm=self.profile.metadata_tolerance_mm,
             auto_mm=self.profile.auto_crop_mm,
             confirm_mm=self.profile.confirm_crop_mm,
+            canvas_auto_edge_mm=self.profile.canvas_auto_edge_mm,
+            canvas_confirm_edge_mm=self.profile.canvas_confirm_edge_mm,
             stretch_auto_pct=self.profile.pdf_stretch_auto_pct,
             stretch_confirm_pct=self.profile.pdf_stretch_confirm_pct,
             shrink_auto_mm=self.profile.shrink_auto_mm,
@@ -889,8 +891,8 @@ class BatchProcessor:
                     source_dpi,
                     min_dpi=self.min_dpi,
                     metadata_tolerance_mm=self.profile.metadata_tolerance_mm,
-                    auto_crop_mm=self.profile.auto_crop_mm,
-                    confirm_crop_mm=self.profile.confirm_crop_mm,
+                    auto_edge_mm=self.profile.canvas_auto_edge_mm,
+                    confirm_edge_mm=self.profile.canvas_confirm_edge_mm,
                 )
                 for target in (expected, (expected[1], expected[0]))
             ]

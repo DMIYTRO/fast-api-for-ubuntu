@@ -180,17 +180,17 @@ def analyze_canvas(
     *,
     min_dpi: float,
     metadata_tolerance_mm: float,
-    auto_crop_mm: float,
-    confirm_crop_mm: float,
+    auto_edge_mm: float,
+    confirm_edge_mm: float,
 ) -> ResamplePlan:
     """План приведения к формату БЕЗ масштабирования (метки «без масштабирования» в имени).
 
     Масштаб всегда 1.0, поворота нет, эффективное разрешение равно исходному. По каждой
     стороне разница ``target - actual``: положительная — белые поля (холст больше),
-    отрицательная — центральная обрезка. Решение — по наибольшему модулю разницы с теми же
-    пределами, что и у пропорциональной коррекции: до погрешности метаданных — принять,
-    до ``auto_crop_mm`` — исправить автоматически, до ``confirm_crop_mm`` — с
-    подтверждением оператора, иначе — отклонить.
+    отрицательная — центральная обрезка; поля и обрезка делятся поровну на два края.
+    До погрешности метаданных (по разнице стороны) — принять. Дальше решение по наибольшему
+    изменению НА ОДНОМ КРАЮ (половина разницы): до ``auto_edge_mm`` — исправить
+    автоматически, до ``confirm_edge_mm`` — с подтверждением оператора, иначе — отклонить.
 
     Правило уменьшения (``shrink_auto_mm``) здесь не действует: ничего не масштабируется.
     Низкое исходное DPI (< ``min_dpi``) не отклоняет план по размеру — холст не меняет
@@ -202,26 +202,27 @@ def analyze_canvas(
     delta = (target_mm[0] - actual_mm[0], target_mm[1] - actual_mm[1])
     crop = (max(0.0, -delta[0]), max(0.0, -delta[1]))
     amount = max(abs(delta[0]), abs(delta[1]))
+    edge = amount / 2.0
     change = canvas_change_text(actual_mm, target_mm)
 
     epsilon = 0.01
     if amount <= metadata_tolerance_mm + epsilon:
         decision = ResampleDecision.ACCEPT
         reason = f"отклонение до {metadata_tolerance_mm:.1f} мм принято как погрешность метаданных"
-    elif amount <= auto_crop_mm + epsilon:
+    elif edge <= auto_edge_mm + epsilon:
         decision = ResampleDecision.AUTO_CORRECT
         reason = f"коррекция {change}"
-    elif amount <= confirm_crop_mm + epsilon:
+    elif edge <= confirm_edge_mm + epsilon:
         decision = ResampleDecision.ASK_CONFIRMATION
         reason = (
-            f"коррекция {change}; изменение {amount:.1f} мм больше предела автоматической "
-            f"коррекции {auto_crop_mm:.1f} мм: требуется подтверждение оператора"
+            f"коррекция {change}; до {edge:.1f} мм с края больше предела автоматической "
+            f"коррекции {auto_edge_mm:.1f} мм с края: требуется подтверждение оператора"
         )
     else:
         decision = ResampleDecision.REJECT
         reason = (
-            f"для приведения к размеру {change}, изменение до {amount:.1f} мм; "
-            f"максимум коррекции {confirm_crop_mm:.1f} мм — пришлите макет нужного размера"
+            f"для приведения к размеру {change}, до {edge:.1f} мм с края; "
+            f"максимум коррекции {confirm_edge_mm:.1f} мм с каждого края — пришлите макет нужного размера"
         )
 
     return ResamplePlan(decision, target_mm, 0, 1.0, crop, (dpi[0], dpi[1]), reason)
