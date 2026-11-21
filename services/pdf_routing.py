@@ -9,7 +9,9 @@ status   folder          meaning
 passed   ``PDF/Checked`` passed every mandatory check, waits for the operator
 warning  ``PDF/Rework``  readable result requiring correction (local findings
                          or PitStop errors/warnings)
-error    ``PDF/Failed``  unreadable result or technical processing/check failure
+error    ``PDF/Failed``  unreadable result or technical processing/check failure,
+                         or overprint not only on technical spots
+                         (``services/overprint.py``)
 ======== =============== ====================================================
 
 ``PDF/Print`` is not a status folder: only the operator's «в печать»
@@ -29,9 +31,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import shutil
+from collections.abc import Mapping
 from typing import Any
 
 from core.share_tempdir import share_temp_dir
+from services.overprint import overprint_status_effect
 
 
 PDF_FOLDER_BY_STATUS: dict[str, str] = {
@@ -77,13 +81,20 @@ def completed_status(
     local_errors: bool,
     local_warnings: bool,
     pitstop: dict[str, Any] | None,
+    prepress: Mapping[str, Any] | None = None,
 ) -> str:
     """Final order status from local inspection and an optional PitStop DTO.
 
     ``local_errors`` means a technical processing/readability failure;
     readable artwork findings belong in ``local_warnings``.
+
+    ``prepress`` — допечатные проверки callas этого же PDF (``order["prepress"]``). На статус
+    влияет только overprint (``services.overprint.overprint_status_effect``): overprint не
+    только на технических красках — ``error`` в любой политике проверки и независимо от
+    PitStop; сбой проверки overprint — не выше ``warning``. Остальные блоки статус не меняют.
     """
-    if local_errors:
+    overprint = overprint_status_effect(prepress)
+    if local_errors or overprint == "error":
         return "error"
     if pitstop:
         if pitstop.get("execution_status") != "completed":
@@ -93,7 +104,7 @@ def completed_status(
             return "warning"
         if verdict == "warning":
             return "warning"
-    if local_warnings:
+    if local_warnings or overprint == "warning":
         return "warning"
     return "passed"
 

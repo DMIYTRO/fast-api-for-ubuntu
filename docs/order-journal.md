@@ -80,7 +80,8 @@
 | `prepress:black_solid_minor` / `prepress:black_manual` | callas | немного чистого K100 / крупное чёрное поле не из K100 |
 | `prepress:high_ppi` / `prepress:one_bit_ppi` | callas | растры выше предела ppi / однобитные |
 | `prepress:fonts` / `prepress:fonts_not_embedded` | callas | живые шрифты (`data.fonts`) / невстроенные шрифты |
-| `prepress:<check>:failed` | callas | проверка callas не выполнена (`detail` — ошибка) |
+| `prepress:overprint` | callas | overprint итогового PDF (профиль `Image Magic/Overprint - any object`). `severity: "error"` — overprint не только на технических красках, заказ красный в любой политике (`count`/`pages` — блокирующие объекты); `severity: "info"` — только технические краски (белила, лак, контур реза…), статус не меняется (`count`/`pages` — технические). `data`: `by_kind` (`process`, `white`, `spot`, `technical_spot`, `unknown`), `blocking_count`, `technical_count`, `technical_pages`, `colorants`, `technical_colorants`, `samples`, `technical_samples`, `profile` |
+| `prepress:<check>:failed` | callas | проверка callas не выполнена (`detail` — ошибка); `prepress:overprint:failed` — с `severity: "warning"` (заказ не зелёный), остальные — `info` |
 | `ink:overflow` / `ink:light_areas` / `ink:underflow` | callas | флаги красочности (перелив, светлые участки) |
 
 Флаги находок PitStop в `data`: `policy_demoted` + `original_severity` — понижено

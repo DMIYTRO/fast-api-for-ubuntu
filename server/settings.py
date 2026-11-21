@@ -14,6 +14,7 @@ from config.check_policies import (
     POLICIES,
     POLICY_FULL,
 )
+from config.overprint import DEFAULT_OVERPRINT_IGNORE_SPOTS, DEFAULT_OVERPRINT_PROFILE
 from config.profiles import (
     DEFAULT_AUTO_CORRECT_MAX_MM,
     DEFAULT_CORRECTION_CONFIRM_MAX_MM,
@@ -134,6 +135,19 @@ def _env_no_scale_markers(
         if marker and marker.casefold() not in {value.casefold() for value in markers}:
             markers.append(marker)
     return tuple(markers)
+
+
+def _env_name_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    """Имена через запятую без повторов (регистр не важен); не задано — ``default``, пусто — ничего."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return tuple(default)
+    names: list[str] = []
+    for item in raw.split(","):
+        value = item.strip()
+        if value and value.casefold() not in {known.casefold() for known in names}:
+            names.append(value)
+    return tuple(names)
 
 
 def _env_input_check_policy(name: str) -> str:
@@ -271,6 +285,11 @@ class Settings:
     # Автоматические допечатные проверки callas на итоговом PDF: шрифты (Warn Fonts),
     # растры выше предела ppi, крупная плашка 100% K (цветоделения).
     callas_prepress_enabled: bool = True
+    # Overprint итогового PDF (services/overprint.py): overprint не только на технических
+    # красках — ошибка заказа в любой политике проверки; не зависит от callas_prepress_enabled.
+    callas_overprint_enabled: bool = True
+    callas_overprint_profile: str = DEFAULT_OVERPRINT_PROFILE
+    overprint_ignore_spots: tuple[str, ...] = DEFAULT_OVERPRINT_IGNORE_SPOTS
     black_solid_area_threshold: float = DEFAULT_BLACK_SOLID_AREA_THRESHOLD
     black_solid_fix_area_threshold: float = DEFAULT_BLACK_SOLID_FIX_AREA_THRESHOLD
     high_ppi_limit: float = DEFAULT_HIGH_PPI_LIMIT
@@ -513,6 +532,14 @@ class Settings:
                 min(8, int(os.environ.get("IMAGE_MAGIC_CALLAS_AUTO_BLEED_MAX_CONCURRENT", "2").strip() or "2")),
             ),
             callas_prepress_enabled=_env_bool("IMAGE_MAGIC_CALLAS_PREPRESS_ENABLED", True),
+            callas_overprint_enabled=_env_bool("IMAGE_MAGIC_CALLAS_OVERPRINT_ENABLED", True),
+            callas_overprint_profile=os.environ.get(
+                "IMAGE_MAGIC_CALLAS_OVERPRINT_PROFILE", ""
+            ).strip()
+            or DEFAULT_OVERPRINT_PROFILE,
+            overprint_ignore_spots=_env_name_list(
+                "IMAGE_MAGIC_OVERPRINT_IGNORE_SPOTS", DEFAULT_OVERPRINT_IGNORE_SPOTS
+            ),
             black_solid_area_threshold=_env_float(
                 "IMAGE_MAGIC_BLACK_SOLID_AREA_THRESHOLD",
                 DEFAULT_BLACK_SOLID_AREA_THRESHOLD, minimum=0.0, maximum=1.0,

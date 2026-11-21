@@ -767,8 +767,13 @@ def _callas_pdf_resizer(settings: Settings, client=None):
 
 
 def _callas_prepress_checker(settings: Settings, client=None):
-    """Допечатные проверки (шрифты, ppi, плашка K100); None, если выключены или callas не настроен."""
-    if not settings.callas_url or not settings.callas_prepress_enabled:
+    """Допечатные проверки (шрифты, ppi, плашка K100, overprint); None, если все выключены или callas не настроен.
+
+    Overprint включается отдельно (IMAGE_MAGIC_CALLAS_OVERPRINT_ENABLED) и работает и при
+    выключенных остальных проверках: от него зависит статус заказа.
+    """
+    overprint = getattr(settings, "callas_overprint_enabled", True)
+    if not settings.callas_url or not (settings.callas_prepress_enabled or overprint):
         return None
     from services.callas.prepress import PrepressAnalyzer
 
@@ -777,6 +782,9 @@ def _callas_prepress_checker(settings: Settings, client=None):
         high_ppi_limit=settings.high_ppi_limit,
         black_solid_threshold=settings.black_solid_area_threshold,
         black_solid_fix_threshold=settings.black_solid_fix_area_threshold,
+        overprint_profile=getattr(settings, "callas_overprint_profile", None) if overprint else None,
+        overprint_ignore_spots=getattr(settings, "overprint_ignore_spots", ()),
+        general_checks=settings.callas_prepress_enabled,
     )
 
 

@@ -11,7 +11,7 @@ from processing.models import OrderCheck
 from services.callas.analysis import run_analysis
 from services.callas.black_solid import analyze_separations
 from services.callas.color_conversion import ICC_PROFILE, CallasRgbToCmykConverter, convert_rgb_to_cmyk
-from services.callas.prepress import PPI_PROFILE, WARN_FONTS_PROFILE, PrepressAnalyzer
+from services.callas.prepress import OVERPRINT_PROFILE, PPI_PROFILE, WARN_FONTS_PROFILE, PrepressAnalyzer
 from services.callas.prepress_reports import fonts_report, high_ppi_report, icc_pages
 from services.callas.report import parse_report_root
 from services.callas.tac import TAC_LIMIT_PERCENT, analyze_tac, measure_tac
@@ -23,6 +23,7 @@ from tests.fake_callas import (
     icc_report_xml,
     make_separations,
     make_tac_separations,
+    overprint_report_xml,
     ppi_report_xml,
 )
 from tests.test_rgb_to_cmyk import make_pdf
@@ -192,6 +193,7 @@ def analyzer_with(tmp_path, *, fonts=None, ppi=None, k100=None, limit=500.0, thr
     profiles = {
         WARN_FONTS_PROFILE: lambda pdf, mode: {"xml": fonts_report_xml(*fonts) if fonts else fonts_report_xml([])},
         PPI_PROFILE: lambda pdf, mode: {"xml": ppi_report_xml(ppi or [])},
+        OVERPRINT_PROFILE: lambda pdf, mode: {"xml": overprint_report_xml([])},
     }
     pages = k100 or [{"k100": 0.0}]
     client = FakeCallasProcessClient(
@@ -310,7 +312,7 @@ def test_missing_pdf_is_a_failed_block_not_an_exception(tmp_path):
 def test_jobs_are_cleaned_up(tmp_path):
     client, analyzer = analyzer_with(tmp_path)
     analyzer(pdf_of(tmp_path), "o")
-    assert len(client.deleted) == 3
+    assert len(client.deleted) == 4  # шрифты, ppi, плашка K100, overprint
 
 
 # ----------------------------------------------------------------------------- integration with order
@@ -425,5 +427,5 @@ def test_check_tac_cleans_up_and_failure_is_a_block(tmp_path):
 
 def test_tac_is_not_part_of_the_automatic_order_checks(tmp_path):
     client, analyzer = analyzer_with(tmp_path)
-    assert set(analyzer(pdf_of(tmp_path), "o")) == {"fonts", "high_ppi", "black_solid"}
+    assert list(analyzer(pdf_of(tmp_path), "o")) == ["fonts", "high_ppi", "black_solid", "overprint"]
     assert [call for call in client.calls if call[0] == "separations"] == [("separations", "sep_process")]

@@ -4,7 +4,7 @@ import OrderCard from "./OrderCard.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import FixComparison from "./FixComparison.vue";
 import { api } from "../services/api.js";
-import { ALL_FIXES, NOT_DETECTED_NOTE, availableFixes, blackFixAvailable, callasSourceFixTitle, fontLabel, iccOff, inkCoverageGroup, prepressDisplay, prepressNotices, recommendedFixes, sizeFixBadge } from "./prepress.js";
+import { ALL_FIXES, NOT_DETECTED_NOTE, availableFixes, isOverprintGroup, overprintNotices, visiblePrepressNotices, blackFixAvailable, callasSourceFixTitle, fontLabel, iccOff, inkCoverageGroup, prepressDisplay, prepressNotices, recommendedFixes, sizeFixBadge } from "./prepress.js";
 
 const mounted = [];
 function mountComponent(component, props) {
@@ -239,6 +239,58 @@ describe("grouped prepress notices and buttons", () => {
     expect(recommendedFixes(order)).toEqual([]);
     expect(availableFixes(order)).toEqual(ALL_FIXES);
     expect(fontLabel({ name: "N", type: "Type3", embedded: null, invisible_only: true })).toBe("N (Type3, невидимый)");
+  });
+});
+
+describe("overprint notices", () => {
+  const blocking = {
+    status: "ok", count: 3, blocking_count: 2, blocking_pages: [1], technical_count: 1, technical_pages: [2],
+    message: "Overprint: 2 объекта с наложением (стр. 1): Заливка K100 (DeviceCMYK), стр. 1. Уберите overprint в макете.",
+    technical_message: "Overprint на технических красках (White): 1 объект, стр. 2. Для белил, лака и контуров это норма, статус не меняется.",
+  };
+  const technical = { ...blocking, blocking_count: 0, blocking_pages: [], message: null };
+  const groups = [
+    { code: "prepress:overprint", source: "callas", severity: "error", message: blocking.message, count: 2, pages: [1], files: [], samples: [] },
+    { code: "prepress:overprint", source: "callas", severity: "info", message: technical.technical_message, count: 1, pages: [2], files: [], samples: [] },
+  ];
+
+  it("maps the backend block to error, pinned info and failure warning", () => {
+    expect(overprintNotices({ prepress: { overprint: blocking } }).map((note) => [note.key, note.level])).toEqual([["overprint", "error"], ["overprint_technical", "info"]]);
+    expect(overprintNotices({ prepress: { overprint: technical } })).toEqual([{ key: "overprint_technical", level: "info", text: technical.technical_message, pinned: true }]);
+    expect(overprintNotices({ prepress: { overprint: { status: "failed", error: "callas недоступен" } } })).toEqual([
+      { key: "overprint_failed", level: "warning", text: "Проверка overprint не выполнена: callas недоступен" },
+    ]);
+    expect(overprintNotices({ prepress: { overprint: { status: "skipped" } } })).toEqual([]);
+    expect(overprintNotices({})).toEqual([]);
+    expect(isOverprintGroup({ code: "prepress:overprint:failed" })).toBe(true);
+    expect(isOverprintGroup({ code: "action:2079" })).toBe(false);
+  });
+
+  it("keeps the technical-only line visible even when info notes are hidden", () => {
+    prepressDisplay.showInfoNotes = false;
+    expect(visiblePrepressNotices({ prepress: { overprint: technical } }).map((note) => note.key)).toEqual(["overprint_technical"]);
+    expect(visiblePrepressNotices({ prepress: { overprint: blocking } }).map((note) => note.key)).toEqual(["overprint", "overprint_technical"]);
+  });
+
+  it("renders the blocking overprint once, in a red prepress block, without a fix button", async () => {
+    prepressDisplay.showInfoNotes = false;
+    const host = card({ status: "error", pdf_path: "/p.pdf", prepress: { overprint: blocking }, issue_groups: groups });
+    await nextTick();
+    const notes = host.querySelector(".prepress-notes");
+    expect(notes?.classList.contains("errors")).toBe(true);
+    expect(notes?.querySelector("[data-note='overprint']")?.classList.contains("note-error")).toBe(true);
+    expect(notes?.querySelector("[data-note='overprint']")?.textContent).toContain("Уберите overprint в макете");
+    expect(host.textContent.split("Overprint: 2 объекта").length - 1).toBe(1);
+    expect(host.querySelector("[class*='callas-fix-overprint']")).toBeNull();
+  });
+
+  it("shows technical-only overprint as a grey info line", async () => {
+    prepressDisplay.showInfoNotes = false;
+    const host = card({ pdf_path: "/p.pdf", prepress: { overprint: technical }, issue_groups: [groups[1]] });
+    await nextTick();
+    const notes = host.querySelector(".prepress-notes");
+    expect(notes?.classList.contains("info-notes")).toBe(true);
+    expect(notes?.querySelector("[data-note='overprint_technical']")?.classList.contains("note-info")).toBe(true);
   });
 });
 

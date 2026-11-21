@@ -80,6 +80,54 @@ def ppi_report_xml(images: Sequence[tuple[int, float, int]]) -> str:
     return _report(f'<hits rule_id="RUL1" severity="Info">{hits}</hits>' if images else "", resources)
 
 
+#: Цветовые пространства отчёта overprint: id -> (type, channels, имена красок / ICC-профиль).
+OVERPRINT_SPACES = {
+    "CS1": ("DeviceCMYK", 4, ()),
+    "CS2": ("DeviceRGB", 3, ()),
+    "CS3": ("Separation", 1, ("White",)),
+    "CS4": ("DeviceN", 2, ("White", "Cyan")),
+    "CS5": ("ICCBased", 4, ("ISO Coated v2 (ECI)",)),
+    "CS6": ("Separation", 1, ("Black",)),
+    "CS7": ("Separation", 1, ("Varnish",)),
+    "CS8": ("Separation", 1, ("PANTONE 485 C",)),
+    "CS9": ("DeviceGray", 1, ()),
+}
+
+
+def overprint_report_xml(hits: Sequence[tuple], spaces: dict | None = None) -> str:
+    """Отчёт «Overprint - any object». ``hits`` — (type, page, colorspace id | None, values | None
+    [, элемент состояния: "gstate" | "textstate" | None]). Формат — как у реального отчёта
+    pdfToolbox 17 (docs/callas-profiles.md, «Overprint - any object»)."""
+    resources = "<colorspaces>"
+    for space_id, (kind, channels, names) in (spaces or OVERPRINT_SPACES).items():
+        inner = ""
+        if kind == "DeviceN":
+            inner = "<alternate_colorants>" + "".join(
+                f"<colorant><name>{name}</name><alternate_values><li>0.0</li></alternate_values></colorant>"
+                for name in names
+            ) + "</alternate_colorants>"
+        elif names:
+            inner = f"<name>{names[0]}</name><alternate_values><li>1.0</li></alternate_values>"
+        resources += f'<colorspace id="{space_id}" type="{kind}" channels="{channels}">{inner}</colorspace>'
+    resources += "</colorspaces>"
+    body = ""
+    for hit in hits:
+        kind, page, space, values = hit[:4]
+        state = hit[4] if len(hit) > 4 else ("textstate" if kind.startswith("Text") else "gstate")
+        side = "stroke" if "Stroke" in kind and "Fill" not in kind else "fill"
+        attrs = f'overprint_mode="1" overprint_for_{side}="1"'
+        if space:
+            attrs += f' {side}_colorspace="{space}"'
+        if values is not None:
+            attrs += f' {side}_colorant_values="{"/".join(str(value) for value in values)}"'
+        element = f"<{state} {attrs}></{state}>" if state else ""
+        body += (
+            f'<hit type="{kind}" page="PAG{page}" llx="0" lly="0" urx="10" ury="10">{element}'
+            '<triggers><trigger condition_id="CND2"><value>is true</value><detail></detail></trigger></triggers></hit>'
+        )
+    return _report(f'<hits rule_id="RUL1" severity="Error">{body}</hits>' if hits else "", resources)
+
+
 class FakeCallasProcessClient:
     """Фейковый клиент callas: ``process`` по профилю + ``separations`` без сети.
 

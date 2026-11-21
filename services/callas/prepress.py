@@ -5,7 +5,10 @@
 * разрешение: стандартный профиль «List color and grayscale images not within 250 to 450 ppi»,
   фильтр max(v_ppi, h_ppi) > предела (500) с допуском 0.5; однобитные растры отдельно;
 * плашка 100% K: цветоделения ``sep_process`` и доля площади (см. ``black_solid``);
-* суммарное покрытие (``check_tac``, см. ``tac``) — только для проверки результата исправления.
+* суммарное покрытие (``check_tac``, см. ``tac``) — только для проверки результата исправления;
+* overprint: профиль «Image Magic/Overprint - any object» (analyze), см. ``overprint_report`` и
+  ``services/overprint.py``. Единственная проверка, которая меняет статус заказа: overprint не
+  только на технических красках — ошибка (``services.pdf_routing.completed_status``).
 
 Результат — словарь для заказа (``order.prepress``): у каждой проверки ``status`` (``ok`` или
 ``failed`` с ``error``) и готовое сообщение оператору ``message``. Сбой проверки заказ не роняет.
@@ -20,14 +23,16 @@ from typing import Any
 
 from services.callas.analysis import run_analysis
 from services.callas.black_solid import detect_black_solid
-from services.callas.prepress_reports import fonts_report, high_ppi_report
+from services.callas.prepress_reports import fonts_report, high_ppi_report, overprint_report
 from services.callas.tac import TAC_LIMIT_PERCENT, measure_tac
 from services.issue_groups import plural_ru
+from config.overprint import DEFAULT_OVERPRINT_IGNORE_SPOTS, DEFAULT_OVERPRINT_PROFILE
 
 logger = logging.getLogger("image_magic.callas")
 
 WARN_FONTS_PROFILE = "Image Magic/Warn Fonts"
 PPI_PROFILE = "PDF analysis/List color and grayscale images not within 250 to 450 ppi"
+OVERPRINT_PROFILE = DEFAULT_OVERPRINT_PROFILE
 
 NOT_EMBEDDED_MESSAGE = "Шрифты не встроены, перевод невозможен, нужна проверка."
 OUTLINED_MESSAGE = "Шрифты переведены в кривые"
@@ -50,8 +55,16 @@ class PrepressAnalyzer:
         black_solid_threshold: float = 0.25,
         black_solid_fix_threshold: float = 0.01,
         tac_limit: float = TAC_LIMIT_PERCENT,
+        overprint_profile: str | None = OVERPRINT_PROFILE,
+        overprint_ignore_spots: tuple[str, ...] | list[str] = DEFAULT_OVERPRINT_IGNORE_SPOTS,
+        general_checks: bool = True,
     ) -> None:
         self.client = client
+        # ``None``/пусто — проверка overprint выключена (IMAGE_MAGIC_CALLAS_OVERPRINT_ENABLED=false).
+        self.overprint_profile = (overprint_profile or "").strip() or None
+        self.overprint_ignore_spots = tuple(overprint_ignore_spots)
+        # False — только overprint (IMAGE_MAGIC_CALLAS_PREPRESS_ENABLED=false при включённом overprint).
+        self.general_checks = general_checks
         self.tac_limit = tac_limit
         self.high_ppi_limit = high_ppi_limit
         self.black_solid_threshold = black_solid_threshold
@@ -146,22 +159,58 @@ class PrepressAnalyzer:
             logger.warning("prepress.tac_failed label=%s error=%s", label, exc)
             return _failed(exc)
 
+    # ---------------------------------------------------------- overprint
+    def check_overprint(self, pdf: Path | str, label: str) -> dict[str, Any]:
+        """Overprint на любом объекте; ``message`` — блокирующая ошибка, ``technical_message`` — справка."""
+        if self.overprint_profile is None:
+            return {"status": "skipped"}
+        try:
+            _result, root = run_analysis(self.client, pdf, self.overprint_profile, f"overprint-{label}")
+            report = overprint_report(root, self.overprint_ignore_spots)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("prepress.overprint_failed label=%s error=%s", label, exc)
+            return _failed(exc)
+        message = None
+        blocking = report["blocking_count"]
+        if blocking:
+            samples = "; ".join(report["samples"])
+            message = (
+                f"Overprint: {blocking} {plural_ru(blocking, 'объект', 'объекта', 'объектов')} с наложением "
+                f"(стр. {pages_text(report['blocking_pages'])})"
+                + (f": {samples}" if samples else "")
+                + ". Уберите overprint в макете."
+            )
+        technical_message = None
+        technical = report["technical_count"]
+        if technical:
+            names = ", ".join(report["technical_colorants"]) or "технические краски"
+            technical_message = (
+                f"Overprint на технических красках ({names}): {technical} "
+                f"{plural_ru(technical, 'объект', 'объекта', 'объектов')}, стр. {pages_text(report['technical_pages'])}. "
+                "Для белил, лака и контуров это норма, статус не меняется."
+            )
+        return {
+            "status": "ok", **report, "profile": self.overprint_profile,
+            "message": message, "technical_message": technical_message,
+        }
+
     # -------------------------------------------------------------- all
     def __call__(self, pdf: Path | str, label: str, previous: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Три независимые проверки идут параллельно (у каждой свой job_id и своя копия PDF).
+        """Независимые проверки идут параллельно (у каждой свой job_id и своя копия PDF).
 
-        Результат собирается в прежнем порядке ключей: fonts, high_ppi, black_solid.
-        Сбой одной проверки превращается в её ``{"status": "failed", ...}`` внутри самой
-        проверки и не мешает остальным; непредвиденное исключение пробрасывается после
-        завершения остальных проверок (первым по порядку, как при последовательном вызове).
+        Результат собирается в прежнем порядке ключей: fonts, high_ppi, black_solid, затем
+        overprint (если включён). Сбой одной проверки превращается в её
+        ``{"status": "failed", ...}`` внутри самой проверки и не мешает остальным;
+        непредвиденное исключение пробрасывается после завершения остальных проверок
+        (первым по порядку, как при последовательном вызове).
         """
         previous = previous or {}
-        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="prepress") as pool:
-            fonts = pool.submit(self.check_fonts, pdf, label, previous.get("fonts"))
-            high_ppi = pool.submit(self.check_high_ppi, pdf, label)
-            black_solid = pool.submit(self.check_black_solid, pdf, label)
-            return {
-                "fonts": fonts.result(),
-                "high_ppi": high_ppi.result(),
-                "black_solid": black_solid.result(),
-            }
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="prepress") as pool:
+            futures: dict[str, Any] = {}
+            if self.general_checks:
+                futures["fonts"] = pool.submit(self.check_fonts, pdf, label, previous.get("fonts"))
+                futures["high_ppi"] = pool.submit(self.check_high_ppi, pdf, label)
+                futures["black_solid"] = pool.submit(self.check_black_solid, pdf, label)
+            if self.overprint_profile is not None:
+                futures["overprint"] = pool.submit(self.check_overprint, pdf, label)
+            return {name: future.result() for name, future in futures.items()}

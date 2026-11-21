@@ -21,6 +21,8 @@
 `fix_checks.py`), планы в `config/callas_plans.py`, `CallasFixService` (`services/callas_fix.py`),
 фронтенд `frontend/src/components/prepress.js`. Результаты проверок лежат в `order["prepress"]`
 (и `order["color_conversion"]`), в `order.warnings` они **не** попадают, чтобы не менять статус заказа.
+Исключение — overprint (`order["prepress"]["overprint"]`, см. «Overprint - any object»): он меняет
+статус через `services.pdf_routing.completed_status(prepress=...)`.
 
 | Действие | Как | Где видно |
 |---|---|---|
@@ -33,7 +35,12 @@
 | Обтравка | «Clipping objects found» создаёт Enfocus PitStop (ActionID 2079); `issue_groups` собирает её в одну группу с числом и страницами (`fix_plan=remove_clipping`); кнопка «Удалить обтравку» (план `remove_clipping`), подсказка про Fixup `RemoveClipPathes`; профиль срабатывает почти всегда (служебный клип), поэтому после фикса сравнение копии с оригиналом (`core/fix_compare.py`, страница 1) и подтверждение оператора; предупреждение про скрытое содержимое | карточка |
 | Растры выше 500 ppi | стандартный профиль «List color and grayscale images not within 250 to 450 ppi» (XML), фильтр `max(v_ppi,h_ppi) > 500 + 0.5`; одно сгруппированное предупреждение «Растры выше 500 ppi: N объектов, стр. …»; однобитные (`bits_per_color_component=1` или маска) отдельной пометкой, не блокируют; снижения разрешения нет | карточка |
 | Снижение разрешения | кнопка «Уменьшить разрешение до 300 ppi» (план `downsample_images`), всегда видна, подсвечена при `prepress.high_ppi.count>0`; стандартный профиль callas `PDF fixups/Downsample image resolution to specified value` запускается БЕЗ переменных (имя меняется через `IMAGE_MAGIC_CALLAS_DOWNSAMPLE_PROFILE`); поведение: все изображения выше 300 ppi уменьшаются до 300 ppi (порог 500 ppi профиль не знает, 1-бит штриховые тоже пересэмплируются, их проверяют по превью); успех определяется по коду выхода (5-7), т.к. XML-отчёт содержит утверждение XMP «`__null != docxmp.get()`» и `fixups_applied=0`; после фикса повтор проверки ppi, сравнение «до / после» и подтверждение оператора, затем обычная ревизия PDF и PitStop | карточка |
+| Overprint | авто на **каждом** собранном PDF (производственный, диагностический, каждая новая ревизия в `recheck_pdf_revision`): `Image Magic/Overprint - any object` (analyze), разбор `overprint_report` (`prepress_reports.py`), правило `services/overprint.py`. Overprint не только на технических красках — заказ `error` (PDF в `PDF/Failed`) в любой политике проверки, при любом вердикте PitStop и без учёта сравнения с исходником; только технические краски (`IMAGE_MAGIC_OVERPRINT_IGNORE_SPOTS`) — справка; сбой проверки — не выше `warning`. Не жёсткая ошибка правила страниц: принудительная печать возможна, как у других ошибок. Кнопки исправления нет | карточка: красная строка «Overprint: N объектов с наложением (стр. …): образцы. Уберите overprint в макете.» или серая «Overprint на технических красках (White): …»; `issue_groups` `prepress:overprint`; журнал `prepress:overprint` |
 | Суммарное покрытие (TAC) | «Total ink coverage of an object is more than 310%» создаёт Enfocus PitStop (ActionID 1153, категория `ink_coverage`, влияет на статус в любой политике); `issue_groups` даёт группе `fix_plan=reduce_tac`; кнопка «Снизить покрытие до 300%» (план `reduce_tac`, `Image Magic/TAC 300 - CMYK and ICC CMYK - preserve spots`) видна всегда, подсвечена, если есть видимая группа `action:1153` (скрытые сравнением с исходником находки не считаются); перед запуском проверка, что RGB уже нет (`rgb_not_converted`); после фикса замер TAC по цветоделениям (`services/callas/tac.py`, `PrepressAnalyzer.check_tac`, только в повторной проверке, не в общем прогоне заказа): макс. TAC «было / стало» и площадь выше 310%, сравнение «до / после» и подтверждение оператора, окончательный вердикт даёт PitStop на новой ревизии | карточка |
+
+Overprint: `IMAGE_MAGIC_CALLAS_OVERPRINT_ENABLED` (`true`; работает и при выключенных остальных проверках),
+`IMAGE_MAGIC_CALLAS_OVERPRINT_PROFILE` (`Image Magic/Overprint - any object`), `IMAGE_MAGIC_OVERPRINT_IGNORE_SPOTS`
+(технические краски через запятую, пусто — нет технических; по умолчанию в `config/overprint.py`).
 
 Новые настройки: `IMAGE_MAGIC_CALLAS_PREPRESS_ENABLED` (по умолчанию `true`),
 `IMAGE_MAGIC_BLACK_SOLID_AREA_THRESHOLD` (`0.25`), `IMAGE_MAGIC_HIGH_PPI_LIMIT` (`500`), `IMAGE_MAGIC_CALLAS_DOWNSAMPLE_PROFILE` (`PDF fixups/Downsample image resolution to specified value`).
@@ -54,6 +61,7 @@
 | `TAC 300 - CMYK and ICC CMYK - preserve spots.kfpx` | `Image Magic/TAC 300 - CMYK and ICC CMYK - preserve spots` | снижение суммарного покрытия CMYK и ICC-CMYK до 300% (DeviceLink ISO Coated v2 TAC 300), споты не трогаются | fix, кнопка |
 | (встроенный) `PDF fixups/Downsample image resolution to specified value` | то же имя на сервере callas (профиль не из `callas_profiles/`) | уменьшение разрешения изображений до 300 ppi, переменные не передаются | fix, кнопка |
 | `Black to rich black.kfpx` | `Image Magic/Black to rich black` | любой «только чёрный» объект в C40 M40 Y40 K100 (не использовать, см. ниже) | fix |
+| `Overprint - any object.kfpx` | `Image Magic/Overprint - any object` | overprint заливки или обводки у любого объекта (одно правило, Error) | analyze, авто на каждом PDF; влияет на статус |
 | `List potential overprint problems.kfpx` | `Image Magic/List potential overprint problems` | 32 проверки наложения (overprint/knockout) | analyze |
 | `chek and fix bleed to js script.kfpx`, `new_size_correction.kfpx` | `Image Magic/chek and fix bleed to js script`, `Image Magic/new_size_correction` | коррекция размера/вылетов (JS), дубликаты рабочего `size_correction` | fix |
 
@@ -116,6 +124,16 @@
 
 - Правило `R_18_Objectusesblackonly` (`CSCOLOR::ObjectUsesBlackOnly`) + Fixup `SetColor` в C40 M40 Y40 K100 (комментарий «C40 K100») для заливок и обводок.
 - Затрагивает **любой «только чёрный»** объект, включая тона и серые: `black_tint40_half.pdf` (K40, в сумме K 20% покрытия) превратился в сплошной K100 с C40 M40 Y40 (покрытие K 20 -> 50, средняя разница 84 из 255). Это меняет внешний вид, поэтому профиль только справочный; вместо него использовать `Pure CMYK black to rich black`.
+
+### Overprint - any object
+
+- Внутри: одно правило `RUL1`, важность Error, условия «overprint для заливки» ИЛИ «overprint для обводки» у любого объекта; fixup и переменных нет. Код выхода 3, если нашёл, 0 — чисто; около 1 с на файл (замер на сервере 192.168.88.109, 2026-11-21).
+- callas отмечает объект, только если overprint включён для его вида операции: заливка с `OP=true, op=false` в отчёт не попадает (проверено на синтетическом PDF).
+- XML (пространство имён `http://www.callassoftware.com/namespace/pi4`): `<results><hits rule_id="RUL1" severity="Error"><hit type="Fill|Stroke|TextFill|Image|…" page="PAG1" llx lly urx ury>`. Цвет объекта — атрибуты `fill_colorspace`/`fill_colorant_values` (у обводки `stroke_*`) в `<gstate>`, у текста — в `<textstate>`; у изображения — `<imagestate image_id>` → `resources/images/image colorspace`. Атрибутов может не быть (тогда цвет неизвестен).
+- Справочник `<document><resources><colorspaces><colorspace id type channels>`: у `Separation` прямой `<name>` (`White`, `Black`); у `DeviceN` — `<alternate_colorants><colorant><name>` (по одному на краску); у `ICCBased` `<name>` — имя ICC-профиля (не краска); `Indexed` ссылается на `base_colorspace`. `<alternate_values><li>` — значения альтернативного пространства, не имена.
+- Разбор (`overprint_report`): каждый `<hit>` — объект с overprint, вид по пространству цвета: `technical_spot` (Separation/DeviceN, **все** краски технические), `white` (CMYK и тинты спота все 0, RGB 255/255/255, Gray 100%, Lab L≥99.5: «белый объект с overprint пропадёт при печати»), `process`, `spot` (нетехнический спот, в том числе DeviceN «White+Cyan»), `unknown` (пространства нет — консервативно блокирует). Хранятся только счётчики (`by_kind`, `per_page`, `blocking_count/pages`, `technical_count/pages`), краски и до 5 образцов; подробно разбираются первые 200 000 срабатываний, остальные считаются блокирующими (`truncated`).
+- Технические краски (`IMAGE_MAGIC_OVERPRINT_IGNORE_SPOTS`, по умолчанию `White, W, Белый, Белая, Белила, Varnish, Lack, Лак, UV, Spot UV, CutContour, Cut, Die, Dieline, DieCut, Контур, Контур реза, Высечка, Вырубка, Crease, Биговка, Perf, Perforation, Перфорация, Fold, Фальц`): имя нормализуется (регистр, «ё» = «е», пробелы/`_`/`-`/`.` — один пробел) и совпадает с токеном целиком (в том числе без разделителей: `Cut Contour` = `CutContour`) или начинается с токена, за которым идёт не буква (`White 2`, `White_ink`, `Лак-1`, `Varnish Gloss`, `UV-Lack`); `Whiteboard`, `Warm Red`, `Diesel` не совпадают.
+- Решение оператора (2026-11-21): overprint на любом нетехническом объекте, в том числе K100 (DeviceCMYK, ICC CMYK, сепарация Black) и текст, — ошибка заказа (красная группа) в любой политике (`basic` и `full`). Реальные образцы: продукт с белилами `(W-L)` — 20 заливок `Separation "White"` 1.0 (не ошибка); белый RGB 1/1/1 с overprint (настоящий брак); чистый K100; один PDF с 22 072 срабатываниями. В 44 недавних зелёных/напечатанных PDF — 0 срабатываний.
 
 ### List potential overprint problems
 

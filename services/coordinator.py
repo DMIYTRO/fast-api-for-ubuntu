@@ -1918,6 +1918,7 @@ def _completed_order_status(
             not order.passed or order.warnings or any(item.warnings for item in order.files)
         ),
         pitstop=artifacts.pitstop,
+        prepress=order.prepress,
     )
 
 

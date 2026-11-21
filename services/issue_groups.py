@@ -6,6 +6,9 @@
 (``source``, ``severity``, ``code``) с количеством повторов, затронутыми
 страницами, файлами и несколькими примерами исходных сообщений.
 
+Overprint итогового PDF (``prepress.overprint``) даёт свои строки ``source="callas"``,
+``code="prepress:overprint"`` (см. ``services/overprint.py``): одна на тип, не на объект.
+
 PitStop Server уже агрегирует отчёт по правилу: один ``preflightReportItem`` на
 ``actionID`` с текстом вида «RGB color is used (2x on pages 1-2)» и списком
 ``location`` по одному на объект. Поэтому для PitStop число объектов считается
@@ -18,8 +21,12 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from services.overprint import overprint_issue_groups
+
 SOURCE_LOCAL = "local"
 SOURCE_PITSTOP = "pitstop"
+#: Допечатные проверки callas (сейчас только overprint, ``services/overprint.py``).
+SOURCE_CALLAS = "callas"
 
 _SAMPLE_LIMIT = 3
 
@@ -260,7 +267,10 @@ def build_issue_groups(
     processing_errors: Iterable[str] = (),
     files: Iterable[Mapping[str, Any]] = (),
     pitstop_issues: Iterable[Mapping[str, Any]] = (),
+    prepress: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    """``prepress`` — ``order["prepress"]``: из него берётся только overprint (одна строка
+    с числом объектов и страницами на тип, ``code="prepress:overprint"``, ``source="callas"``)."""
     groups: dict[tuple[str, str, str], _Group] = {}
 
     def local(severity: str, message: object, file: str | None = None) -> None:
@@ -316,18 +326,18 @@ def build_issue_groups(
         )
 
     order = {"error": 0, "warning": 1, "info": 2}
-    return [
-        group.to_dict()
-        for group in sorted(
-            groups.values(),
-            key=lambda item: (order.get(item.severity, 3), item.source != SOURCE_LOCAL),
-        )
-    ]
+    result = [group.to_dict() for group in groups.values()]
+    result.extend(overprint_issue_groups(prepress))
+    return sorted(
+        result,
+        key=lambda item: (order.get(item["severity"], 3), item["source"] != SOURCE_LOCAL),
+    )
 
 
 def issue_groups_for_order_dto(dto: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Собрать ``issue_groups`` из уже готового DTO заказа."""
     pitstop = dto.get("pitstop") or {}
+    prepress = dto.get("prepress") if isinstance(dto.get("prepress"), Mapping) else None
     revision = dto.get("revision_check")
     if isinstance(revision, Mapping):
         errors = list(revision.get("errors") or ())
@@ -335,6 +345,7 @@ def issue_groups_for_order_dto(dto: Mapping[str, Any]) -> list[dict[str, Any]]:
             errors=errors, warnings=revision.get("warnings") or (),
             processing_errors=[message for message in dto.get("processing_errors") or () if message not in errors],
             pitstop_issues=pitstop.get("issues") or () if isinstance(pitstop, Mapping) else (),
+            prepress=prepress,
         )
     return build_issue_groups(
         errors=dto.get("errors") or (),
@@ -342,6 +353,7 @@ def issue_groups_for_order_dto(dto: Mapping[str, Any]) -> list[dict[str, Any]]:
         processing_errors=dto.get("processing_errors") or (),
         files=[item for item in dto.get("files") or () if isinstance(item, Mapping)],
         pitstop_issues=pitstop.get("issues") or () if isinstance(pitstop, Mapping) else (),
+        prepress=prepress,
     )
 
 
