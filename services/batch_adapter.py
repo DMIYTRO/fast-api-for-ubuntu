@@ -388,6 +388,7 @@ class BatchProcessorAdapter:
                 not order.passed or order.warnings or any(item.warnings for item in order.files)
             ),
             pitstop=result.pitstop,
+            prepress=order.prepress,
         )
         try:
             result.pdf_path = route_pdf(result.pdf_path, status, pdf_dir=self.pdf_dir)

@@ -10,7 +10,7 @@ import OrderActions from "./OrderActions.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import { orderIssueGroups } from "./issueGroups.js";
 import InkCoverage from "./InkCoverage.vue";
-import { availableFixes, checkPolicyBadge, fontLabel, fontsInfo, iccOff, recommendedFixes, sizeFixBadge, visiblePrepressNotices } from "./prepress.js";
+import { availableFixes, checkPolicyBadge, fontLabel, fontsInfo, iccOff, isOverprintGroup, recommendedFixes, sizeFixBadge, visiblePrepressNotices } from "./prepress.js";
 import { inkCoverageFlagLabel, inkCoverageMainFlag, inkCoverageTitle } from "./inkCoverage.js";
 
 const props = defineProps({ order: Object, runId: String, selected: Boolean, reasons: Array, paidDesign: { type: Boolean, default: true }, designCost: { type: String, default: "0" } });
@@ -83,10 +83,13 @@ const fontsOutlinedTitle = computed(() => fonts.value?.converted ? "Шрифты
 const fonts = computed(() => fontsInfo(props.order));
 const fontsList = computed(() => (fonts.value?.fonts || []).map(fontLabel).join("; "));
 const prepressNotes = computed(() => visiblePrepressNotices(props.order));
-const prepressHasWarning = computed(() => prepressNotes.value.some((note) => note.level === "warning"));
+const prepressHasError = computed(() => prepressNotes.value.some((note) => note.level === "error"));
+const prepressHasWarning = computed(() => prepressNotes.value.some((note) => note.level === "warning" || note.level === "error"));
+const prepressNotesClass = computed(() => prepressHasError.value ? "errors" : prepressHasWarning.value ? "warnings" : "info-notes");
 const fixButtons = computed(() => availableFixes(props.order));
 const recommendedButtons = computed(() => recommendedFixes(props.order));
-const localIssueGroups = computed(() => orderIssueGroups({ ...props.order, files: files.value }).filter((group) => group.source !== "pitstop"));
+// Overprint показывается строкой допечатного блока (prepressNotes), здесь не дублируется.
+const localIssueGroups = computed(() => orderIssueGroups({ ...props.order, files: files.value }).filter((group) => group.source !== "pitstop" && !isOverprintGroup(group)));
 const groupedErrors = computed(() => localIssueGroups.value.filter((group) => group.severity === "error"));
 const groupedWarnings = computed(() => localIssueGroups.value.filter((group) => group.severity === "warning"));
 const issueGroupHasDetails = (group) => group.count > 1 || (group.files || []).length > 0 || (group.pages || []).length > 0;
@@ -331,7 +334,7 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
             </li>
           </ul>
         </div>
-        <div v-if="prepressNotes.length" class="issue-list prepress-notes" :class="prepressHasWarning ? 'warnings' : 'info-notes'">
+        <div v-if="prepressNotes.length" class="issue-list prepress-notes" :class="prepressNotesClass">
           <strong>{{ prepressHasWarning ? "Допечатные замечания" : "Допечатная обработка" }}</strong>
           <ul><li v-for="note in prepressNotes" :key="note.key" class="issue-group" :class="`note-${note.level}`" :data-note="note.key">{{ note.text }}</li></ul>
         </div>

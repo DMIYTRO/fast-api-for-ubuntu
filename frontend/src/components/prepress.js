@@ -205,15 +205,39 @@ export function inkCoverageGroup(order) {
 export const prepressDisplay = { showInfoNotes: false };
 
 // Строки блока допечатных замечаний в карточке: без справочных, пока они скрыты.
+// Справка с pinned: true (overprint только на технических красках) видна всегда:
+// она не повторяет отчёт PitStop и объясняет, почему overprint не сделал заказ красным.
 export function visiblePrepressNotices(order) {
   const notices = prepressNotices(order);
-  return prepressDisplay.showInfoNotes ? notices : notices.filter((note) => note.level === "warning");
+  return prepressDisplay.showInfoNotes ? notices : notices.filter((note) => note.level !== "info" || note.pinned);
+}
+
+// Коды групп overprint (services/overprint.py): в карточке они показываются строкой
+// допечатного блока, а не повтором в «Ошибки» / «Предупреждения».
+export const OVERPRINT_CODE = "prepress:overprint";
+export const isOverprintGroup = (group) => String(group?.code || "").startsWith(OVERPRINT_CODE);
+
+// Overprint итогового PDF (order.prepress.overprint). Не только технические краски — ошибка
+// (заказ красный в любой политике), только технические — справка, сбой проверки — предупреждение.
+export function overprintNotices(order) {
+  const block = order?.prepress?.overprint;
+  if (!block || typeof block !== "object") return [];
+  if (block.status === "failed") {
+    return [{ key: "overprint_failed", level: "warning", text: `Проверка overprint не выполнена: ${block.error || "неизвестная ошибка"}` }];
+  }
+  if (!ok(block)) return [];
+  const notices = [];
+  if (block.blocking_count > 0 && block.message) notices.push({ key: "overprint", level: "error", text: block.message });
+  if (block.technical_count > 0 && block.technical_message) {
+    notices.push({ key: "overprint_technical", level: "info", text: block.technical_message, pinned: true });
+  }
+  return notices;
 }
 
 // Сгруппированные допечатные замечания (по одному на тип) и доступные исправления.
 export function prepressNotices(order) {
   const prepress = order?.prepress || {};
-  const notices = [];
+  const notices = [...overprintNotices(order)];
   const ppi = prepress.high_ppi;
   if (ok(ppi) && ppi.message) notices.push({ key: "high_ppi", level: "warning", text: ppi.message });
   if (ok(ppi) && ppi.one_bit_message) notices.push({ key: "one_bit_ppi", level: "info", text: ppi.one_bit_message });

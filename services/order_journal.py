@@ -388,6 +388,7 @@ def _prepress_entries(state: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "fix_plan": "black_to_rich" if black.get("detected") or black.get("fix_available") else None,
             },
         ))
+    entries.extend(_overprint_entries(prepress))
     fonts = _mapping(prepress.get("fonts"))
     count = fonts.get("count") if isinstance(fonts.get("count"), int) else 0
     if fonts.get("status") == "ok" and count > 0:
@@ -410,6 +411,44 @@ def _prepress_entries(state: Mapping[str, Any]) -> list[dict[str, Any]]:
                 data={"fonts": listed, "fix_plan": "fonts_to_outlines"},
             ))
     return entries
+
+
+def _overprint_entries(prepress: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Overprint (services/overprint.py): ``error`` — не только технические краски (заказ красный),
+    ``info`` — только технические; сбой проверки — ``prepress:overprint:failed`` (warning)."""
+    block = _mapping(prepress.get("overprint"))
+    status = block.get("status")
+    if status == "failed":
+        return [_entry(
+            KIND_ISSUE, "prepress:overprint:failed", "callas", "Проверка overprint (callas) не выполнена",
+            severity="warning", detail=str(block.get("error") or "") or None, outcome="failed",
+        )]
+    if status != "ok":
+        return []
+    blocking = block.get("blocking_count") if isinstance(block.get("blocking_count"), int) else 0
+    technical = block.get("technical_count") if isinstance(block.get("technical_count"), int) else 0
+    if not blocking and not technical:
+        return []
+    data = {
+        "by_kind": dict(_mapping(block.get("by_kind"))) or None,
+        "blocking_count": blocking,
+        "technical_count": technical,
+        "technical_pages": list(_list(block.get("technical_pages"))) or None,
+        "colorants": list(_list(block.get("colorants"))) or None,
+        "technical_colorants": list(_list(block.get("technical_colorants"))) or None,
+        "samples": list(_list(block.get("samples"))) or None,
+        "technical_samples": list(_list(block.get("technical_samples"))) or None,
+        "profile": block.get("profile"),
+    }
+    if blocking:
+        return [_entry(
+            KIND_ISSUE, "prepress:overprint", "callas", str(block.get("message") or f"Overprint: {blocking}"),
+            severity="error", pages=block.get("blocking_pages"), count=blocking, data=data,
+        )]
+    return [_entry(
+        KIND_ISSUE, "prepress:overprint", "callas", str(block.get("technical_message") or f"Overprint: {technical}"),
+        severity="info", pages=block.get("technical_pages"), count=technical, data=data,
+    )]
 
 
 def _ink_entries(state: Mapping[str, Any]) -> list[dict[str, Any]]:

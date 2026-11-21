@@ -27,11 +27,12 @@ from services.callas import (
     CallasValidationError,
     make_callas_pdf_merger,
 )
-from services.callas.prepress import PPI_PROFILE, WARN_FONTS_PROFILE, PrepressAnalyzer
+from services.callas.prepress import OVERPRINT_PROFILE, PPI_PROFILE, WARN_FONTS_PROFILE, PrepressAnalyzer
 from tests.fake_callas import (
     FakeCallasProcessClient,
     fonts_report_xml,
     make_separations,
+    overprint_report_xml,
     ppi_report_xml,
 )
 from tests.test_callas_client import FakeCallas, done_merge, make_client, sha
@@ -588,9 +589,12 @@ def prepress_client(tmp_path: Path, *, barrier: threading.Barrier | None = None,
         gate("sep")
         return make_separations(out, [{"k100": 0.6}, {"k100": 0.0}])
 
+    def overprint(pdf, mode):
+        return {"xml": overprint_report_xml([("Fill", 1, "CS3", [1.0])])}
+
     return FakeCallasProcessClient(
         tmp_path / "jobs",
-        {WARN_FONTS_PROFILE: fonts, PPI_PROFILE: ppi or ppi_ok},
+        {WARN_FONTS_PROFILE: fonts, PPI_PROFILE: ppi or ppi_ok, OVERPRINT_PROFILE: overprint},
         separations,
     )
 
@@ -620,9 +624,10 @@ def test_prepress_parallel_result_equals_sequential_result(tmp_path, pdf):
         "fonts": sequential_analyzer.check_fonts(pdf, "o1", previous["fonts"]),
         "high_ppi": sequential_analyzer.check_high_ppi(pdf, "o1"),
         "black_solid": sequential_analyzer.check_black_solid(pdf, "o1"),
+        "overprint": sequential_analyzer.check_overprint(pdf, "o1"),
     }
     assert parallel == sequential
-    assert list(parallel) == ["fonts", "high_ppi", "black_solid"]
+    assert list(parallel) == ["fonts", "high_ppi", "black_solid", "overprint"]
     assert parallel["fonts"]["count"] == 2 and parallel["high_ppi"]["count"] == 1
     assert parallel["black_solid"]["detected"] is True and parallel["black_solid"]["pages"] == [1]
 
@@ -646,6 +651,7 @@ def test_prepress_one_failure_is_reported_as_before_and_does_not_hide_others(tmp
         "fonts": sequential_analyzer.check_fonts(pdf, "o2", None),
         "high_ppi": sequential_analyzer.check_high_ppi(pdf, "o2"),
         "black_solid": sequential_analyzer.check_black_solid(pdf, "o2"),
+        "overprint": sequential_analyzer.check_overprint(pdf, "o2"),
     }
 
 

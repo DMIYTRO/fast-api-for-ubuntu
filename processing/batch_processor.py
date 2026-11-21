@@ -1405,6 +1405,7 @@ class BatchProcessor:
             combined = Path(temporary_dir) / "combined.pdf"
             self._merge_page_pdfs(page_pdfs, combined, order)
             self._render_pdf_pages(combined, Path(temporary_dir) / "validation")
+            self._check_diagnostic_overprint(combined, order)
             combined.replace(output_path)
         note = (
             "в диагностический PDF не вошли: " + "; ".join(skipped) if skipped else None
@@ -1432,14 +1433,35 @@ class BatchProcessor:
             )
 
     def _check_prepress(self, pdf_path: Path, order: OrderCheck) -> None:
-        """Шрифты, растры выше предела ppi, плашка K100; сбой проверки заказ не роняет."""
+        """Шрифты, растры выше предела ppi, плашка K100, overprint; сбой проверки заказ не роняет."""
         if self.pdf_prepress_checker is None:
             return
         try:
             order.prepress = self.pdf_prepress_checker(pdf_path, order.order_id, order.prepress)
         except Exception as exc:  # noqa: BLE001
             logger.warning("prepress.failed order_id=%s error=%s", order.order_id, exc)
-            order.prepress = {"status": "failed", "error": str(exc).strip() or exc.__class__.__name__}
+            error = str(exc).strip() or exc.__class__.__name__
+            order.prepress = {"status": "failed", "error": error}
+            if getattr(self.pdf_prepress_checker, "overprint_profile", None):
+                # Проверка overprint тоже не выполнена: заказ не зелёный (см. services/overprint.py).
+                order.prepress["overprint"] = {"status": "failed", "error": error}
+
+    def _check_diagnostic_overprint(self, pdf_path: Path, order: OrderCheck) -> None:
+        """Диагностический PDF тоже проверяется на overprint (только эта проверка: от неё
+        зависит статус; шрифты/ppi/K100 для заказа «как есть» не считаются). Сбой не роняет заказ."""
+        check = getattr(self.pdf_prepress_checker, "check_overprint", None)
+        if not callable(check):
+            return
+        try:
+            result = check(pdf_path, order.order_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("prepress.overprint_failed order_id=%s error=%s", order.order_id, exc)
+            result = {"status": "failed", "error": str(exc).strip() or exc.__class__.__name__}
+        if result.get("status") == "skipped":
+            return
+        prepress = dict(order.prepress) if isinstance(order.prepress, dict) else {}
+        prepress["overprint"] = result
+        order.prepress = prepress
 
     def _convert_rgb_to_cmyk(self, pdf_path: Path, order: OrderCheck) -> None:
         """RGB → CMYK (или снятие ICC) итогового PDF; при успехе снимает предупреждения про RGB."""

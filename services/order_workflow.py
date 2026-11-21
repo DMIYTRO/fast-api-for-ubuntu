@@ -34,6 +34,7 @@ from .file_lifecycle import FileConflictError, FileLifecycle, FileLifecycleError
 from .callas_fix import read_state_file as read_callas_fix_state
 from .check_policy import PolicySettings, apply_check_policy, stored_order_policy
 from .print_readiness import is_forced_print, pitstop_ready, print_blockers
+from .overprint import overprint_block
 from .pdf_routing import completed_status, pdf_root_for, route_pdf
 from .pdf_revision_validation import readable_pdf, validate_pdf_revision
 from .return_preview import (
@@ -173,13 +174,25 @@ class OrderWorkflowService:
         prepress = None
         if self.pdf_prepress_checker is not None:
             # Повторяем допечатные проверки на кандидате (после исправления и перевода в CMYK):
-            # число шрифтов, ppi, плашка K100 пересчитываются заново.
+            # число шрифтов, ppi, плашка K100 и overprint (от него зависит статус) пересчитываются заново.
             try:
                 prepress = self.pdf_prepress_checker(
                     candidate, str(order.get("order_id") or "order"), order.get("prepress")
                 )
             except Exception as exc:  # noqa: BLE001
                 prepress = {"status": "failed", "error": str(exc).strip() or exc.__class__.__name__}
+                if getattr(self.pdf_prepress_checker, "overprint_profile", None) or overprint_block(order.get("prepress")):
+                    prepress["overprint"] = {"status": "failed", "error": prepress["error"]}
+        elif overprint_block(order.get("prepress")):
+            # Без проверяющего результат overprint прежнего PDF к новой ревизии не относится:
+            # не переносить его ошибку (или «чисто») на непроверенный файл.
+            prepress = {
+                **dict(order["prepress"]),
+                "overprint": {
+                    "status": "failed",
+                    "error": "PDF изменён, а повторная проверка callas не настроена",
+                },
+            }
         inspection = validate_pdf_revision(candidate, order, direction)
         failure_warning = None
         if conversion is not None:
@@ -237,6 +250,8 @@ class OrderWorkflowService:
             local_errors=not readable_pdf(inspection),
             local_warnings=bool(inspection.errors or inspection.warnings),
             pitstop=pitstop,
+            # Overprint — по проверке этой же ревизии (кандидата), не по прежнему PDF.
+            prepress=prepress,
         )
         previews: list[str] = []
         if readable_pdf(inspection):

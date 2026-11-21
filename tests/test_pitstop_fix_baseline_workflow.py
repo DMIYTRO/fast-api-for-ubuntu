@@ -215,6 +215,53 @@ class BaselineFixTests(CallasFixApiTests):
         self.pitstop.reports.append(pitstop_report)
         return self.workflow.recheck_pdf_revision(run, order, candidate, callas_fix=True, **kwargs)
 
+    def test_recheck_reruns_overprint_on_the_new_revision_and_a_fixed_file_clears_the_error(self):
+        """Overprint — ошибка в любой политике и при чистом PitStop; новая ревизия проверяется заново."""
+        from services.check_policy import PolicySettings
+
+        blocking = {"overprint": {
+            "status": "ok", "count": 2, "blocking_count": 2, "blocking_pages": [1], "technical_count": 0,
+            "samples": ["Заливка K100 (DeviceCMYK), стр. 1"],
+            "message": "Overprint: 2 объекта с наложением (стр. 1): Заливка K100 (DeviceCMYK), стр. 1. Уберите overprint в макете.",
+        }}
+        clean = {"overprint": {"status": "ok", "count": 0, "blocking_count": 0, "technical_count": 0}}
+        results = [blocking, clean]
+        checked: list[str] = []
+
+        def checker(pdf, label, previous=None):
+            checked.append(Path(pdf).name)
+            return results.pop(0)
+
+        self.original_report = report()
+        run_id = self.make_run()
+        self.workflow.policy_settings = PolicySettings("basic", ("CorelDRAW",))
+        self.workflow.pdf_prepress_checker = checker
+        order, pitstop, _revision, _sha = self.recheck(run_id, report((TRANSPARENCY, 1)))
+        self.assertEqual(checked, ["callas-candidate.pdf"])
+        self.assertEqual((pitstop["check_policy"], pitstop["verdict"]), ("basic", "passed"))
+        self.assertEqual(order["status"], "error")
+        self.assertEqual(Path(order["pdf_path"]).parent.name, "Failed")
+        groups = [(g["code"], g["severity"]) for g in order["issue_groups"]]
+        self.assertIn(("prepress:overprint", "error"), groups)
+
+        order, _pitstop, _revision, _sha = self.recheck(run_id, report())
+        self.assertEqual(checked, ["callas-candidate.pdf", "callas-candidate.pdf"])
+        self.assertEqual(order["status"], "passed")
+        self.assertNotIn("prepress:overprint", [g["code"] for g in order["issue_groups"]])
+
+    def test_recheck_without_checker_does_not_carry_the_old_overprint_verdict(self):
+        self.original_report = report()
+        run_id = self.make_run()
+        self.workflow.pdf_prepress_checker = None
+        run = self.client.app.state.coordinator.get_run(run_id)
+        order = next(iter(run["orders"].values()))
+        order["prepress"] = {"overprint": {"status": "ok", "blocking_count": 3, "message": "Overprint: 3"}}
+        candidate = make_pdf(self.root / "PDF" / "callas-candidate.pdf", 103, 214)
+        self.pitstop.reports.append(report())
+        updated, _pitstop, _revision, _sha = self.workflow.recheck_pdf_revision(run, order, candidate)
+        self.assertEqual(updated["prepress"]["overprint"]["status"], "failed")
+        self.assertEqual(updated["status"], "warning")
+
     def test_bleed_only_fix_of_built_pdf_hides_everything_new(self):
         self.original_report = report()
         run_id = self.make_run()
