@@ -291,7 +291,7 @@ class CallasFixService:
             raise CallasFixError("PDF заказа не найден.", status_code=404, code="pdf_not_found")
         if plan.requires_cmyk and not is_raster_source(pdf):
             # Растр сначала собирается в PDF (в ``execute``); там же проверяется RGB.
-            self._require_no_rgb(pdf)
+            self._require_no_rgb(pdf, plan.cmyk_reason)
         key = str(fix_dir_for(pdf))
         with self._lock:
             if key in self._active:
@@ -322,8 +322,8 @@ class CallasFixService:
         return state
 
     @staticmethod
-    def _require_no_rgb(pdf: Path) -> None:
-        """Перед «чёрным» планом RGB уже должен быть переведён в CMYK (иначе RGB-чёрный не станет K100)."""
+    def _require_no_rgb(pdf: Path, reason: str = "") -> None:
+        """Перед планом с ``requires_cmyk`` RGB уже должен быть переведён в CMYK (причина — ``reason``)."""
         from core.pdf_inspector import find_rgb_pages
 
         try:
@@ -336,7 +336,7 @@ class CallasFixService:
             raise CallasFixError(
                 "В PDF остался RGB (стр. " + ", ".join(str(page) for page in pages) + "). "
                 "Сначала переведите RGB в CMYK (включите автоконвертацию или исправьте макет), "
-                "затем запускайте этот план: иначе RGB-чёрный не станет K100.",
+                "затем запускайте этот план" + (f": {reason}." if reason else "."),
                 status_code=409,
                 code="rgb_not_converted",
             )
@@ -368,7 +368,7 @@ class CallasFixService:
                 source_pdf = self._build_source_pdf(pdf, directory, strip_icc_cmyk=strip_icc_cmyk)
                 state["source_pdf"] = SOURCE_PDF_NAME
                 if plan.requires_cmyk:
-                    self._require_no_rgb(source_pdf)
+                    self._require_no_rgb(source_pdf, plan.cmyk_reason)
             result = self._client.process(
                 source_pdf, plan.profile, "fix", job_id=job_id, report=("xml",), keep_name=True
             )

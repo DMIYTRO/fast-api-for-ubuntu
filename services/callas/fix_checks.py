@@ -25,6 +25,11 @@ def _changed(summary: dict[str, Any]) -> float:
         return 0.0
 
 
+def _share_text(share: float) -> str:
+    percent = share * 100
+    return "меньше 0.1%" if 0 < percent < 0.05 else f"{percent:.1f}%"
+
+
 def _result(kind: str, level: str, messages: list[str], **extra: Any) -> dict[str, Any]:
     return {"kind": kind, "level": level, "messages": messages, **extra}
 
@@ -108,7 +113,40 @@ def build_post_checks(analyzer: Any) -> dict[str, PostCheck]:
         messages.append("Проверьте штриховые 1-бит и мелкий текст по превью «до / после».")
         return _result("downsample_images", level, messages, remaining=left)
 
+    def tac(source: Path, fixed: Path, summary: dict[str, Any]) -> dict[str, Any]:
+        before = analyzer.check_tac(source, "fixcheck-before")
+        after = analyzer.check_tac(fixed, "fixcheck-after")
+        messages: list[str] = []
+        level = "ok"
+        extra: dict[str, Any] = {}
+        if after.get("status") == "ok":
+            limit = f"{after['limit']:g}"
+            extra = {"max_after": after["max_percent"], "remaining_pages": after["pages"]}
+            if before.get("status") == "ok":
+                extra["max_before"] = before["max_percent"]
+                messages.append(
+                    f"Макс. суммарное покрытие: было {before['max_percent']:.0f}%, стало {after['max_percent']:.0f}%."
+                )
+            else:
+                messages.append(f"Макс. суммарное покрытие после исправления: {after['max_percent']:.0f}%.")
+            if after["detected"]:
+                level = "warning"
+                messages.append(
+                    f"Покрытие выше {limit}% осталось: стр. {pages_text(after['pages'])} "
+                    f"({_share_text(after['over_share'])} площади). Проверьте результат вручную."
+                )
+        else:
+            level = "warning"
+            messages.append(f"Повторная проверка суммарного покрытия не выполнена: {after.get('error')}")
+        messages.append(
+            "Цветоделения 50 ppi: значения приблизительные, мелкие объекты усредняются с фоном. "
+            "Окончательный вердикт даст повторная проверка PitStop после принятия."
+        )
+        messages.append(f"Изменено {_changed(summary):g}% площади в сравнении с оригиналом.")
+        messages.append("Проверьте цвета тёмных и насыщенных мест по превью «до / после».")
+        return _result("reduce_tac", level, messages, **extra)
+
     return {
         "fonts_to_outlines": fonts, "black_to_rich": black, "remove_clipping": clipping,
-        "downsample_images": downsample,
+        "downsample_images": downsample, "reduce_tac": tac,
     }

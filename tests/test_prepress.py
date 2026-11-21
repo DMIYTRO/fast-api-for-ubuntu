@@ -14,6 +14,7 @@ from services.callas.color_conversion import ICC_PROFILE, CallasRgbToCmykConvert
 from services.callas.prepress import PPI_PROFILE, WARN_FONTS_PROFILE, PrepressAnalyzer
 from services.callas.prepress_reports import fonts_report, high_ppi_report, icc_pages
 from services.callas.report import parse_report_root
+from services.callas.tac import TAC_LIMIT_PERCENT, analyze_tac, measure_tac
 from services.dto import order_check_to_dto
 from services.issue_groups import build_issue_groups
 from tests.fake_callas import (
@@ -21,6 +22,7 @@ from tests.fake_callas import (
     fonts_report_xml,
     icc_report_xml,
     make_separations,
+    make_tac_separations,
     ppi_report_xml,
 )
 from tests.test_rgb_to_cmyk import make_pdf
@@ -349,3 +351,79 @@ def test_pitstop_clipping_issues_form_one_group_with_count_pages_and_fix_plan():
     assert group["code"] == "action:2079" and group["fix_plan"] == "remove_clipping"
     assert group["objects"] == 2 and group["pages"] == [1, 2]
     assert "Clipping objects found" in group["message"] and "на страницах 1, 2" in group["message"]
+
+
+def test_pitstop_ink_coverage_group_offers_the_tac_fix_plan():
+    issue = {"message": "Total ink coverage of an object is more than 310%", "severity": "warning", "action_id": 1153}
+    groups = build_issue_groups(pitstop_issues=[issue, dict(issue, action_id="1153")])
+    assert len(groups) == 1
+    group = groups[0]
+    assert group["code"] == "action:1153" and group["fix_plan"] == "reduce_tac"
+    assert group["message"].startswith("Суммарное покрытие красок выше нормы: Total ink coverage (PitStop)")
+    assert group["samples"] == ["Total ink coverage of an object is more than 310%"]
+    # Одна находка тоже получает подпись группы (как обтравка), исходный текст — в samples.
+    single = build_issue_groups(pitstop_issues=[issue])[0]
+    assert single["fix_plan"] == "reduce_tac" and single["message"].startswith("Суммарное покрытие красок выше нормы")
+
+
+# ----------------------------------------------------------------------------- TAC
+def test_tac_of_full_four_inks_is_400_percent(tmp_path):
+    files = make_tac_separations(tmp_path, [{"cmyk": (100, 100, 100, 100)}])
+    result = analyze_tac(files)
+    assert TAC_LIMIT_PERCENT == 310.0
+    assert result["max_percent"] == 400.0 and result["detected"] is True
+    assert result["pages"] == [1] and result["over_share"] == 1.0
+
+
+def test_tac_below_limit_is_not_detected_and_white_page_is_zero(tmp_path):
+    files = make_tac_separations(tmp_path, [{"cmyk": (100, 80, 40, 40), "share": 0.5}, {}])
+    result = analyze_tac(files)
+    assert result["max_percent"] == 260.0 and result["detected"] is False
+    assert result["pages"] == [] and result["over_share"] == 0.0
+    assert result["page_values"] == {
+        "1": {"max_percent": 260.0, "over_share": 0.0}, "2": {"max_percent": 0.0, "over_share": 0.0},
+    }
+
+
+def test_tac_area_above_limit_is_counted_per_page_and_limit_is_strict(tmp_path):
+    files = make_tac_separations(tmp_path, [
+        {"cmyk": (100, 100, 60, 60), "share": 0.25},  # 320%
+        {"cmyk": (100, 100, 100, 20)},                 # ровно 320%, вся страница
+        {"cmyk": (80, 80, 80, 60)},                    # ровно 300%
+    ])
+    result = analyze_tac(files)
+    assert result["pages"] == [1, 2] and result["over_share"] == 1.0
+    assert result["page_values"]["1"] == {"max_percent": 320.0, "over_share": 0.25}
+    assert analyze_tac(files, 320.0)["detected"] is False  # равно пределу — не выше
+    assert analyze_tac(files, 299.0)["pages"] == [1, 2, 3]
+
+
+def test_tac_ignores_spot_channels_and_incomplete_pages(tmp_path):
+    files = make_tac_separations(tmp_path, [{"cmyk": (60, 60, 60, 60)}])
+    spot = tmp_path / "spot.png"
+    from PIL import Image
+    Image.new("L", (40, 40), 0).save(spot)
+    files[(1, "PANTONE 485 C")] = spot
+    files[(2, "Black")] = spot  # страница без C, M, Y пропускается
+    result = analyze_tac(files)
+    assert result["max_percent"] == 240.0 and list(result["page_values"]) == ["1"]
+
+
+def test_check_tac_cleans_up_and_failure_is_a_block(tmp_path):
+    client = FakeCallasProcessClient(
+        tmp_path / "jobs", {}, separations_factory=lambda pdf, out: make_tac_separations(out, [{"cmyk": (100, 100, 100, 100)}]),
+    )
+    analyzer = PrepressAnalyzer(client)
+    result = analyzer.check_tac(pdf_of(tmp_path), "x")
+    assert result["status"] == "ok" and result["max_percent"] == 400.0 and result["limit"] == 310.0
+    assert len(client.deleted) == 1 and client.deleted[0].startswith("sep-tac-x-")
+    assert measure_tac(client, pdf_of(tmp_path), "y", 410.0)["detected"] is False
+    client.separations_factory = None
+    failed = analyzer.check_tac(pdf_of(tmp_path), "z")
+    assert failed["status"] == "failed" and "separations" in failed["error"]
+
+
+def test_tac_is_not_part_of_the_automatic_order_checks(tmp_path):
+    client, analyzer = analyzer_with(tmp_path)
+    assert set(analyzer(pdf_of(tmp_path), "o")) == {"fonts", "high_ppi", "black_solid"}
+    assert [call for call in client.calls if call[0] == "separations"] == [("separations", "sep_process")]

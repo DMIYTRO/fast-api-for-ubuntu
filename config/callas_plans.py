@@ -31,6 +31,8 @@ class CallasPlan:
     warning: str = ""
     #: Перед запуском в PDF не должно остаться RGB (иначе RGB-чёрный не станет K100).
     requires_cmyk: bool = False
+    #: Почему план требует CMYK: продолжение сообщения «…затем запускайте этот план: <причина>».
+    cmyk_reason: str = ""
     #: Сообщение, если профиль сообщил об ошибках исправления и ничего не исправил.
     unfixable_message: str = ""
     #: Сообщение, если профиль ничего не изменил (``fixups_applied == 0``): результат не нужен.
@@ -73,6 +75,7 @@ CALLAS_PLANS: dict[str, CallasPlan] = {
             "Проверьте наложение перед принятием."
         ),
         requires_cmyk=True,
+        cmyk_reason="иначе RGB-чёрный не станет K100",
         no_change_message="Чистого K100 в PDF не найдено: профиль ничего не изменил.",
     ),
     "remove_clipping": CallasPlan(
@@ -105,6 +108,29 @@ CALLAS_PLANS: dict[str, CallasPlan] = {
             "до и после, прежде чем принимать результат."
         ),
         no_change_message="Изображений выше 300 ppi в PDF не найдено: профиль ничего не изменил.",
+    ),
+    "reduce_tac": CallasPlan(
+        key="reduce_tac",
+        title="Снижение суммарного покрытия до 300%",
+        profile="Image Magic/TAC 300 - CMYK and ICC CMYK - preserve spots",
+        description=(
+            "Fixup «TAC 300 - CMYK and ICC CMYK - preserve spots» (callas, DeviceLink ISO Coated v2 TAC 300): "
+            "объекты CMYK и ICC-CMYK (векторы, текст и CMYK-растры) пересчитываются так, чтобы сумма "
+            "красок не превышала 300%. Плашечные цвета, RGB и мягкие маски не меняются. Замечание "
+            "«Total ink coverage of an object is more than 310%» приходит из Enfocus PitStop (ActionID 1153). "
+            "Исходный PDF сохраняется, результат нужно принять или отклонить."
+        ),
+        warning=(
+            "DeviceLink пересчитывает ВСЕ CMYK-цвета, не только участки выше 300%: цвета тёмных и "
+            "насыщенных мест немного сдвигаются, составной чёрный и тёмные фотографии меняются сильнее всего. "
+            "Проверьте превью «до / после» перед принятием."
+        ),
+        requires_cmyk=True,
+        cmyk_reason="профиль пересчитывает только CMYK, покрытие RGB-объектов он не ограничит",
+        no_change_message=(
+            "Профиль ничего не изменил: в PDF нет CMYK-объектов для пересчёта "
+            "(плашечные цвета, Gray и RGB профиль не меняет)."
+        ),
     ),
 }
 

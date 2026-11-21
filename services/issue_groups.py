@@ -85,9 +85,11 @@ _LOCAL_RULES: tuple[tuple[str, re.Pattern[str], str], ...] = tuple(
 # Известные проверки PitStop: ActionID -> (подпись группы, план исправления Callas).
 # «Clipping objects found» (ActionID 2079) создаёт Enfocus PitStop, не callas; объекты
 # сгруппированы в одну строку с числом и страницами, а исправление предлагает план
-# «remove_clipping» (профиль callas «Remove all clipping paths»).
+# «remove_clipping» (профиль callas «Remove all clipping paths»). «Total ink coverage of an object
+# is more than 310%» (ActionID 1153) предлагает план «reduce_tac» (DeviceLink TAC 300).
 _PITSTOP_ACTIONS: dict[str, tuple[str, str]] = {
     "2079": ("Обтравка: Clipping objects found (PitStop)", "remove_clipping"),
+    "1153": ("Суммарное покрытие красок выше нормы: Total ink coverage (PitStop)", "reduce_tac"),
 }
 
 _NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")

@@ -17,7 +17,7 @@ const props = defineProps({
   // Исходный файл заказа (PDF или растр) без собранного PDF: результат только для просмотра и скачивания.
   fileId: { type: String, default: "" },
   fileLabel: { type: String, default: "" },
-  // Ключи дополнительных планов, применимых к заказу (шрифты, плашка K100, обтравка).
+  // Ключи дополнительных планов, применимых к заказу (шрифты, плашка K100, обтравка, разрешение, покрытие).
   fixes: { type: Array, default: () => [] },
   // Подмножество fixes, где проверка нашла что исправлять: такие кнопки подсвечены.
   recommended: { type: Array, default: () => [] },
@@ -218,6 +218,9 @@ onBeforeUnmount(() => {
           </template>
           <template v-else-if="item.key === 'downsample_images'">
             <rect x="3" y="3" width="14" height="14" rx="1.5" /><path d="M3 10h14M10 3v14" /><path d="M11.5 8.5 15 5M12.5 5H15v2.5" />
+          </template>
+          <template v-else-if="item.key === 'reduce_tac'">
+            <path d="M4 17V7M8 17V4M12 17V9M16 17V12" /><path d="M3 6.5h14" stroke-dasharray="2 1.5" />
           </template>
         </svg>
         <span>{{ item.label }}</span>

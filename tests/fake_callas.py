@@ -160,3 +160,22 @@ def make_separations(out: Path, pages: Sequence[dict], *, size: tuple[int, int] 
             Image.frombytes("L", size, bytes(data)).save(path)
             result[(number, name)] = path
     return result
+
+
+def make_tac_separations(out: Path, pages: Sequence[dict], *, size: tuple[int, int] = (40, 40)) -> dict:
+    """Сепарации PNG для замера TAC. ``pages`` — по странице dict ``cmyk`` (проценты C, M, Y, K
+    закрашенного участка) и ``share`` (доля площади участка, по умолчанию вся страница); остальное белое."""
+    from PIL import Image
+
+    width, height = size
+    total = width * height
+    result: dict = {}
+    for number, spec in enumerate(pages, start=1):
+        painted = int(total * spec.get("share", 1.0))
+        for ink, percent in zip(("Cyan", "Magenta", "Yellow", "Black"), spec.get("cmyk", (0, 0, 0, 0))):
+            level = round(255 - percent / 100 * 255)
+            data = bytes([level] * painted + [255] * (total - painted))
+            path = out / f"page-{number:04d}_sep_{ink}.png"
+            Image.frombytes("L", size, data).save(path)
+            result[(number, ink)] = path
+    return result

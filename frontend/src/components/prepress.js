@@ -20,9 +20,15 @@ export const FIX_BUTTONS = {
     label: "Уменьшить разрешение до 300 ppi",
     title: "Callas: Fixup «Downsample image resolution to specified value»: уменьшит до 300 ppi все изображения выше 300 ppi; штриховые 1-бит проверьте по превью. Исходный PDF сохраняется, результат нужно принять или отклонить.",
   },
+  reduce_tac: {
+    label: "Снизить покрытие до 300%",
+    title: "Callas: Fixup «TAC 300 - CMYK and ICC CMYK - preserve spots» (DeviceLink ISO Coated v2 TAC 300) пересчитает объекты CMYK и ICC-CMYK так, чтобы сумма красок не превышала 300% (замечание «Total ink coverage» создаёт Enfocus PitStop, ActionID 1153). Плашечные цвета и RGB не меняются. Пересчитываются ВСЕ CMYK-цвета: тёмные и насыщенные места, составной чёрный и тёмные фото немного изменятся. Исходный PDF сохраняется, сравните «до» и «после» перед принятием.",
+  },
 };
 
 export const CLIPPING_CODE = "action:2079";
+// «Total ink coverage of an object is more than 310%» (Enfocus PitStop).
+export const INK_COVERAGE_CODE = "action:1153";
 
 const ok = (block) => block && block.status === "ok";
 
@@ -179,9 +185,18 @@ export function fontLabel(font) {
   return `${font.name} (${flags.join(", ")})`;
 }
 
-export function clippingGroup(order) {
+function visibleGroup(order, code, plan) {
   const groups = visibleIssueGroups(Array.isArray(order?.issue_groups) ? order.issue_groups : [], order?.pitstop);
-  return groups.find((group) => group.code === CLIPPING_CODE || group.fix_plan === "remove_clipping") || null;
+  return groups.find((group) => group.code === code || group.fix_plan === plan) || null;
+}
+
+export function clippingGroup(order) {
+  return visibleGroup(order, CLIPPING_CODE, "remove_clipping");
+}
+
+// Группа PitStop о суммарном покрытии; скрытые сравнением с исходником находки не считаются.
+export function inkCoverageGroup(order) {
+  return visibleGroup(order, INK_COVERAGE_CODE, "reduce_tac");
 }
 
 // Справочные строки (уровень info: понижённая обтравка, «RGB → CMYK скорректирована», «ICC снят»…)
@@ -228,7 +243,7 @@ export function prepressNotices(order) {
 // Кнопки исправлений Callas показываются всегда (при наличии PDF) и всегда активны.
 // Проверка только подсвечивает «рекомендованные» — те, где она нашла что исправлять.
 // Если исправлять нечего, профиль сам сообщит об этом (fixups_applied == 0) и ничего не изменит.
-export const ALL_FIXES = ["fonts_to_outlines", "black_to_rich", "remove_clipping", "downsample_images"];
+export const ALL_FIXES = ["fonts_to_outlines", "black_to_rich", "remove_clipping", "downsample_images", "reduce_tac"];
 export const NOT_DETECTED_NOTE = "Проверка не нашла, что исправлять: профиль можно запустить, лишнего он не изменит";
 
 export function blackFixAvailable(black) {
@@ -245,6 +260,7 @@ export function recommendedFixes(order) {
   if (clippingGroup(order)) fixes.push("remove_clipping");
   const ppi = order?.prepress?.high_ppi;
   if (ok(ppi) && ppi.count > 0) fixes.push("downsample_images");
+  if (inkCoverageGroup(order)) fixes.push("reduce_tac");
   return fixes;
 }
 

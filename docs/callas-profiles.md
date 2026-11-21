@@ -33,6 +33,7 @@
 | Обтравка | «Clipping objects found» создаёт Enfocus PitStop (ActionID 2079); `issue_groups` собирает её в одну группу с числом и страницами (`fix_plan=remove_clipping`); кнопка «Удалить обтравку» (план `remove_clipping`), подсказка про Fixup `RemoveClipPathes`; профиль срабатывает почти всегда (служебный клип), поэтому после фикса сравнение копии с оригиналом (`core/fix_compare.py`, страница 1) и подтверждение оператора; предупреждение про скрытое содержимое | карточка |
 | Растры выше 500 ppi | стандартный профиль «List color and grayscale images not within 250 to 450 ppi» (XML), фильтр `max(v_ppi,h_ppi) > 500 + 0.5`; одно сгруппированное предупреждение «Растры выше 500 ppi: N объектов, стр. …»; однобитные (`bits_per_color_component=1` или маска) отдельной пометкой, не блокируют; снижения разрешения нет | карточка |
 | Снижение разрешения | кнопка «Уменьшить разрешение до 300 ppi» (план `downsample_images`), всегда видна, подсвечена при `prepress.high_ppi.count>0`; стандартный профиль callas `PDF fixups/Downsample image resolution to specified value` запускается БЕЗ переменных (имя меняется через `IMAGE_MAGIC_CALLAS_DOWNSAMPLE_PROFILE`); поведение: все изображения выше 300 ppi уменьшаются до 300 ppi (порог 500 ppi профиль не знает, 1-бит штриховые тоже пересэмплируются, их проверяют по превью); успех определяется по коду выхода (5-7), т.к. XML-отчёт содержит утверждение XMP «`__null != docxmp.get()`» и `fixups_applied=0`; после фикса повтор проверки ppi, сравнение «до / после» и подтверждение оператора, затем обычная ревизия PDF и PitStop | карточка |
+| Суммарное покрытие (TAC) | «Total ink coverage of an object is more than 310%» создаёт Enfocus PitStop (ActionID 1153, категория `ink_coverage`, влияет на статус в любой политике); `issue_groups` даёт группе `fix_plan=reduce_tac`; кнопка «Снизить покрытие до 300%» (план `reduce_tac`, `Image Magic/TAC 300 - CMYK and ICC CMYK - preserve spots`) видна всегда, подсвечена, если есть видимая группа `action:1153` (скрытые сравнением с исходником находки не считаются); перед запуском проверка, что RGB уже нет (`rgb_not_converted`); после фикса замер TAC по цветоделениям (`services/callas/tac.py`, `PrepressAnalyzer.check_tac`, только в повторной проверке, не в общем прогоне заказа): макс. TAC «было / стало» и площадь выше 310%, сравнение «до / после» и подтверждение оператора, окончательный вердикт даёт PitStop на новой ревизии | карточка |
 
 Новые настройки: `IMAGE_MAGIC_CALLAS_PREPRESS_ENABLED` (по умолчанию `true`),
 `IMAGE_MAGIC_BLACK_SOLID_AREA_THRESHOLD` (`0.25`), `IMAGE_MAGIC_HIGH_PPI_LIMIT` (`500`), `IMAGE_MAGIC_CALLAS_DOWNSAMPLE_PROFILE` (`PDF fixups/Downsample image resolution to specified value`).
@@ -50,12 +51,14 @@
 | `Pure CMYK black to rich black (C60 M40 Y40 K100).kfpx` | `Image Magic/Pure CMYK black to rich black (C60 M40 Y40 K100)` | чистый K100 в составной чёрный C60 M40 Y40 K100 | fix, кнопка |
 | `Convert fonts to outlines.kfpx` | `Image Magic/Convert fonts to outlines` | шрифты в кривые | fix, кнопка |
 | `Remove all clipping paths.kfpx` | `Image Magic/Remove all clipping paths` | удаление всех обтравок | fix, кнопка |
+| `TAC 300 - CMYK and ICC CMYK - preserve spots.kfpx` | `Image Magic/TAC 300 - CMYK and ICC CMYK - preserve spots` | снижение суммарного покрытия CMYK и ICC-CMYK до 300% (DeviceLink ISO Coated v2 TAC 300), споты не трогаются | fix, кнопка |
 | (встроенный) `PDF fixups/Downsample image resolution to specified value` | то же имя на сервере callas (профиль не из `callas_profiles/`) | уменьшение разрешения изображений до 300 ppi, переменные не передаются | fix, кнопка |
 | `Black to rich black.kfpx` | `Image Magic/Black to rich black` | любой «только чёрный» объект в C40 M40 Y40 K100 (не использовать, см. ниже) | fix |
 | `List potential overprint problems.kfpx` | `Image Magic/List potential overprint problems` | 32 проверки наложения (overprint/knockout) | analyze |
 | `chek and fix bleed to js script.kfpx`, `new_size_correction.kfpx` | `Image Magic/chek and fix bleed to js script`, `Image Magic/new_size_correction` | коррекция размера/вылетов (JS), дубликаты рабочего `size_correction` | fix |
 
 Профили развёрнуты на сервере 10.20.2.109 в `/opt/pdfToolbox-17.0.682/var/Profiles/Image Magic/` (root:root 644, как у соседних).
+`TAC 300 - CMYK and ICC CMYK - preserve spots.kfpx` (добавлен 2026-11-21) **ещё нужно развернуть** туда же (см. «Развёртывание»): без него кнопка «Снизить покрытие до 300%» закончится ошибкой callas 103 (профиль не загрузился).
 
 ## Подробно по профилям
 
@@ -101,6 +104,13 @@
 - **Срабатывает практически на любом PDF** из Illustrator/Photoshop, потому что в них есть служебная обтравка по границе страницы: `fixups_applied` > 0 на `soft_04/07/09/11/12`, `real_np50x50`. Поэтому счётчик не означает «макет с вырубкой»; на `fonts.pdf`, `scan.pdf`, `black_vector.pdf` (нет клипа) 0. Определять «обтравка найдена» только отдельной проверкой (например по анализу объектов), не по этому профилю.
 - Внешний вид меняется там, где обтравка реально скрывала содержимое: `clip_real_B_40x40.pdf` (круглый макет, средняя разница 34 из 255, максимум 230) и `clipping.pdf` (41.5, максимум 255) показывают то, что было за обтравкой. На обычных макетах отличие 0. Для заказа с вырубкой, где важна форма, кнопку применять только после просмотра результата.
 - Страницы, размер и боксы (Crop/Trim/Bleed) сохраняются.
+
+### TAC 300 - CMYK and ICC CMYK - preserve spots
+
+- Внутри: один Fixup с тем же именем, два шага `DeviceLinkConversion` со встроенным DeviceLink `DL_ISOcoated_v2_TAC300.ccc`: для некалиброванного (`UncCMYK`, DeviceCMYK) и калиброванного (`CalCMYK`, ICC-CMYK) цвета, объекты `All` (векторы, текст, растры). Плашечные цвета, RGB и мягкие маски исключены (комментарий профиля). Переменных нет, проверок нет.
+- DeviceLink пересчитывает **все** CMYK-цвета, а не только участки выше 300%: светлые цвета почти не меняются, тёмные и насыщенные (составной чёрный, тёмные фото) сдвигаются заметнее. Поэтому `fixups_applied > 0` почти на любом CMYK-макете и не означает «было покрытие выше 300%»; «ничего не изменил» значит, что CMYK-объектов нет (только споты/Gray/RGB). Успех определяется как у остальных планов (`fixups_applied` или код выхода 5-7).
+- Проверка результата (`fix_checks.py`, план `reduce_tac`): цветоделения `sep_process` 50 ppi до и после, TAC пикселя = сумма `(255 - v) / 255 * 100` по Cyan, Magenta, Yellow, Black; «Макс. суммарное покрытие: было X%, стало Y%», предупреждение, если после осталась площадь выше 310% (предел PitStop). Усреднение 50 ppi не завышает TAC, но мелкие объекты выше предела сливаются с фоном: значения приблизительные, окончательно решает PitStop на принятой ревизии.
+- На тестовом сервере callas профиль на реальных PDF приложением ещё не прогонялся (коды выхода, `fixups_applied` и время не замерены).
 
 ### Black to rich black (не использовать для автоматики)
 

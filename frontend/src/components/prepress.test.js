@@ -4,7 +4,7 @@ import OrderCard from "./OrderCard.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import FixComparison from "./FixComparison.vue";
 import { api } from "../services/api.js";
-import { ALL_FIXES, NOT_DETECTED_NOTE, availableFixes, blackFixAvailable, callasSourceFixTitle, fontLabel, iccOff, prepressDisplay, prepressNotices, recommendedFixes, sizeFixBadge } from "./prepress.js";
+import { ALL_FIXES, NOT_DETECTED_NOTE, availableFixes, blackFixAvailable, callasSourceFixTitle, fontLabel, iccOff, inkCoverageGroup, prepressDisplay, prepressNotices, recommendedFixes, sizeFixBadge } from "./prepress.js";
 
 const mounted = [];
 function mountComponent(component, props) {
@@ -239,6 +239,51 @@ describe("grouped prepress notices and buttons", () => {
     expect(recommendedFixes(order)).toEqual([]);
     expect(availableFixes(order)).toEqual(ALL_FIXES);
     expect(fontLabel({ name: "N", type: "Type3", embedded: null, invisible_only: true })).toBe("N (Type3, невидимый)");
+  });
+});
+
+describe("TAC fix button", () => {
+  const tacIssue = { severity: "warning", action_id: 1153, message: "Total ink coverage of an object is more than 310%" };
+  const tacGroup = { code: "action:1153", source: "pitstop", severity: "warning", fix_plan: "reduce_tac", message: "Суммарное покрытие красок выше нормы: Total ink coverage (PitStop)", count: 1, samples: [tacIssue.message] };
+
+  it("is part of every order's fix list", () => {
+    expect(ALL_FIXES).toContain("reduce_tac");
+    expect(availableFixes({})).toContain("reduce_tac");
+  });
+
+  it("is recommended when a visible PitStop ink coverage group exists", async () => {
+    expect(recommendedFixes({ issue_groups: [tacGroup] })).toEqual(["reduce_tac"]);
+    // Группа без fix_plan (старые запуски) узнаётся по коду, план без кода — по fix_plan.
+    expect(recommendedFixes({ issue_groups: [{ ...tacGroup, fix_plan: undefined }] })).toEqual(["reduce_tac"]);
+    expect(recommendedFixes({ issue_groups: [{ ...tacGroup, code: "other" }] })).toEqual(["reduce_tac"]);
+    const host = card({ pdf_path: "/p.pdf", issue_groups: [tacGroup], pitstop: { issues: [tacIssue] } });
+    await nextTick();
+    const button = host.querySelector(".callas-fix-reduce_tac");
+    expect(button?.textContent).toContain("Снизить покрытие до 300%");
+    expect(button.classList.contains("recommended")).toBe(true);
+    expect(button.querySelector("svg path")).not.toBeNull();
+    expect(button.title).toContain("TAC 300");
+    expect(button.title).toContain("ActionID 1153");
+    expect(button.title).not.toContain(NOT_DETECTED_NOTE);
+  });
+
+  it("is shown but not recommended without the ink coverage warning", async () => {
+    expect(inkCoverageGroup({})).toBeNull();
+    expect(recommendedFixes({ issue_groups: [{ code: "action:2079", source: "pitstop", severity: "warning", count: 1 }] })).not.toContain("reduce_tac");
+    const host = card({ pdf_path: "/p.pdf", issue_groups: [] });
+    await nextTick();
+    const button = host.querySelector(".callas-fix-reduce_tac");
+    expect(button).not.toBeNull();
+    expect(button.disabled).toBe(false);
+    expect(button.classList.contains("recommended")).toBe(false);
+    expect(button.title.startsWith(NOT_DETECTED_NOTE)).toBe(true);
+  });
+
+  it("is not recommended when the coverage finding was hidden by the fix baseline", () => {
+    const hidden = { ...tacIssue, severity: "information", hidden_by_baseline: true, introduced_by_fix: 3, baseline_occurrences: 0, original_severity: "warning" };
+    const order = { issue_groups: [{ ...tacGroup, severity: "info" }], pitstop: { issues: [hidden] } };
+    expect(inkCoverageGroup(order)).toBeNull();
+    expect(recommendedFixes(order)).not.toContain("reduce_tac");
   });
 });
 
