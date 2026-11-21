@@ -48,4 +48,6 @@ export const api = {
   callasFixStatus: (runId, orderId, fileId = "") => request(`${callasFixBase(runId, orderId, fileId)}`),
   decideCallasFix: (runId, orderId, decision, fileId = "") => request(`${callasFixBase(runId, orderId, fileId)}/decision`, { method: "POST", body: JSON.stringify({ decision }) }),
   history: (params = {}) => request(`/api/order-history?${new URLSearchParams(params)}`),
+  // Журнал заказа записи истории: найденные проблемы, автоисправления, действия оператора, решение.
+  orderJournal: (actionId) => request(`/api/order-history/${encodeURIComponent(actionId)}/journal`),
 };

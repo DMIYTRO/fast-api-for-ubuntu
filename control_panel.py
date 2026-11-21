@@ -61,6 +61,7 @@ from services.pitstop import (
     SSHTransport,
 )
 from services.order_kits import KitResolver
+from services.order_journal_loader import OrderJournalLoader, OrderJournalNotFound
 from services.sborka_integration import (
     build_order_info_fetcher,
     build_rework_sender,
@@ -1075,6 +1076,7 @@ def create_app(
     application.state.database = database
     _configure_callas_pdf_renderer(settings)
     application.state.coordinator = coordinator
+    application.state.order_journal = OrderJournalLoader(coordinator, database.session_factory)
     application.state.order_workflow = OrderWorkflowService(
         coordinator,
         database.session_factory,
@@ -1960,6 +1962,31 @@ def create_app(
             if target is None:
                 raise APIError(404, "preview_not_found", "Превью не найдено.")
             return FileResponse(target)
+
+    @application.get(
+        "/api/order-history/{action_id}/journal", dependencies=[Depends(protected)]
+    )
+    def order_history_journal(request: Request, action_id: int) -> dict[str, Any]:
+        """Журнал заказа записи истории: проблемы, изменения, решения (docs/order-journal.md)."""
+        try:
+            return request.app.state.order_journal.for_history_action(action_id)
+        except OrderJournalNotFound as exc:
+            raise APIError(404, "history_not_found", "Запись истории или её заказ не найдены.") from exc
+
+    @application.get(
+        "/api/checks/{run_id}/orders/{order_id}/journal",
+        dependencies=[Depends(protected)],
+    )
+    def order_journal(request: Request, run_id: str, order_id: str) -> dict[str, Any]:
+        """Журнал заказа для внешней API (схема image-magic.order-journal)."""
+        try:
+            return request.app.state.order_journal.for_order(run_id, order_id)
+        except AmbiguousOrderError as exc:
+            raise APIError(409, "ambiguous_order", "Номер заказа неоднозначен; используйте aggregate_id.") from exc
+        except OrderJournalNotFound as exc:
+            if str(exc) == "run":
+                raise APIError(404, "run_not_found", "Запуск проверки не найден.") from exc
+            raise APIError(404, "order_not_found", "Заказ не найден.") from exc
 
     @application.get(
         "/api/checks/{run_id}/export.json", dependencies=[Depends(protected)]

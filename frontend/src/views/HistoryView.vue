@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { useAuthStore } from "../stores/auth.js";
 import { api } from "../services/api.js";
 import AppHeader from "../components/AppHeader.vue";
+import OrderJournal from "../components/OrderJournal.vue";
 
 const auth = useAuthStore();
 const router = useRouter();
@@ -20,6 +21,17 @@ async function load(page = 1) {
   }
   catch (value) { error.value = value.message; }
   finally { loading.value = false; }
+}
+// Журнал грузится при первом открытии и кэшируется по id записи истории.
+const journals = reactive({});
+const openJournals = reactive({});
+async function toggleJournal(item) {
+  openJournals[item.id] = !openJournals[item.id];
+  const state = journals[item.id];
+  if (!openJournals[item.id] || state?.loading || state?.data) return;
+  journals[item.id] = { loading: true, error: "", data: null };
+  try { journals[item.id] = { loading: false, error: "", data: await api.orderJournal(item.id) }; }
+  catch (value) { journals[item.id] = { loading: false, error: value.message || "Не удалось загрузить журнал заказа", data: null }; }
 }
 async function logout() { await auth.logout(); router.replace("/login"); }
 function newCheck() { router.push("/"); }
@@ -44,6 +56,12 @@ onMounted(load);
         <div v-if="item.previews.length" class="history-previews"><figure v-for="(preview, index) in item.previews" :key="preview.url" class="history-preview"><a :href="preview.url" target="_blank" :title="`Открыть превью заказа ${item.order_id}`"><img :src="preview.url" loading="lazy" decoding="async" :alt="`Превью ${preview.side || index + 1} заказа ${item.order_id}`"></a><figcaption>{{ preview.side === "face" ? "Лицо" : preview.side === "back" ? "Оборот" : preview.side === "return" ? "Для доработки" : `Макет ${index + 1}` }}</figcaption></figure></div>
         <div v-else class="history-preview"><span>Нет превью</span></div>
         <div class="history-data"><strong>№ {{ item.order_id }}</strong><span>Клиент: {{ item.customer_id || "—" }}</span><span :class="`history-action ${item.action}`">{{ label[item.action] }}</span><span v-if="item.status === 'failed'" class="history-status failed">Операция не выполнена</span><small>{{ formatDate(item.created_at) }}</small><p v-if="item.comment">{{ item.comment }}</p></div>
+        <button type="button" class="button secondary small history-journal-toggle" :aria-expanded="Boolean(openJournals[item.id])" @click="toggleJournal(item)">{{ openJournals[item.id] ? "Скрыть журнал" : "Журнал" }}</button>
+        <div v-if="openJournals[item.id]" class="history-journal">
+          <p v-if="journals[item.id]?.loading" class="history-journal-state">Загрузка журнала…</p>
+          <p v-else-if="journals[item.id]?.error" class="history-journal-state page-error" role="alert">{{ journals[item.id].error }}</p>
+          <OrderJournal v-else-if="journals[item.id]?.data" :journal="journals[item.id].data" />
+        </div>
       </article>
     </section>
     <nav v-if="pagination.total_pages > 1" class="history-pagination" aria-label="Страницы истории">
@@ -56,5 +74,5 @@ onMounted(load);
 </template>
 
 <style scoped>
-.history-page{max-width:1200px;margin:0 auto;padding:28px 20px 70px}.history-title{margin-bottom:18px}.history-title h1{margin:4px 0}.history-title p{color:var(--muted);margin:0}.history-filters{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr)) minmax(180px,2fr) auto;gap:10px;align-items:end;padding:14px;margin-bottom:16px}.history-filters label{display:grid;gap:5px}.history-list{display:grid;gap:9px}.history-item{display:flex;align-items:center;gap:14px;padding:10px}.history-previews{display:flex;gap:7px;flex:0 0 auto}.history-preview{width:110px;margin:0}.history-preview img{width:110px;height:74px;border-radius:7px;background:#fff;object-fit:contain;display:block}.history-preview a{display:block;border-radius:7px;overflow:hidden}.history-preview a:hover{box-shadow:0 0 0 2px var(--brand)}.history-preview span{width:110px;height:74px;border-radius:7px;background:#eef1f5;display:grid;place-items:center;color:var(--muted);font-size:10px}.history-preview figcaption{font-size:10px;color:var(--muted);text-align:center;margin-top:3px}.history-data{display:grid;gap:3px;min-width:0}.history-data span,.history-data small{color:var(--muted);font-size:12px}.history-data p{margin:4px 0 0;font-size:12px}.history-action{font-weight:800}.history-action.print{color:var(--green)}.history-action.reject{color:var(--red)}.history-status{font-weight:800}.history-status.failed{color:var(--red)}.history-pagination{display:flex;align-items:center;justify-content:center;gap:14px;margin-top:18px;color:var(--muted);font-size:12px}@media(max-width:760px){.history-filters{grid-template-columns:1fr 1fr}.history-search{grid-column:span 2}.history-item{align-items:flex-start}.history-preview,.history-preview img,.history-preview span{width:88px}.history-preview img,.history-preview span{height:60px}.history-pagination{gap:8px}}
+.history-page{max-width:1200px;margin:0 auto;padding:28px 20px 70px}.history-title{margin-bottom:18px}.history-title h1{margin:4px 0}.history-title p{color:var(--muted);margin:0}.history-filters{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr)) minmax(180px,2fr) auto;gap:10px;align-items:end;padding:14px;margin-bottom:16px}.history-filters label{display:grid;gap:5px}.history-list{display:grid;gap:9px}.history-item{display:flex;flex-wrap:wrap;align-items:center;gap:14px;padding:10px}.history-journal-toggle{margin-left:auto;align-self:flex-start}.history-journal{flex:1 0 100%;border-top:1px solid var(--line);padding-top:10px}.history-journal-state{margin:0;font-size:12px;color:var(--muted)}.history-previews{display:flex;gap:7px;flex:0 0 auto}.history-preview{width:110px;margin:0}.history-preview img{width:110px;height:74px;border-radius:7px;background:#fff;object-fit:contain;display:block}.history-preview a{display:block;border-radius:7px;overflow:hidden}.history-preview a:hover{box-shadow:0 0 0 2px var(--brand)}.history-preview span{width:110px;height:74px;border-radius:7px;background:#eef1f5;display:grid;place-items:center;color:var(--muted);font-size:10px}.history-preview figcaption{font-size:10px;color:var(--muted);text-align:center;margin-top:3px}.history-data{display:grid;gap:3px;min-width:0}.history-data span,.history-data small{color:var(--muted);font-size:12px}.history-data p{margin:4px 0 0;font-size:12px}.history-action{font-weight:800}.history-action.print{color:var(--green)}.history-action.reject{color:var(--red)}.history-status{font-weight:800}.history-status.failed{color:var(--red)}.history-pagination{display:flex;align-items:center;justify-content:center;gap:14px;margin-top:18px;color:var(--muted);font-size:12px}@media(max-width:760px){.history-filters{grid-template-columns:1fr 1fr}.history-search{grid-column:span 2}.history-item{align-items:flex-start}.history-preview,.history-preview img,.history-preview span{width:88px}.history-preview img,.history-preview span{height:60px}.history-pagination{gap:8px}}
 </style>
