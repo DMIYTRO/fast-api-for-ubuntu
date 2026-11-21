@@ -11,13 +11,20 @@ from services.callas.fix_checks import build_post_checks
 from services.callas.prepress import PrepressAnalyzer, WARN_FONTS_PROFILE
 from services.callas_fix import CallasFixError, CallasFixService
 from services.callas.prepress import PPI_PROFILE
-from tests.fake_callas import FakeCallasProcessClient, fonts_report_xml, make_separations, ppi_report_xml
+from tests.fake_callas import (
+    FakeCallasProcessClient,
+    fonts_report_xml,
+    make_separations,
+    make_tac_separations,
+    ppi_report_xml,
+)
 from tests.test_rgb_to_cmyk import make_pdf
 
 FONTS = CALLAS_PLANS["fonts_to_outlines"].profile
 BLACK = CALLAS_PLANS["black_to_rich"].profile
 CLIP = CALLAS_PLANS["remove_clipping"].profile
 DOWN = CALLAS_PLANS["downsample_images"].profile
+TAC = CALLAS_PLANS["reduce_tac"].profile
 
 
 def fake_compare(changed: float):
@@ -66,6 +73,7 @@ class Env:
             BLACK: lambda pdf, mode: {"summary": {"fixups_applied": 1}, "exit_code": 5, "xml": "<r/>", "fixed": self.fixed},
             CLIP: lambda pdf, mode: {"summary": {"fixups_applied": 1}, "exit_code": 5, "xml": "<r/>", "fixed": self.fixed},
             DOWN: lambda pdf, mode: {"summary": {"fixups_applied": 0}, "exit_code": 5, "xml": "<r/>", "fixed": self.fixed},
+            TAC: lambda pdf, mode: {"summary": {"fixups_applied": 2}, "exit_code": 5, "xml": "<r/>", "fixed": self.fixed},
             PPI_PROFILE: ppi_handler,
         }
         self.client = FakeCallasProcessClient(tmp / "jobs", self.profiles, separations_factory=seps)
@@ -286,3 +294,108 @@ def test_downsample_custom_profile_is_sent_to_callas(tmp_path):
     service.start(env.source, "downsample_images")
     assert service.execute(env.source, "downsample_images")["status"] == "ready"
     assert env.client.calls[0] == ("Custom/Downsample", "fix")
+
+
+# ----------------------------------------------------------------------------- TAC
+def tac_env(tmp_path, before, after, *, changed=4.5):
+    """``before`` / ``after`` — спецификации страниц ``make_tac_separations`` для исходника и результата."""
+    env = Env(tmp_path, changed=changed)
+
+    def seps(pdf, out):
+        return make_tac_separations(out, before if Path(pdf).name == "order.pdf" else after)
+
+    env.client.separations_factory = seps
+    return env
+
+
+def test_tac_plan_is_registered_with_deployed_profile_and_cmyk_requirement():
+    plan = CALLAS_PLANS["reduce_tac"]
+    assert plan.title == "Снижение суммарного покрытия до 300%"
+    assert plan.profile == "Image Magic/TAC 300 - CMYK and ICC CMYK - preserve spots"
+    assert plan.requires_cmyk is True and plan.mode == "fix"
+    assert "300%" in plan.description and "Плашечные цвета" in plan.description and "1153" in plan.description
+    assert "ВСЕ CMYK-цвета" in plan.warning and "превью" in plan.warning
+    assert plan.no_change_message
+    folder, name = plan.profile.split("/", 1)
+    assert folder == "Image Magic"
+    assert (Path(__file__).resolve().parent.parent / "callas_profiles" / f"{name}.kfpx").is_file()
+
+
+def test_tac_requires_rgb_converted_first_with_its_own_reason(tmp_path):
+    env = Env(tmp_path)
+    rgb = make_pdf(tmp_path / "PDF" / "rgb.pdf", (1, 0, 0))
+    with pytest.raises(CallasFixError) as error:
+        env.service.start(rgb, "reduce_tac")
+    assert error.value.code == "rgb_not_converted"
+    assert "покрытие RGB-объектов он не ограничит" in str(error.value) and "K100" not in str(error.value)
+    assert not env.client.calls
+
+
+def test_black_rgb_refusal_keeps_its_reason(tmp_path):
+    env = Env(tmp_path)
+    rgb = make_pdf(tmp_path / "PDF" / "rgb.pdf", (1, 0, 0))
+    with pytest.raises(CallasFixError) as error:
+        env.service.start(rgb, "black_to_rich")
+    assert str(error.value).endswith("затем запускайте этот план: иначе RGB-чёрный не станет K100.")
+
+
+def test_tac_post_check_reports_before_and_after(tmp_path):
+    env = tac_env(tmp_path, [{"cmyk": (100, 100, 100, 100), "share": 0.25}], [{"cmyk": (100, 80, 60, 60), "share": 0.25}])
+    state = env.run("reduce_tac")
+    assert state["status"] == "ready"
+    assert env.client.calls[0] == (TAC, "fix")
+    check = state["summary"]["post_check"]
+    assert check["kind"] == "reduce_tac" and check["level"] == "ok"
+    assert check["messages"][0] == "Макс. суммарное покрытие: было 400%, стало 300%."
+    assert check["max_before"] == 400.0 and check["max_after"] == 300.0 and check["remaining_pages"] == []
+    text = " ".join(check["messages"])
+    assert "50 ppi" in text and "PitStop" in text and "Изменено 4.5% площади" in text
+    assert "ВСЕ CMYK-цвета" in state["summary"]["plan_warning"]
+    assert env.source.is_file()
+
+
+def test_tac_post_check_warns_when_coverage_above_limit_remains(tmp_path):
+    env = tac_env(
+        tmp_path,
+        [{"cmyk": (100, 100, 100, 100)}, {"cmyk": (100, 100, 100, 100), "share": 0.5}],
+        [{"cmyk": (60, 60, 60, 60)}, {"cmyk": (80, 80, 80, 80), "share": 0.1}],
+    )
+    check = env.run("reduce_tac")["summary"]["post_check"]
+    assert check["level"] == "warning" and check["remaining_pages"] == [2]
+    assert check["messages"][0] == "Макс. суммарное покрытие: было 400%, стало 320%."
+    assert any("Покрытие выше 310% осталось: стр. 2 (10.0% площади)" in message for message in check["messages"])
+
+
+def test_tac_post_check_without_separations_is_a_warning_not_a_failure(env):
+    env.client.separations_factory = None  # служба callas без цветоделений
+    state = env.run("reduce_tac")
+    assert state["status"] == "ready"
+    check = state["summary"]["post_check"]
+    assert check["level"] == "warning"
+    assert check["messages"][0].startswith("Повторная проверка суммарного покрытия не выполнена: separations не настроены")
+    assert any("Изменено" in message for message in check["messages"])
+
+
+def test_tac_post_check_when_only_the_source_measurement_fails(tmp_path):
+    env = Env(tmp_path)
+
+    def seps(pdf, out):
+        if Path(pdf).name == "order.pdf":
+            raise RuntimeError("исходник не разобран")
+        return make_tac_separations(out, [{"cmyk": (60, 60, 60, 60)}])
+
+    env.client.separations_factory = seps
+    check = env.run("reduce_tac")["summary"]["post_check"]
+    assert check["level"] == "ok" and check["messages"][0] == "Макс. суммарное покрытие после исправления: 240%."
+    assert "max_before" not in check
+
+
+def test_tac_nothing_to_recalculate_is_reported(env):
+    env.profiles[TAC] = lambda pdf, mode: {"exit_code": 0, "xml": "<r/>"}
+    state = env.run("reduce_tac")
+    assert state["status"] == "failed" and state["error"] == CALLAS_PLANS["reduce_tac"].no_change_message
+
+
+def test_tac_uses_exit_code_when_report_has_no_fixup_counters(env):
+    env.profiles[TAC] = lambda pdf, mode: {"exit_code": 5, "xml": "<r/>", "fixed": env.fixed}
+    assert env.run("reduce_tac")["status"] == "ready"

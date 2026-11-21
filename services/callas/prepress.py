@@ -4,7 +4,8 @@
   (тип, имя, встроен ли), а не срабатывания по текстовым объектам;
 * разрешение: стандартный профиль «List color and grayscale images not within 250 to 450 ppi»,
   фильтр max(v_ppi, h_ppi) > предела (500) с допуском 0.5; однобитные растры отдельно;
-* плашка 100% K: цветоделения ``sep_process`` и доля площади (см. ``black_solid``).
+* плашка 100% K: цветоделения ``sep_process`` и доля площади (см. ``black_solid``);
+* суммарное покрытие (``check_tac``, см. ``tac``) — только для проверки результата исправления.
 
 Результат — словарь для заказа (``order.prepress``): у каждой проверки ``status`` (``ok`` или
 ``failed`` с ``error``) и готовое сообщение оператору ``message``. Сбой проверки заказ не роняет.
@@ -20,6 +21,7 @@ from typing import Any
 from services.callas.analysis import run_analysis
 from services.callas.black_solid import detect_black_solid
 from services.callas.prepress_reports import fonts_report, high_ppi_report
+from services.callas.tac import TAC_LIMIT_PERCENT, measure_tac
 from services.issue_groups import plural_ru
 
 logger = logging.getLogger("image_magic.callas")
@@ -47,8 +49,10 @@ class PrepressAnalyzer:
         high_ppi_limit: float = 500.0,
         black_solid_threshold: float = 0.25,
         black_solid_fix_threshold: float = 0.01,
+        tac_limit: float = TAC_LIMIT_PERCENT,
     ) -> None:
         self.client = client
+        self.tac_limit = tac_limit
         self.high_ppi_limit = high_ppi_limit
         self.black_solid_threshold = black_solid_threshold
         # Кнопка «в составной чёрный» доступна уже при небольшой доле чистого K100 (не выше порога плашки).
@@ -132,6 +136,15 @@ class PrepressAnalyzer:
                 "при необходимости скорректируйте вручную."
             )
         return {**result, "message": message}
+
+    # --------------------------------------------------------------- tac
+    def check_tac(self, pdf: Path | str, label: str) -> dict[str, Any]:
+        """Суммарное покрытие по цветоделениям; не входит в общий прогон заказа (только повторная проверка)."""
+        try:
+            return measure_tac(self.client, pdf, label, self.tac_limit)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("prepress.tac_failed label=%s error=%s", label, exc)
+            return _failed(exc)
 
     # -------------------------------------------------------------- all
     def __call__(self, pdf: Path | str, label: str, previous: dict[str, Any] | None = None) -> dict[str, Any]:

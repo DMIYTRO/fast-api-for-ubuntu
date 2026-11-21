@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import shutil
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,8 @@ from services.callas.client import deterministic_job_id
 
 DARK_LEVEL = 30
 WHITE_LEVEL = 225
+#: Разрешение цветоделений (ppi): грубо, но быстро; мелкие объекты усредняются с фоном.
+SEPARATIONS_PPI = 50
 
 
 def page_shares(black: Path, cyan: Path, magenta: Path, yellow: Path) -> tuple[float, float]:
@@ -81,14 +85,15 @@ def analyze_separations(
     }
 
 
-def detect_black_solid(
-    client: Any, pdf: Path | str, threshold: float, label: str, *, fix_threshold: float | None = None
-) -> dict[str, Any]:
+@contextmanager
+def separation_files(
+    client: Any, pdf: Path | str, label: str, *, resolution: int = SEPARATIONS_PPI
+) -> Iterator[dict[tuple[int, str], Path]]:
+    """Цветоделения ``{(страница, краска): PNG}``; задание callas и его папка удаляются на выходе."""
     source = Path(pdf)
     job_id = deterministic_job_id(f"sep-{label}", str(source), uuid.uuid4().hex[:12])
     try:
-        files = client.separations(source, resolution=50, job_id=job_id)
-        return {"status": "ok", **analyze_separations(files, threshold, fix_threshold)}
+        yield client.separations(source, resolution=resolution, job_id=job_id)
     finally:
         try:
             client.delete(job_id)
@@ -97,3 +102,10 @@ def detect_black_solid(
         job_dir = getattr(client, "job_dir", None)
         if job_dir is not None:
             shutil.rmtree(job_dir(job_id), ignore_errors=True)
+
+
+def detect_black_solid(
+    client: Any, pdf: Path | str, threshold: float, label: str, *, fix_threshold: float | None = None
+) -> dict[str, Any]:
+    with separation_files(client, pdf, label) as files:
+        return {"status": "ok", **analyze_separations(files, threshold, fix_threshold)}

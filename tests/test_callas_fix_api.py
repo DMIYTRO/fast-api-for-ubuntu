@@ -109,7 +109,7 @@ class EnabledTests(CallasFixApiTests):
         plans = self.client.get("/api/callas/plans?direction=offset").json()["plans"]
         self.assertEqual(
             [plan["key"] for plan in plans],
-            ["size_correction", "fonts_to_outlines", "black_to_rich", "remove_clipping", "downsample_images"],
+            ["size_correction", "fonts_to_outlines", "black_to_rich", "remove_clipping", "downsample_images", "reduce_tac"],
         )
         self.assertEqual(self.client.get("/api/callas/plans?direction=nope").json()["plans"], [])
 
