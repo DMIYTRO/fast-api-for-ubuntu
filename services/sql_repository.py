@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from sqlalchemy import exists, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
@@ -606,6 +606,42 @@ class SqlRunRepository:
                 key=lambda event: event.id,
             )
             return events if limit is None else events[: int(limit)]
+
+    def list_order_events(
+        self, run_id: str, *, order_id: str, event_types: Iterable[str]
+    ) -> list[RunEvent]:
+        """Events of the given types that mention ``order_id`` (live + archive, by id).
+
+        The payload filter is a cheap SQL pre-filter on the order number; callers
+        match ``aggregate_id`` exactly on the parsed payload.
+        """
+        types = tuple(event_types)
+        if not types:
+            return []
+        needle = str(order_id)
+        with self._session_factory() as session:
+            archived = session.scalars(
+                select(ArchivedRunEvent)
+                .where(
+                    ArchivedRunEvent.run_id == run_id,
+                    ArchivedRunEvent.event_type.in_(types),
+                    ArchivedRunEvent.payload_json.contains(needle, autoescape=True),
+                )
+                .order_by(ArchivedRunEvent.id)
+            ).all()
+            live = session.scalars(
+                select(SqlRunEvent)
+                .where(
+                    SqlRunEvent.run_id == run_id,
+                    SqlRunEvent.event_type.in_(types),
+                    SqlRunEvent.payload_json.contains(needle, autoescape=True),
+                )
+                .order_by(SqlRunEvent.id)
+            ).all()
+            return sorted(
+                (self._event_from_record(record) for record in (*archived, *live)),
+                key=lambda event: event.id,
+            )
 
     def archive_old_terminal_events(
         self,
