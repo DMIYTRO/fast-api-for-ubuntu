@@ -705,7 +705,14 @@ def _callas_fix_service(settings: Settings):
     plans = with_profile_overrides(
         CALLAS_PLANS, {"downsample_images": settings.callas_downsample_profile}
     )
-    return CallasFixService(client, plans, post_checks=build_post_checks(analyzer))
+    return CallasFixService(
+        client,
+        plans,
+        post_checks=build_post_checks(analyzer),
+        # TAC и составной чёрный по диагностическому PDF (собран «как есть», RGB не переведён):
+        # фикс сам переводит RGB тем же профилем, что и автоконвертация.
+        rgb_converter=_callas_rgb_to_cmyk_converter(settings, client),
+    )
 
 
 def _lowres_preview_service(settings: Settings):

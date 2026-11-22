@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -288,8 +289,13 @@ class CallasFixService:
         compare: Callable[..., Any] = build_fix_comparison,
         post_checks: Mapping[str, Callable[[Path, Path, dict[str, Any]], dict[str, Any]]] | None = None,
         raster_to_pdf: Callable[..., Any] | None = None,
+        rgb_converter: Callable[[Path, Path, str], Any] | None = None,
     ) -> None:
         self._client = client
+        # RGB → CMYK тем же профилем callas, что и автоконвертация (``converter(src, dst, label)``).
+        # Есть — план с ``requires_cmyk`` сам переводит RGB перед запуском (диагностический PDF
+        # собирается «как есть», RGB в нём остаётся); нет — такой PDF отклоняется, как раньше.
+        self._rgb_converter = rgb_converter
         # Растр → одностраничный PDF (как при обычной сборке заказа); шов для тестов.
         self._raster_to_pdf = raster_to_pdf or _default_raster_to_pdf
         self._post_checks = dict(post_checks or {})
@@ -353,8 +359,9 @@ class CallasFixService:
             raise CallasFixError("План недоступен для выбранного направления.", code="callas_plan_direction")
         if not pdf.is_file():
             raise CallasFixError("PDF заказа не найден.", status_code=404, code="pdf_not_found")
-        if plan.requires_cmyk and not is_raster_source(pdf):
+        if plan.requires_cmyk and not is_raster_source(pdf) and self._rgb_converter is None:
             # Растр сначала собирается в PDF (в ``execute``); там же проверяется RGB.
+            # С конвертером RGB переводится в ``execute`` перед планом.
             self._require_no_rgb(pdf, plan.cmyk_reason)
         key = str(fix_dir_for(pdf))
         with self._lock:
@@ -409,6 +416,45 @@ class CallasFixService:
                 code="rgb_not_converted",
             )
 
+    def _convert_rgb(self, pdf: Path, plan: CallasPlan, label: str) -> dict[str, Any] | None:
+        """Перевести RGB в *pdf* (локальная копия) в CMYK на месте; ``None`` — RGB не было.
+
+        Тот же путь, что у автоконвертации итогового PDF (``convert_rgb_to_cmyk``): результат
+        принимается, только если RGB не осталось и число страниц не изменилось.
+        """
+        from core.pdf_inspector import find_rgb_pages
+        from services.callas.color_conversion import STATUS_CONVERTED, convert_rgb_to_cmyk
+
+        try:
+            pages = find_rgb_pages(pdf)
+        except Exception as exc:  # noqa: BLE001
+            raise CallasFixError(
+                f"Не удалось проверить цвет PDF перед исправлением: {exc}", code="rgb_check_failed"
+            ) from exc
+        if not pages:
+            return None
+        record = convert_rgb_to_cmyk(pdf, self._rgb_converter, f"fix-{label}")
+        if not record or record.get("status") != STATUS_CONVERTED or record.get("reason") != "rgb":
+            error = (record or {}).get("error") or "конвертация не выполнена"
+            raise CallasFixError(
+                "В PDF есть RGB (стр. " + ", ".join(str(page) for page in pages) + "), и перевести его "
+                f"в CMYK перед планом не удалось: {error}. "
+                + (f"План нельзя запускать по RGB: {plan.cmyk_reason}." if plan.cmyk_reason else ""),
+                status_code=409,
+                code="rgb_not_converted",
+            )
+        profile = record.get("profile") or getattr(self._rgb_converter, "profile", None)
+        page_text = ", ".join(str(page) for page in pages)
+        return {
+            "pages": list(pages),
+            "profile": profile,
+            "message": (
+                f"Перед исправлением RGB переведён в CMYK (стр. {page_text})"
+                + (f" профилем «{profile}»" if profile else "")
+                + ", как при автоконвертации: на «после» видны оба изменения."
+            ),
+        }
+
     def execute(
         self,
         pdf_path: Path | str,
@@ -435,11 +481,23 @@ class CallasFixService:
             if is_raster_source(pdf):
                 source_pdf = self._build_source_pdf(pdf, directory, strip_icc_cmyk=strip_icc_cmyk)
                 state["source_pdf"] = SOURCE_PDF_NAME
-                if plan.requires_cmyk:
+                if plan.requires_cmyk and self._rgb_converter is None:
                     self._require_no_rgb(source_pdf, plan.cmyk_reason)
-            result = self._client.process(
-                source_pdf, plan.profile, "fix", job_id=job_id, report=("xml",), keep_name=True
-            )
+            rgb_converted: dict[str, Any] | None = None
+            plan_input = source_pdf
+            with tempfile.TemporaryDirectory(prefix="callas-fix-") as snapshot_dir:
+                if plan.requires_cmyk and self._rgb_converter is not None:
+                    # RGB переводится в локальной копии: mtime свежего файла на CIFS-шаре
+                    # «плывёт», и клиент callas отклоняет результат (как в
+                    # ``color_conversion._run_conversion``). Без RGB план идёт по исходнику.
+                    snapshot = Path(snapshot_dir) / source_pdf.name
+                    shutil.copyfile(source_pdf, snapshot)
+                    rgb_converted = self._convert_rgb(snapshot, plan, pdf.stem)
+                    if rgb_converted is not None:
+                        plan_input = snapshot
+                result = self._client.process(
+                    plan_input, plan.profile, "fix", job_id=job_id, report=("xml",), keep_name=True
+                )
             callas_summary = dict(result.summary)
             applied = int(callas_summary.get("fixups_applied") or 0)
             failed = int(callas_summary.get("fixups_failed") or 0)
@@ -488,6 +546,8 @@ class CallasFixService:
             }
             if plan.warning:
                 summary["plan_warning"] = plan.warning
+            if rgb_converted is not None:
+                summary["rgb_converted"] = rgb_converted
             if failed > 0:
                 summary["partial_failure"] = plan.unfixable_message or (
                     "Часть исправлений callas не удалось выполнить."
@@ -502,6 +562,13 @@ class CallasFixService:
                         "kind": plan_key, "level": "warning",
                         "messages": [f"Повторная проверка результата не выполнена: {exc}"],
                     }
+            if rgb_converted is not None:
+                note = rgb_converted["message"]
+                post_check = summary.get("post_check")
+                if isinstance(post_check, dict):
+                    post_check["messages"] = [note, *(post_check.get("messages") or [])]
+                else:
+                    summary["post_check"] = {"kind": plan_key, "level": "ok", "messages": [note]}
             state.update(
                 status=STATUS_READY,
                 finished_at=_now(),
