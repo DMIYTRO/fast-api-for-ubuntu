@@ -40,3 +40,6 @@ frontend/.vite/
 
 # Claude agent worktrees (local checkouts, not submodules)
 .claude/worktrees/
+
+# Резервные копии БД не коммитим
+image_magic.db.bak*
