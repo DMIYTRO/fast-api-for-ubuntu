@@ -4,6 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#111a2c" />
+    <script>
+      // Тема до первой отрисовки, чтобы не мигал светлый фон (см. src/theme.js).
+      (function () {
+        try {
+          var t = localStorage.getItem("image-magic-theme");
+          if (t !== "light" && t !== "dark") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          document.documentElement.dataset.theme = t;
+        } catch (e) {}
+      })();
+    </script>
     <title>PrePress Flow — допечатная проверка</title>
   </head>
   <body>

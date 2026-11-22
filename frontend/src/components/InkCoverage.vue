@@ -77,19 +77,19 @@ const kindLabel = (kind) => inkCoverageFlagLabel({ kind });
 </template>
 
 <style scoped>
-.ink-coverage{padding:10px;background:#f7f8fb;border-radius:9px;font-size:10px}
+.ink-coverage{padding:10px;background:var(--surface-2);border-radius:9px;font-size:10px}
 .ink-coverage header{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px}
 .ink-coverage header strong{font-size:10px}
-.ink-coverage .muted{color:#8a94a6}
-.ink-flag{padding:2px 6px;border-radius:99px;background:#fff0f1;color:#a82e3b;font-weight:850;cursor:help}
-.ink-error{margin:0;color:#a82e3b}
+.ink-coverage .muted{color:var(--faint)}
+.ink-flag{padding:2px 6px;border-radius:99px;background:var(--red-bg);color:var(--red-ink);font-weight:850;cursor:help}
+.ink-error{margin:0;color:var(--red-ink)}
 .ink-table{width:100%;border-collapse:collapse}
-.ink-table th,.ink-table td{padding:4px 6px;text-align:left;border-bottom:1px solid #e3e7ee;white-space:nowrap}
-.ink-table thead th{font-size:8px;text-transform:uppercase;color:#8a94a6}
+.ink-table th,.ink-table td{padding:4px 6px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+.ink-table thead th{font-size:8px;text-transform:uppercase;color:var(--faint)}
 .ink-table tbody tr:last-child>*{border-bottom:0}
-.ink-table tr.overflow td b,.ink-table tr.underflow td b{color:#a82e3b}
-.ink-table tr.light_areas td.ink-light{color:#a82e3b;font-weight:800}
-.ink-table td i{margin-left:4px;font-style:normal;font-weight:800;color:#a82e3b}
+.ink-table tr.overflow td b,.ink-table tr.underflow td b{color:var(--red-ink)}
+.ink-table tr.light_areas td.ink-light{color:var(--red-ink);font-weight:800}
+.ink-table td i{margin-left:4px;font-style:normal;font-weight:800;color:var(--red-ink)}
 .ink-list{max-width:260px;overflow:hidden;text-overflow:ellipsis}
 .ink-coverage small{display:block;margin-top:6px}
 </style>

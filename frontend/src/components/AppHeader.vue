@@ -2,6 +2,8 @@
 // showFetch/fetchBusy — кнопка «Получить заказ» (только на рабочем пульте, см. OrderFetch.vue).
 defineProps({ path: String, status: String, connection: String, showFetch: Boolean, fetchBusy: Boolean });
 defineEmits(["new-check", "fetch-orders", "logout"]);
+import { theme, toggleTheme } from "../theme.js";
+
 const labels = { queued: "В очереди", running: "Проверка идёт", waiting_confirmation: "Нужно решение", completed: "Готово", failed: "Ошибка", cancelled: "Отменено" };
 </script>
 
@@ -29,6 +31,11 @@ const labels = { queued: "В очереди", running: "Проверка идё�
       <RouterLink class="button ghost small" to="/history">История</RouterLink>
       <button v-if="showFetch" class="button ghost small order-fetch-button" type="button" :disabled="fetchBusy" :aria-busy="fetchBusy" title="Перенести файлы заказов из сетевых папок в рабочую папку" @click="$emit('fetch-orders')">Получить заказ</button>
       <button class="button primary small" @click="$emit('new-check')">＋ Новая проверка</button>
+      <button class="button ghost small theme-toggle" type="button" :aria-pressed="theme === 'dark'" :title="theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'" @click="toggleTheme">
+        <svg v-if="theme === 'dark'" viewBox="0 0 20 20" aria-hidden="true" focusable="false"><circle cx="10" cy="10" r="3.4" /><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4" /></svg>
+        <svg v-else viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M16.5 11.6A6.6 6.6 0 0 1 8.4 3.5a6.6 6.6 0 1 0 8.1 8.1Z" /></svg>
+        <span class="visually-hidden">{{ theme === "dark" ? "Светлая тема" : "Тёмная тема" }}</span>
+      </button>
       <button class="button ghost small" @click="$emit('logout')">Выйти</button>
     </div>
   </header>
