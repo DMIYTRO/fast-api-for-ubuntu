@@ -220,15 +220,17 @@ class LowResPreviewService:
             return self._locks.setdefault(str(key), threading.Lock())
 
     def _build(self, source: Path, tmp: Path, digest: str) -> dict[str, Any]:
-        copy = tmp / "source.pdf"
-        shutil.copyfile(source, copy)
-        if _sha256(copy) != digest:
+        # Callas получает сам PDF заказа: клиент копирует вход в папку задания и сверяет
+        # размер и mtime до и после. Своя свежая копия на CIFS-шаре здесь не годится:
+        # mtime только что записанного файла сервер SMB меняет позже, и клиент отклонял
+        # результат («изменился во время обработки callas»).
+        marked = tmp / "marked.pdf"
+        marked_count = self._mark(source, marked, digest)
+        if _sha256(source) != digest:
             raise LowResPreviewError(
-                "PDF заказа изменился во время копирования: повторите через несколько секунд.",
+                "PDF заказа изменился во время разметки: повторите через несколько секунд.",
                 status_code=409, code="pdf_changed",
             )
-        marked = tmp / "marked.pdf"
-        marked_count = self._mark(copy, marked)
         page_sizes = self._page_sizes(marked)
         pages = self._render(marked, tmp / "pages", page_sizes)
         self._compose(pages, tmp / "lowres.jpg")
@@ -248,10 +250,12 @@ class LowResPreviewService:
             "captions": bool(self._font) and len(pages) == 2,
         }
 
-    def _mark(self, copy: Path, marked: Path) -> int:
+    def _mark(self, source: Path, marked: Path, digest: str | None = None) -> int:
         job_id = f"lowres-{uuid.uuid4().hex[:16]}"
         try:
-            result = self._client.process(copy, self.profile, "fix", job_id=job_id, report=("xml",))
+            result = self._client.process(
+                source, self.profile, "fix", job_id=job_id, report=("xml",), source_sha256=digest
+            )
             applied = int((result.summary or {}).get("fixups_applied") or 0)
             if applied == 0:
                 raise LowResPreviewError(NO_IMAGES_MESSAGE, code="lowres_no_images")

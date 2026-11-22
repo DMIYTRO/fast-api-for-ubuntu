@@ -57,6 +57,7 @@ class FakeCallas:
         self.error = error
         self.render_error: Exception | None = None
         self.calls: list[tuple] = []
+        self.process_inputs: list[tuple[Path, str | None]] = []
 
     def job_dir(self, job_id: str) -> Path:
         return self.root / job_id
@@ -64,8 +65,9 @@ class FakeCallas:
     def delete(self, job_id: str) -> None:
         self.calls.append(("delete", job_id))
 
-    def process(self, pdf, profile, mode, *, job_id=None, report=("xml",), **_kwargs):
+    def process(self, pdf, profile, mode, *, job_id=None, report=("xml",), **kwargs):
         self.calls.append(("process", Path(pdf).name, profile, mode))
+        self.process_inputs.append((Path(pdf), kwargs.get("source_sha256")))
         if self.error is not None:
             raise self.error
         out = self.job_dir(job_id) / "out"
@@ -120,7 +122,7 @@ def test_duplex_order_gets_one_side_by_side_image(env):
     assert result["images"] is None  # отчёт профиля не содержит ppi отдельных изображений
     assert result["threshold_ppi"] == 250 and result["pitstop_threshold_ppi"] == 275
     assert result["legend"] == LEGEND and result["profile"] == PROFILE
-    assert ("process", "source.pdf", PROFILE, "fix") in env.client.calls
+    assert ("process", "order.pdf", PROFILE, "fix") in env.client.calls
     paths = output_paths(env.root, "1001")
     with Image.open(paths["image"]) as image:
         assert image.format == "JPEG"
@@ -406,3 +408,17 @@ class LowResPreviewDisabledTests(LowResPreviewApiTests):
     test_refused_while_order_in_progress = None
     test_callas_error_is_an_actionable_message = None
     test_files_missing_before_generation = None
+
+
+def test_callas_gets_the_order_pdf_itself_not_a_fresh_share_copy(env):
+    """Регрессия: свежая копия на CIFS-шаре меняла mtime после записи, и клиент callas
+    отклонял результат («изменился во время обработки callas»). Вход — сам PDF заказа
+    с уже посчитанным SHA-256; клиент сам копирует его в папку задания."""
+    import hashlib
+
+    pdf = make_pdf(env.root / "PDF" / "Checked" / "order.pdf", 90, 50, pages=1)
+    env.service.generate(pdf, input_root=env.root, storage_id="1001")
+
+    [(source, digest)] = env.client.process_inputs
+    assert source == pdf
+    assert digest == hashlib.sha256(pdf.read_bytes()).hexdigest()
