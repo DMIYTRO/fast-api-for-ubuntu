@@ -3,6 +3,7 @@ import { api } from "../services/api.js";
 import { connectRunEvents } from "../services/events.js";
 import { applyRunFileProgressEvent, createRunFileProgress } from "./runFileProgress.js";
 import { orderIdentity, sameOrderIdentity } from "./orderIdentity.js";
+import { clearReturnDraft, defaultReturnComment } from "./returnDrafts.js";
 
 const list = (data) => Array.isArray(data) ? data : (data?.items || data?.orders || []);
 const running = (status) => ["queued", "running", "waiting_confirmation", "cancelling"].includes(status);
@@ -120,6 +121,16 @@ export const useChecksStore = defineStore("checks", {
       return [...kits.values()];
     },
     selectedOrders: (state) => state.selected.map((id) => state.selectedOrderSnapshots[id] || state.orders.find((order) => orderIdentity(order) === String(id) || String(order.order_id ?? order.id) === String(id))).filter(Boolean),
+    // Комментарии возврата выбранных заказов, включая предложения проверки для
+    // заказов, чьи карточки сейчас не на экране.
+    selectedReturnComments() {
+      const comments = {};
+      for (const order of this.selectedOrders) {
+        const value = this.returnCommentFor(order);
+        if (value) comments[orderIdentity(order)] = value;
+      }
+      return comments;
+    },
     printBlockReason() { return this.selectedOrders.filter((order) => !isOrderSendable(order)).map(printBlockMessage).filter(Boolean).join(" ") || "В печать можно отправить только зелёные и жёлтые заказы, а заказы с ошибками — при наличии готового PDF и с подтверждением"; },
     canPrint() { return this.selectedOrders.length > 0 && this.selectedOrders.every(isOrderSendable); },
     // Среди выбранных есть красные заказы: перед отправкой нужен диалог подтверждения.
@@ -415,6 +426,11 @@ export const useChecksStore = defineStore("checks", {
         design_cost: designCost || "0",
       };
     },
+    returnCommentFor(order) {
+      const id = orderIdentity(order);
+      return this.returnComments[id] ?? this.returnComments[String(order.order_id ?? order.id)] 
+        ?? defaultReturnComment(this.orders.find((value) => orderIdentity(value) === id) || order, id);
+    },
     setReturnComment(order, comment) {
       const id = orderIdentity(order);
       if (comment) this.returnComments[id] = comment;
@@ -453,7 +469,7 @@ export const useChecksStore = defineStore("checks", {
             groupResponses.push(await api.prepareReject({
               order_ids: [orderId],
               run_id,
-              comment: [this.returnComments[identity] ?? this.returnComments[String(order.order_id ?? order.id)], comment].filter(Boolean).join("\n"),
+              comment: [this.returnCommentFor(order), comment].filter(Boolean).join("\n"),
               ...(this.returnDesign[identity] || this.returnDesign[String(order.order_id ?? order.id)] || { design: true, design_cost: "0" }),
               conflict_strategy: conflictStrategy,
             }));
@@ -500,6 +516,7 @@ export const useChecksStore = defineStore("checks", {
         completedIds.forEach((id) => {
           delete this.returnComments[id];
           delete this.returnDesign[id];
+          clearReturnDraft(id);
         });
         this.selected = this.selected.filter((id) => !completedIds.has(String(id)));
         completedIds.forEach((id) => delete this.selectedOrderSnapshots[id]);

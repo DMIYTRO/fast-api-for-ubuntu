@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useChecksStore, isOrderPrintable, isOrderForcePrintable } from "./checks.js";
 import { orderIdentity } from "./orderIdentity.js";
+import { peekReturnDraft, returnDraft } from "./returnDrafts.js";
 import { api } from "../services/api.js";
 import * as events from "../services/events.js";
 
@@ -552,6 +553,29 @@ describe("checks store", () => {
     expect(store.orders[0].status).toBe("returned_for_rework");
     expect(store.filteredOrders).toEqual([]);
     expect(store.selected).toEqual([]);
+  });
+
+  it("uses pre-selected check suggestions for orders whose card is not mounted", async () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1" };
+    const suggestion = { text: "Низкое разрешение изображений", category: "Разрешение", confidence: "high", preselect: true, evidence: "PitStop 1150: 197 ppi" };
+    store.orders = [
+      { order_id: "300", status: "error", return_suggestions: [suggestion, { ...suggestion, text: "Макет в RGB", preselect: false }] },
+      { order_id: "400", status: "error", return_suggestions: [suggestion] },
+    ];
+    store.selected = store.orders.map(orderIdentity);
+    // Оператор снял все предложения у второго заказа: предложение не возвращается.
+    returnDraft(orderIdentity(store.orders[1])).touched = true;
+    expect(store.selectedReturnComments).toEqual({ [orderIdentity(store.orders[0])]: "Низкое разрешение изображений." });
+    const reject = vi.spyOn(api, "prepareReject").mockImplementation(async ({ order_ids }) => ({
+      items: [{ order_id: order_ids[0], status: "prepared" }],
+    }));
+    vi.spyOn(api, "orders").mockResolvedValue({ items: store.orders });
+
+    await store.act("reject", "");
+
+    expect(reject.mock.calls.map(([body]) => body.comment)).toEqual(["Низкое разрешение изображений.", ""]);
+    expect(peekReturnDraft(orderIdentity(store.orders[1]))).toBeUndefined();
   });
 
   it("keeps failed rework orders selected so they can be retried", async () => {
