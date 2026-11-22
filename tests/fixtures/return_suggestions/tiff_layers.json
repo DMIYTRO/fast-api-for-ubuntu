@@ -1,0 +1,27 @@
+{
+  "description": "TIFF со слоями",
+  "source": "анонимизированный production-возврат (идентификаторы и пути заменены)",
+  "dto": {
+    "order_id": "90000003",
+    "status": "returned_for_rework",
+    "files": [
+      {
+        "name": "01_X(170x80)_(1000-90000003)-back.tif",
+        "errors": []
+      },
+      {
+        "name": "02_X(170x80)_(1000-90000003)-face.tif",
+        "errors": [
+          "В TIFF найдено несведённых слоёв: 2; требуется ручное решение"
+        ]
+      }
+    ]
+  },
+  "expected": [
+    {
+      "signal": "tiff_layers",
+      "confidence": "high",
+      "preselect": true
+    }
+  ]
+}

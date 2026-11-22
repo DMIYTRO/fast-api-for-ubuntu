@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -37,17 +38,22 @@ class _ReasonsParser(HTMLParser):
             self._parts.append(data)
 
 
-def load_return_reasons(template_path: Path | None = None) -> list[dict[str, str]]:
-    """Возвращает уникальные причины возврата с категорией из HTML-шаблона."""
-    if template_path is None:
-        template_path = Path(__file__).resolve().parents[1] / "Цифра - Загальне.html"
-    if not template_path.is_file():
-        return []
+#: Разобранный справочник по пути: ``path -> ((mtime_ns, size), items)``. Справочник читается
+#: на каждый DTO заказа (подсказки причин возврата), поэтому разбор HTML кэшируется и
+#: повторяется только после изменения файла.
+_CACHE: dict[Path, tuple[tuple[int, int], tuple[tuple[str, str], ...]]] = {}
+_CACHE_LOCK = threading.Lock()
 
+
+def _default_template_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "Цифра - Загальне.html"
+
+
+def _parse_reasons(template_path: Path) -> tuple[tuple[str, str], ...]:
     parser = _ReasonsParser()
     parser.feed(template_path.read_text(encoding="utf-8-sig"))
 
-    result: list[dict[str, str]] = []
+    result: list[tuple[str, str]] = []
     seen: set[str] = set()
     for item in parser.items:
         normalized = item["text"].strip().rstrip(".;")
@@ -55,5 +61,30 @@ def load_return_reasons(template_path: Path | None = None) -> list[dict[str, str
         if not normalized or key in seen:
             continue
         seen.add(key)
-        result.append({"category": item["category"], "text": normalized})
-    return result
+        result.append((item["category"], normalized))
+    return tuple(result)
+
+
+def load_return_reasons(template_path: Path | None = None) -> list[dict[str, str]]:
+    """Возвращает уникальные причины возврата с категорией из HTML-шаблона.
+
+    Разбор кэшируется по пути и ``(mtime, размер)`` файла; каждый вызов возвращает
+    новые словари, так что изменение результата не портит кэш.
+    """
+    path = template_path if template_path is not None else _default_template_path()
+    try:
+        stat = path.stat()
+    except OSError:
+        return []
+    if not path.is_file():
+        return []
+    signature = (stat.st_mtime_ns, stat.st_size)
+    with _CACHE_LOCK:
+        cached = _CACHE.get(path)
+    if cached is None or cached[0] != signature:
+        items = _parse_reasons(path)
+        with _CACHE_LOCK:
+            _CACHE[path] = (signature, items)
+    else:
+        items = cached[1]
+    return [{"category": category, "text": text} for category, text in items]

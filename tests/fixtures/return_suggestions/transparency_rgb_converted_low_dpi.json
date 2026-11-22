@@ -1,0 +1,77 @@
+{
+  "description": "RGB переведён в CMYK — rgb_converted medium (без отметки), прозрачность 3004 — medium и её вариант, низкое разрешение",
+  "source": "анонимизированный production-возврат (идентификаторы и пути заменены)",
+  "dto": {
+    "order_id": "90000006",
+    "status": "returned_for_rework",
+    "processing_errors": [
+      "PDF страница 1: effective DPI 211.3; требуется не менее 250",
+      "PDF страница 2: effective DPI 133.9; требуется не менее 250"
+    ],
+    "revision_check": {
+      "errors": [
+        "PDF страница 1: effective DPI 211.3; требуется не менее 250",
+        "PDF страница 2: effective DPI 133.9; требуется не менее 250"
+      ]
+    },
+    "files": [
+      {
+        "name": "01_X(336x186)_(1000-90000006).pdf",
+        "errors": [
+          "PDF страница 1: effective DPI 212.1; требуется не менее 250",
+          "PDF страница 2: effective DPI 134.5; требуется не менее 250",
+          "PDF: размер 190.5x338.7 мм; ожидается 190.0x340.0 мм: после коррекции эффективное разрешение 211 DPI ниже 250 DPI"
+        ],
+        "expected_mm": [
+          340.0,
+          190.0
+        ]
+      }
+    ],
+    "pitstop": {
+      "execution_status": "completed",
+      "issues": [
+        {
+          "action_id": "3004",
+          "severity": "error",
+          "message": "Transparent objects have been found (6x on page 2)"
+        },
+        {
+          "action_id": "1150",
+          "severity": "error",
+          "message": "Image resolution is 135 x 134...213 x 211 ppi - color or grayscale image is less than 275 ppi (2x on pages 1-2)"
+        },
+        {
+          "action_id": "2079",
+          "severity": "warning",
+          "message": "Clipping objects found (15x on pages 1-2)"
+        }
+      ]
+    },
+    "color_conversion": {
+      "status": "converted"
+    }
+  },
+  "expected": [
+    {
+      "signal": "low_dpi",
+      "confidence": "high",
+      "preselect": true
+    },
+    {
+      "signal": "rgb_converted",
+      "confidence": "medium",
+      "preselect": false
+    },
+    {
+      "signal": "transparency",
+      "confidence": "medium",
+      "preselect": false
+    },
+    {
+      "signal": "transparency",
+      "confidence": "medium",
+      "preselect": false
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "description": "PDF с низким effective DPI; прозрачность и клиппинг PitStop понижены политикой basic — не подсказываются",
+  "source": "анонимизированный production-возврат (идентификаторы и пути заменены)",
+  "dto": {
+    "order_id": "90000000",
+    "status": "returned_for_rework",
+    "files": [
+      {
+        "name": "01_X(K)(80x45)_(1000-90000000).pdf",
+        "errors": [
+          "PDF страница 1: effective DPI 171.4; требуется не менее 250"
+        ],
+        "expected_mm": [
+          84.0,
+          49.0
+        ]
+      }
+    ],
+    "pitstop": {
+      "execution_status": "completed",
+      "issues": [
+        {
+          "action_id": "3004",
+          "severity": "information",
+          "message": "Transparent objects have been found (2x on page 1)",
+          "policy_demoted": true
+        },
+        {
+          "action_id": "1150",
+          "severity": "error",
+          "message": "Image resolution is 171 x 177 ppi - color or grayscale image is less than 275 ppi (2x on page 1)"
+        },
+        {
+          "action_id": "2079",
+          "severity": "information",
+          "message": "Clipping objects found (2x on page 1)",
+          "policy_demoted": true
+        }
+      ]
+    },
+    "prepress": {
+      "overprint": {
+        "status": "ok",
+        "blocking_count": 0,
+        "by_kind": {
+          "process": 0,
+          "white": 0,
+          "spot": 0,
+          "technical_spot": 0,
+          "unknown": 0
+        },
+        "message": "None"
+      }
+    }
+  },
+  "expected": [
+    {
+      "signal": "low_dpi",
+      "confidence": "high",
+      "preselect": true
+    }
+  ]
+}

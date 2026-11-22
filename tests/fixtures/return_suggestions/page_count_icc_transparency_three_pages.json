@@ -1,0 +1,102 @@
+{
+  "description": "3 страницы на двусторонний заказ + ICC + прозрачность (medium) и её вариант «Складні спецефекти…» + низкое разрешение",
+  "source": "анонимизированный production-возврат (идентификаторы и пути заменены)",
+  "dto": {
+    "order_id": "90000007",
+    "status": "returned_for_rework",
+    "errors": [
+      "в заказе 3 страницы, а для двусторонней печати допускается 2 (лицо и оборот): «01_X(K)(99x210)_(1000-90000007)-back.tif» — 1 страница, «02_X(K)(99x210)_(1000-90000007).pdf» — 2 страницы. Грубое нарушение техтребований — верните заказ на доработку"
+    ],
+    "processing_errors": [
+      "Диагностический PDF: в диагностический PDF не вошли: 01_X(K)(99x210)_(1000-90000007)-back.tif: лишний файл стороны при двухстраничном PDF"
+    ],
+    "files": [
+      {
+        "name": "01_X(K)(99x210)_(1000-90000007)-back.tif",
+        "errors": [],
+        "expected_mm": [
+          103.0,
+          214.0
+        ]
+      },
+      {
+        "name": "02_X(K)(99x210)_(1000-90000007).pdf",
+        "errors": [
+          "PDF страница 1: effective DPI 200.0; требуется не менее 250",
+          "PDF страница 1: effective DPI 199.2; требуется не менее 250",
+          "PDF страница 1: effective DPI 199.7; требуется не менее 250",
+          "PDF страница 1: effective DPI 199.0; требуется не менее 250",
+          "PDF страница 1: effective DPI 199.5; требуется не менее 250",
+          "PDF страница 1: effective DPI 198.1; требуется не менее 250",
+          "PDF страница 1: effective DPI 199.5; требуется не менее 250"
+        ],
+        "expected_mm": [
+          103.0,
+          214.0
+        ]
+      }
+    ],
+    "pitstop": {
+      "execution_status": "completed",
+      "issues": [
+        {
+          "action_id": "2078",
+          "severity": "error",
+          "message": "ICC based is used (69x on pages 1-2)"
+        },
+        {
+          "action_id": "2078",
+          "severity": "error",
+          "message": "ICC based is used for transparency group (2x on pages 1-2)"
+        },
+        {
+          "action_id": "3202",
+          "severity": "error",
+          "message": "Page contains a default color space (7x on page 1)"
+        },
+        {
+          "action_id": "3004",
+          "severity": "error",
+          "message": "Transparent objects have been found (9x on pages 1-2)"
+        },
+        {
+          "action_id": "1150",
+          "severity": "error",
+          "message": "Image resolution is 198 x 199...200 x 200 ppi - color or grayscale image is less than 275 ppi (14x on page 1)"
+        },
+        {
+          "action_id": "2079",
+          "severity": "warning",
+          "message": "Clipping objects found (8x on page 1)"
+        }
+      ]
+    }
+  },
+  "expected": [
+    {
+      "signal": "low_dpi",
+      "confidence": "high",
+      "preselect": true
+    },
+    {
+      "signal": "page_count",
+      "confidence": "high",
+      "preselect": true
+    },
+    {
+      "signal": "icc",
+      "confidence": "high",
+      "preselect": true
+    },
+    {
+      "signal": "transparency",
+      "confidence": "medium",
+      "preselect": false
+    },
+    {
+      "signal": "transparency",
+      "confidence": "medium",
+      "preselect": false
+    }
+  ]
+}

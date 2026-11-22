@@ -1,0 +1,30 @@
+{
+  "description": "битый TIFF: файл не читается",
+  "source": "анонимизированный production-возврат (идентификаторы и пути заменены)",
+  "dto": {
+    "order_id": "90000004",
+    "status": "returned_for_rework",
+    "processing_errors": [
+      "Превью 01_X(K)(P)(420x297)_(1000-90000004)-back.tif: Command '['/fake/path/file', 'identify', '-format', '%f\\n%m\\n%w\\n%h\\n%x\\n%y\\n%[units]\\n%[colorspace]\\n%[type]\\n%[depth]\\n%[icc:description]', '/fake/path/01_X(K)(P)(420x297)_(1000-90000004)-back.tif']' returned non-zero exit status 1."
+    ],
+    "files": [
+      {
+        "name": "01_X(K)(P)(420x297)_(1000-90000004)-back.tif",
+        "errors": [
+          "не удалось прочитать файл: Command '['/fake/path/file', 'identify', '-format', '%p\\n', '/fake/path/01_X(K)(P)(420x297)_(1000-90000004)-back.tif']' returned non-zero exit status 1."
+        ]
+      },
+      {
+        "name": "02_X(K)(P)(420x297)_(1000-90000004)-face.tif",
+        "errors": []
+      }
+    ]
+  },
+  "expected": [
+    {
+      "signal": "file_unreadable",
+      "confidence": "high",
+      "preselect": true
+    }
+  ]
+}

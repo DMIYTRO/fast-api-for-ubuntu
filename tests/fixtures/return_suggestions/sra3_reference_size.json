@@ -1,0 +1,41 @@
+{
+  "description": "метка (SRA3) в имени и неверный размер: эталон SRA3, без общего «размер не совпадает»",
+  "source": "анонимизированный production-возврат (идентификаторы и пути заменены)",
+  "dto": {
+    "order_id": "90000005",
+    "status": "warning",
+    "files": [
+      {
+        "name": "01_X(SRA3)(434x314)_(1000-90000005).pdf",
+        "errors": [
+          "PDF: размер 373.0x523.0 мм; ожидается 314.0x434.0 мм: для приведения к размеру без масштабирования: обрезка 59.05x89.05 мм, изменение до 89.0 мм; максимум коррекции 10.0 мм — пришлите макет нужного размера"
+        ],
+        "expected_mm": [
+          314.0,
+          434.0
+        ]
+      }
+    ],
+    "pitstop": {
+      "execution_status": "completed",
+      "issues": []
+    },
+    "ink_coverage": {
+      "flags": [
+        {
+          "kind": "underflow",
+          "page": 1,
+          "percent": 0.0,
+          "threshold": 20.0
+        }
+      ]
+    }
+  },
+  "expected": [
+    {
+      "signal": "size_reference_sra3",
+      "confidence": "high",
+      "preselect": true
+    }
+  ]
+}

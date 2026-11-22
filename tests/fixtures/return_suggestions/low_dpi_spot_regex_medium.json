@@ -1,0 +1,90 @@
+{
+  "description": "низкое разрешение + плашка по регулярному выражению PitStop 3156 — medium, плюс вариант Pantone из справочника (без отметки)",
+  "source": "анонимизированный production-возврат (идентификаторы и пути заменены)",
+  "dto": {
+    "order_id": "90000009",
+    "status": "returned_for_rework",
+    "processing_errors": [
+      "PDF страница 1: effective DPI 117.8; требуется не менее 250",
+      "PDF страница 1: effective DPI 117.8; требуется не менее 250",
+      "PDF страница 2: effective DPI 173.2; требуется не менее 250"
+    ],
+    "revision_check": {
+      "errors": [
+        "PDF страница 1: effective DPI 117.8; требуется не менее 250",
+        "PDF страница 1: effective DPI 117.8; требуется не менее 250",
+        "PDF страница 2: effective DPI 173.2; требуется не менее 250"
+      ]
+    },
+    "files": [
+      {
+        "name": "01_X(P)(297x210)_(1000-90000009).pdf",
+        "errors": [
+          "PDF страница 1: effective DPI 117.8; требуется не менее 250",
+          "PDF страница 1: effective DPI 117.8; требуется не менее 250",
+          "PDF страница 2: effective DPI 173.2; требуется не менее 250"
+        ],
+        "expected_mm": [
+          301.0,
+          214.0
+        ]
+      }
+    ],
+    "pitstop": {
+      "execution_status": "completed",
+      "issues": [
+        {
+          "action_id": "1150",
+          "severity": "error",
+          "message": "Image resolution is 118 x 118...173 x 173 ppi - color or grayscale image is less than 275 ppi (3x on pages 1-2)"
+        },
+        {
+          "action_id": "3156",
+          "severity": "error",
+          "message": "Spot color with name matching regular expression ^(?!All$).+ is used (3x on page 1)"
+        },
+        {
+          "action_id": "2079",
+          "severity": "information",
+          "message": "Clipping objects found (17x on pages 1-2)",
+          "policy_demoted": true
+        }
+      ]
+    },
+    "color_conversion": {
+      "status": "skipped",
+      "reason": "icc"
+    },
+    "prepress": {
+      "overprint": {
+        "status": "ok",
+        "blocking_count": 0,
+        "by_kind": {
+          "process": 0,
+          "white": 0,
+          "spot": 0,
+          "technical_spot": 0,
+          "unknown": 0
+        },
+        "message": "None"
+      }
+    }
+  },
+  "expected": [
+    {
+      "signal": "low_dpi",
+      "confidence": "high",
+      "preselect": true
+    },
+    {
+      "signal": "spot_colors",
+      "confidence": "medium",
+      "preselect": false
+    },
+    {
+      "signal": "spot_colors",
+      "confidence": "medium",
+      "preselect": false
+    }
+  ]
+}

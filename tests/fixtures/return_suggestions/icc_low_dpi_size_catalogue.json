@@ -1,0 +1,64 @@
+{
+  "description": "ICC (PitStop 2078) + низкое разрешение (локально и PitStop 1150) + размер 69x79 при ожидаемом 94x54 из справочника",
+  "source": "анонимизированный production-возврат (идентификаторы и пути заменены)",
+  "dto": {
+    "order_id": "90000002",
+    "status": "warning",
+    "files": [
+      {
+        "name": "01_X(K)(90x50)_(1000-90000002).pdf",
+        "errors": [
+          "PDF страница 2: effective DPI 199.9; требуется не менее 250",
+          "PDF страница 2: effective DPI 188.4; требуется не менее 250",
+          "PDF: размер 69.0x79.0 мм; ожидается 54.0x94.0 мм: для приведения к размеру потребуется обрезка до 28.1 мм; максимум коррекции 10.0 мм — пришлите макет нужного размера"
+        ],
+        "expected_mm": [
+          94.0,
+          54.0
+        ]
+      }
+    ],
+    "pitstop": {
+      "execution_status": "completed",
+      "issues": [
+        {
+          "action_id": "2078",
+          "severity": "error",
+          "message": "ICC based is used (13x on pages 1-2)"
+        },
+        {
+          "action_id": "3202",
+          "severity": "error",
+          "message": "Page contains a default color space (3x on pages 1-2)"
+        },
+        {
+          "action_id": "1150",
+          "severity": "error",
+          "message": "Image resolution is 188 x 190...200 x 200 ppi - color or grayscale image is less than 275 ppi (2x on page 2)"
+        },
+        {
+          "action_id": "2079",
+          "severity": "warning",
+          "message": "Clipping objects found (2x on page 2)"
+        }
+      ]
+    }
+  },
+  "expected": [
+    {
+      "signal": "low_dpi",
+      "confidence": "high",
+      "preselect": true
+    },
+    {
+      "signal": "size_exact_catalogue",
+      "confidence": "high",
+      "preselect": true
+    },
+    {
+      "signal": "icc",
+      "confidence": "high",
+      "preselect": true
+    }
+  ]
+}

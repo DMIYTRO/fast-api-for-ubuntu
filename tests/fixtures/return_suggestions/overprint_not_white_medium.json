@@ -1,0 +1,71 @@
+{
+  "description": "overprint на K100 (не белый) — white_overprint только medium; светлые участки callas — ink_min medium; находки PitStop понижены политикой",
+  "source": "анонимизированный production-возврат (идентификаторы и пути заменены)",
+  "dto": {
+    "order_id": "90000008",
+    "status": "returned_for_rework",
+    "files": [
+      {
+        "name": "01_X(K)(80x45)_(1000-90000008).pdf",
+        "errors": [],
+        "expected_mm": [
+          84.0,
+          49.0
+        ]
+      }
+    ],
+    "pitstop": {
+      "execution_status": "completed",
+      "issues": [
+        {
+          "action_id": "3004",
+          "severity": "information",
+          "message": "Transparent objects have been found (1x on page 1)",
+          "policy_demoted": true
+        },
+        {
+          "action_id": "2079",
+          "severity": "information",
+          "message": "Clipping objects found (1x on page 1)",
+          "policy_demoted": true
+        }
+      ]
+    },
+    "ink_coverage": {
+      "flags": [
+        {
+          "kind": "light_areas",
+          "page": 1,
+          "percent": 74.48,
+          "threshold": 20.0
+        }
+      ]
+    },
+    "prepress": {
+      "overprint": {
+        "status": "ok",
+        "blocking_count": 26,
+        "by_kind": {
+          "process": 26,
+          "white": 0,
+          "spot": 0,
+          "technical_spot": 0,
+          "unknown": 0
+        },
+        "message": "Overprint: 26 объектов с наложением (стр. 1): Заливка K100 (DeviceCMYK), стр. 1. Уберите overprint в макете."
+      }
+    }
+  },
+  "expected": [
+    {
+      "signal": "ink_min",
+      "confidence": "medium",
+      "preselect": false
+    },
+    {
+      "signal": "white_overprint",
+      "confidence": "medium",
+      "preselect": false
+    }
+  ]
+}

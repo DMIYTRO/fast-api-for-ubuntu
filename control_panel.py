@@ -78,6 +78,7 @@ from services.callas_fix import (
 )
 from services.callas_source_fix import fixable_source_path, source_comparison as source_fix_comparison
 from services.print_readiness import print_blockers, print_mode
+from services.return_suggestions import attach_return_suggestions
 from services.ftp_preview_uploader import build_ftp_preview_uploader
 from services.return_preview import (
     custom_return_preview_path, publish_custom_return_preview, selected_custom_return_preview,
@@ -214,6 +215,14 @@ def _list_events_batch(
     return list(lister(run_id, after_id))
 
 
+def _ensure_return_suggestions(order: dict[str, Any]) -> dict[str, Any]:
+    """Подсказки причин возврата для заказа, сохранённого без них (старые запуски, заказы
+    после последней контрольной точки конверта); новые DTO получают их при сборке."""
+    if not isinstance(order.get("return_suggestions"), list):
+        attach_return_suggestions(order)
+    return order
+
+
 def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
     orders = run.get("orders") or {}
     values = list(orders.values()) if isinstance(orders, dict) else list(orders)
@@ -222,6 +231,7 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
     for order in values:
         order_id = str(order.get("order_id") or order.get("id") or "")
         order_ref = _custom_preview_storage_id(run, order)
+        _ensure_return_suggestions(order)
         order["html_url"] = f"/runs/{run_id}/report"
         order["json_url"] = f"/api/checks/{run_id}/export.json"
         if order.get("actions"):
@@ -322,6 +332,10 @@ def _public_run(run: dict[str, Any]) -> dict[str, Any]:
     run["html_url"] = f"/runs/{run['id']}/report"
     run["json_url"] = f"/api/checks/{run['id']}/export.json"
     run["report_ready"] = run.get("status") in {"completed", "failed", "cancelled"}
+    orders = run.get("orders")
+    for order in (orders.values() if isinstance(orders, dict) else orders or ()):
+        if isinstance(order, dict):
+            _ensure_return_suggestions(order)
     return run
 
 
@@ -1437,7 +1451,7 @@ def create_app(
     )
     def get_order(request: Request, run_id: str, order_id: str) -> dict[str, Any]:
         _, order = _find_order(_get_coordinator(request), order_id, run_id)
-        return order
+        return _ensure_return_suggestions(order)
 
     @application.get(
         "/api/checks/{run_id}/orders/{order_id}/actions",

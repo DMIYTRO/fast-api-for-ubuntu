@@ -1,0 +1,28 @@
+{
+  "description": "двухстраничный PDF при односторонней печати",
+  "source": "анонимизированный production-возврат (идентификаторы и пути заменены)",
+  "dto": {
+    "order_id": "90000001",
+    "status": "returned_for_rework",
+    "errors": [
+      "двухстраничный PDF недопустим для односторонней печати",
+      "для цветности с оборотом требуется 1 логические страницы"
+    ],
+    "processing_errors": [
+      "PosixPath('/fake/path/01_X(90x50)_(1000-90000001).pdf') and PosixPath('/fake/path/01_X(90x50)_(1000-90000001).pdf') are the same file"
+    ],
+    "files": [
+      {
+        "name": "01_X(90x50)_(1000-90000001).pdf",
+        "errors": []
+      }
+    ]
+  },
+  "expected": [
+    {
+      "signal": "page_count",
+      "confidence": "high",
+      "preselect": true
+    }
+  ]
+}

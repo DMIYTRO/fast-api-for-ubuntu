@@ -358,7 +358,17 @@ def issue_groups_for_order_dto(dto: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def attach_issue_groups(dto: dict[str, Any]) -> dict[str, Any]:
+    """``issue_groups`` и подсказки причин возврата (``return_suggestions``).
+
+    Оба ключа — производные от одних и тех же сырых полей DTO, поэтому пересчитываются
+    вместе: каждое место, где DTO заказа собирается или меняется (``order_check_to_dto``,
+    переходы файлов, ревизии PDF, тайм-ауты координатора), получает и подсказки.
+    """
+    # Отложенный импорт: return_suggestions сам использует normalize_local_message отсюда.
+    from services.return_suggestions import attach_return_suggestions
+
     dto["issue_groups"] = issue_groups_for_order_dto(dto)
+    attach_return_suggestions(dto)
     return dto
 
 
