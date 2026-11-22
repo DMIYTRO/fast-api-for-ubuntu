@@ -100,6 +100,9 @@ DEFAULT_PDF_RESIZE_PROFILE = "Image Magic/Apply QuickFix config"
 DEFAULT_BLACK_SOLID_AREA_THRESHOLD = 0.25
 # Нижний порог доступности кнопки «в составной чёрный»: доля площади страницы с чистым K100.
 DEFAULT_BLACK_SOLID_FIX_AREA_THRESHOLD = 0.01
+# Наименьшая сторона сплошного поля K100 (мм), которое считается плашкой: текст и тонкие
+# линии (вектор, кривые или растр) тоньше этого в долю площади не попадают и остаются K100.
+DEFAULT_BLACK_SOLID_MIN_SIZE_MM = 4.0
 DEFAULT_HIGH_PPI_LIMIT = 500.0
 # Стандартный fixup callas: уменьшает до 300 ppi всё, что выше 300 ppi (переменных не принимает).
 DEFAULT_DOWNSAMPLE_PROFILE = "PDF fixups/Downsample image resolution to specified value"
@@ -292,6 +295,7 @@ class Settings:
     overprint_ignore_spots: tuple[str, ...] = DEFAULT_OVERPRINT_IGNORE_SPOTS
     black_solid_area_threshold: float = DEFAULT_BLACK_SOLID_AREA_THRESHOLD
     black_solid_fix_area_threshold: float = DEFAULT_BLACK_SOLID_FIX_AREA_THRESHOLD
+    black_solid_min_size_mm: float = DEFAULT_BLACK_SOLID_MIN_SIZE_MM
     high_ppi_limit: float = DEFAULT_HIGH_PPI_LIMIT
     callas_downsample_profile: str = DEFAULT_DOWNSAMPLE_PROFILE
     callas_request_timeout_seconds: float = 30.0
@@ -547,6 +551,10 @@ class Settings:
             black_solid_fix_area_threshold=_env_float(
                 "IMAGE_MAGIC_BLACK_SOLID_FIX_AREA_THRESHOLD",
                 DEFAULT_BLACK_SOLID_FIX_AREA_THRESHOLD, minimum=0.0, maximum=1.0,
+            ),
+            black_solid_min_size_mm=_env_float(
+                "IMAGE_MAGIC_BLACK_SOLID_MIN_SIZE_MM",
+                DEFAULT_BLACK_SOLID_MIN_SIZE_MM, minimum=0.0, maximum=100.0,
             ),
             callas_downsample_profile=os.environ.get(
                 "IMAGE_MAGIC_CALLAS_DOWNSAMPLE_PROFILE", ""

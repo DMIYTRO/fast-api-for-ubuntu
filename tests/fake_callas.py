@@ -186,22 +186,43 @@ class FakeCallasProcessClient:
         return self.separations_factory(Path(pdf), out)
 
 
-def make_separations(out: Path, pages: Sequence[dict], *, size: tuple[int, int] = (40, 40)) -> dict:
-    """Сепарации PNG. ``pages`` — по странице dict ``k100`` (доля чистого K100) и ``rich`` (доля составного)."""
+def make_separations(out: Path, pages: Sequence[dict], *, size: tuple[int, int] = (200, 200)) -> dict:
+    """Сепарации PNG (50 ppi: 200 px ≈ 100 мм). ``pages`` — по странице dict долей площади:
+
+    ``k100`` — сплошное поле чистого K100 (квадрат от левого верхнего угла), ``rich`` — поле
+    составного чёрного (квадрат от правого нижнего угла), ``text`` — тонкие штрихи чистого K100
+    (горизонтальные линии 2 px ≈ 1 мм через 3 px от середины страницы), как текст или линии.
+    """
+    import math
+
     from PIL import Image
 
     width, height = size
     total = width * height
+
+    def square(count: int, *, from_end: bool) -> list[int]:
+        side = max(1, math.ceil(math.sqrt(count)))
+        cells = [row * width + col for row in range(side) for col in range(side)][:count]
+        return [total - 1 - index for index in cells] if from_end else cells
+
+    def strokes(count: int) -> list[int]:
+        cells: list[int] = []
+        row = height // 2
+        while len(cells) < count and row < height:
+            if (row - height // 2) % 5 < 2:
+                cells.extend(row * width + col for col in range(width))
+            row += 1
+        return cells[:count]
+
     result: dict = {}
     for number, spec in enumerate(pages, start=1):
-        pure = int(total * spec.get("k100", 0))
-        rich = int(total * spec.get("rich", 0))
         channels = {name: bytearray([255] * total) for name in ("Cyan", "Magenta", "Yellow", "Black")}
-        for index in range(pure):
+        pure = square(int(total * spec.get("k100", 0)), from_end=False)
+        pure += strokes(int(total * spec.get("text", 0)))
+        for index in pure:
             channels["Black"][index] = 0
-        for index in range(pure, pure + rich):
-            channels["Black"][index] = 0
-            for name in ("Cyan", "Magenta", "Yellow"):
+        for index in square(int(total * spec.get("rich", 0)), from_end=True):
+            for name in ("Cyan", "Magenta", "Yellow", "Black"):
                 channels[name][index] = 0
         for name, data in channels.items():
             path = out / f"page-{number:04d}_sep_{name}.png"

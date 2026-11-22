@@ -285,6 +285,45 @@ def test_rich_or_raster_black_field_asks_for_manual_check(tmp_path):
     assert "скорректируйте вручную" in result["message"]
 
 
+@pytest.mark.parametrize("text", [0.013, 0.05, 0.2])
+def test_k100_text_is_neither_solid_nor_fixable(tmp_path, text):
+    """Заказ 26251571: оборот — только текст в кривых K100 (1.3% площади). Текст не плашка:
+    ни замечания, ни кнопки «в составной чёрный», даже если текста много."""
+    _c, analyzer = analyzer_with(tmp_path, k100=[{"k100": 0.0, "text": text}])
+    result = analyzer(pdf_of(tmp_path), "o")["black_solid"]
+    assert result["status"] == "ok"
+    assert result["detected"] is False and result["fix_available"] is False and result["manual_check"] is False
+    assert result["message"] is None
+    assert result["fine_share"] == pytest.approx(text, abs=0.002)
+
+
+def test_k100_solid_with_text_counts_only_solid(tmp_path):
+    _c, analyzer = analyzer_with(tmp_path, k100=[{"k100": 0.05, "text": 0.1}])
+    result = analyzer(pdf_of(tmp_path), "o")["black_solid"]
+    assert result["fix_available"] is True and result["detected"] is False
+    assert result["fix_share"] == pytest.approx(0.05, abs=0.002)
+    assert "5.0% площади" in result["message"]
+
+
+def test_rich_black_text_does_not_ask_for_manual_check():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        files = make_separations(Path(tmp), [{"text": 0.3}])
+        # Порог 0.25: сырой тёмный K 30% страницы, но это штрихи, а не поле.
+        result = analyze_separations(files, 0.25)
+    assert result["manual_check"] is False and result["detected"] is False
+
+
+def test_min_size_zero_counts_every_pixel_as_before():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        files = make_separations(Path(tmp), [{"text": 0.05}])
+        result = analyze_separations(files, 0.25, 0.01, min_size_mm=0)
+    assert result["fix_available"] is True and result["fine_share"] == 0.0
+
+
 def test_black_solid_pages_listed():
     files_dir = None  # noqa: F841
     import tempfile

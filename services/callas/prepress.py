@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from services.callas.analysis import run_analysis
-from services.callas.black_solid import detect_black_solid
+from services.callas.black_solid import DEFAULT_MIN_SOLID_SIZE_MM, detect_black_solid
 from services.callas.prepress_reports import fonts_report, high_ppi_report, overprint_report
 from services.callas.tac import TAC_LIMIT_PERCENT, measure_tac
 from services.issue_groups import plural_ru
@@ -54,6 +54,7 @@ class PrepressAnalyzer:
         high_ppi_limit: float = 500.0,
         black_solid_threshold: float = 0.25,
         black_solid_fix_threshold: float = 0.01,
+        black_solid_min_size_mm: float = DEFAULT_MIN_SOLID_SIZE_MM,
         tac_limit: float = TAC_LIMIT_PERCENT,
         overprint_profile: str | None = OVERPRINT_PROFILE,
         overprint_ignore_spots: tuple[str, ...] | list[str] = DEFAULT_OVERPRINT_IGNORE_SPOTS,
@@ -70,6 +71,8 @@ class PrepressAnalyzer:
         self.black_solid_threshold = black_solid_threshold
         # Кнопка «в составной чёрный» доступна уже при небольшой доле чистого K100 (не выше порога плашки).
         self.black_solid_fix_threshold = min(black_solid_fix_threshold, black_solid_threshold)
+        # Плашка — сплошное поле не уже этого размера; текст и тонкие линии K100 не считаются.
+        self.black_solid_min_size_mm = black_solid_min_size_mm
 
     # -------------------------------------------------------------- fonts
     def check_fonts(self, pdf: Path | str, label: str, previous: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -127,6 +130,7 @@ class PrepressAnalyzer:
             result = detect_black_solid(
                 self.client, pdf, self.black_solid_threshold, f"k100-{label}",
                 fix_threshold=self.black_solid_fix_threshold,
+                min_size_mm=self.black_solid_min_size_mm,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("prepress.black_solid_failed label=%s error=%s", label, exc)

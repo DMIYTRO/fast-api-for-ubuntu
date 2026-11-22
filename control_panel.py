@@ -693,6 +693,7 @@ def _callas_fix_service(settings: Settings):
         high_ppi_limit=settings.high_ppi_limit,
         black_solid_threshold=settings.black_solid_area_threshold,
         black_solid_fix_threshold=settings.black_solid_fix_area_threshold,
+        black_solid_min_size_mm=settings.black_solid_min_size_mm,
     )
     plans = with_profile_overrides(
         CALLAS_PLANS, {"downsample_images": settings.callas_downsample_profile}
@@ -782,6 +783,7 @@ def _callas_prepress_checker(settings: Settings, client=None):
         high_ppi_limit=settings.high_ppi_limit,
         black_solid_threshold=settings.black_solid_area_threshold,
         black_solid_fix_threshold=settings.black_solid_fix_area_threshold,
+        black_solid_min_size_mm=settings.black_solid_min_size_mm,
         overprint_profile=getattr(settings, "callas_overprint_profile", None) if overprint else None,
         overprint_ignore_spots=getattr(settings, "overprint_ignore_spots", ()),
         general_checks=settings.callas_prepress_enabled,

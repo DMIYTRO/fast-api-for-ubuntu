@@ -16,6 +16,8 @@ PostCheck = Callable[[Path, Path, dict[str, Any]], dict[str, Any]]
 
 #: Порог заметного изменения вида (доля площади, %): ниже — считаем внешний вид прежним.
 VISIBLE_CHANGE_PERCENT = 0.5
+#: Допустимая убыль тонкого чистого K100 после «в составной чёрный» (края плашки, сглаживание).
+TEXT_LOSS_TOLERANCE = 0.2
 
 
 def _changed(summary: dict[str, Any]) -> float:
@@ -62,12 +64,22 @@ def build_post_checks(analyzer: Any) -> dict[str, PostCheck]:
             if after.get("fix_available", after["detected"]):
                 level = "warning"
                 messages.append("Плашка 100% K осталась: проверьте результат вручную.")
+            fine_before = float(before.get("fine_share") or 0.0)
+            fine_after = float(after.get("fine_share") or 0.0)
+            # Тонкий K100 (текст, линии) должен остаться K100: заметная убыль — профиль задел текст.
+            if fine_before > 0 and fine_after < fine_before * (1 - TEXT_LOSS_TOLERANCE):
+                level = "warning"
+                messages.append(
+                    f"Мелкий чистый K100 (текст, линии) тоже переведён в составной: было "
+                    f"{_share_text(fine_before)}, стало {_share_text(fine_after)}. Текст должен "
+                    "оставаться 100% K — проверьте наложение или откажитесь от исправления."
+                )
         else:
             level = "warning"
             messages.append("Повторная проверка плашки K100 не выполнена.")
+            messages.append("Проверьте мелкий текст и штрихкоды на наложении: они могли получить составной чёрный.")
         changed = _changed(summary)
         messages.append(f"Изменено {changed:g}% площади в сравнении с оригиналом.")
-        messages.append("Проверьте мелкий текст и штрихкоды на наложении: они тоже получили составной чёрный.")
         return _result("black_to_rich", level, messages)
 
     def clipping(source: Path, fixed: Path, summary: dict[str, Any]) -> dict[str, Any]:

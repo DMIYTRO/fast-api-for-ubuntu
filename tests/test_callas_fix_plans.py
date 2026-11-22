@@ -43,13 +43,17 @@ def fake_compare(changed: float):
 
 
 class Env:
-    def __init__(self, tmp: Path, *, changed=0.0, k100_before=0.5, k100_after=0.0, fonts_after=(), ppi_after=()):
+    def __init__(
+        self, tmp: Path, *, changed=0.0, k100_before=0.5, k100_after=0.0, fonts_after=(), ppi_after=(),
+        text_before=0.0, text_after=0.0,
+    ):
         self.tmp = tmp
         pdf_dir = tmp / "PDF"
         pdf_dir.mkdir()
         self.source = make_pdf(pdf_dir / "order.pdf", (0, 0, 0, 1))
         self.fixed = make_pdf(tmp / "fixed_source.pdf", (0, 0, 0, 1))
         self.shares = {"source": k100_before, "fixed": k100_after}
+        self.text = {"source": text_before, "fixed": text_after}
         self.fonts_after = list(fonts_after)
         self.fonts_calls = 0
         self.ppi_after = list(ppi_after)
@@ -64,8 +68,8 @@ class Env:
             return {"xml": fonts_report_xml(self.fonts_after)}
 
         def seps(pdf, out):
-            share = self.shares["fixed"] if Path(pdf).name != "order.pdf" else self.shares["source"]
-            return make_separations(out, [{"k100": share}])
+            key = "fixed" if Path(pdf).name != "order.pdf" else "source"
+            return make_separations(out, [{"k100": self.shares[key], "text": self.text[key]}])
 
         self.profiles = {
             WARN_FONTS_PROFILE: fonts_handler,
@@ -156,8 +160,24 @@ def test_black_fix_compares_and_rechecks_share(tmp_path):
     assert check["level"] == "ok"
     assert "было 50%, стало 0%" in check["messages"][0]
     assert any("Изменено 3.2% площади" in message for message in check["messages"])
-    assert any("штрихкоды" in message for message in check["messages"])
+    assert not any("текст" in message for message in check["messages"])  # текста K100 не было
     assert "мелкий текст и штрихкоды" in state["summary"]["plan_warning"]
+
+
+def test_black_fix_keeping_text_k100_is_ok(tmp_path):
+    """Плашка ушла в составной, текст остался K100: замечаний о тексте нет."""
+    env = Env(tmp_path, k100_before=0.3, k100_after=0.0, text_before=0.02, text_after=0.02)
+    check = env.run("black_to_rich")["summary"]["post_check"]
+    assert check["level"] == "ok"
+    assert not any("текст" in message for message in check["messages"])
+
+
+def test_black_fix_warns_when_text_lost_k100(tmp_path):
+    """Профиль перевёл в составной и текст K100: оператор получает предупреждение."""
+    env = Env(tmp_path, k100_before=0.3, k100_after=0.0, text_before=0.02, text_after=0.0)
+    check = env.run("black_to_rich")["summary"]["post_check"]
+    assert check["level"] == "warning"
+    assert any("текст, линии) тоже переведён в составной" in message for message in check["messages"])
 
 
 def test_black_fix_warns_if_solid_remains(tmp_path):
