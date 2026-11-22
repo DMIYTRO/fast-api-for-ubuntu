@@ -80,7 +80,6 @@ async function attach() {
 
 <template>
   <div class="lowres-preview">
-    <div class="callas-fix-controls">
       <button
         type="button"
         class="callas-size-fix callas-extra-fix lowres-preview-button"
@@ -97,7 +96,6 @@ async function attach() {
         <span>{{ busy ? "Разметка…" : "Показать разрешение" }}</span>
         <i v-if="recommended" class="fix-recommended-dot" aria-label="рекомендовано проверкой" title="PitStop нашёл низкое разрешение"></i>
       </button>
-    </div>
     <p v-if="error" class="form-error" role="alert">{{ error }}</p>
     <div v-if="result" class="lowres-result">
       <p class="lowres-legend">{{ result.legend || LEGEND }}</p>
