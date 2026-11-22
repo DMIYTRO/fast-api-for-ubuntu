@@ -10,6 +10,9 @@ import OrderActions from "./OrderActions.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import LowResPreview from "./LowResPreview.vue";
 import { orderIssueGroups } from "./issueGroups.js";
+
+// Колонка «Норма» в таблице параметров пока скрыта; вернуть — поставить true.
+const SHOW_NORM = false;
 import InkCoverage from "./InkCoverage.vue";
 import { availableFixes, checkPolicyBadge, fontLabel, fontsInfo, iccOff, isOverprintGroup, recommendedFixes, sizeFixBadge, visiblePrepressNotices } from "./prepress.js";
 import { inkCoverageFlagLabel, inkCoverageMainFlag, inkCoverageTitle } from "./inkCoverage.js";
@@ -287,14 +290,14 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
         <p class="section-title">Параметры проверки</p>
         <div class="specs-scroll">
           <table class="specs-table">
-            <thead><tr><th>Параметр</th><th>Face</th><th v-if="back">Back</th><th>Норма</th></tr></thead>
+            <thead><tr><th>Параметр</th><th>Face</th><th v-if="back">Back</th><th v-if="SHOW_NORM">Норма</th></tr></thead>
             <tbody>
-              <tr><th>Размер с вылетами</th><td>{{ size(face) }}</td><td v-if="back">{{ size(back) }}</td><td>{{ expectedSize }}</td></tr>
-              <tr><th>Разрешение</th><td>{{ dpi(face) }}</td><td v-if="back">{{ dpi(back) }}</td><td>≥ 250 DPI</td></tr>
-              <tr><th>Цветовая модель</th><td>{{ color(face) }}</td><td v-if="back">{{ color(back) }}</td><td>CMYK</td></tr>
-              <tr><th>Формат файла</th><td>{{ format(face) }}</td><td v-if="back">{{ format(back) }}</td><td>JPG / JPEG / TIFF / PDF</td></tr>
-              <tr v-if="fonts && fonts.count > 0" class="fonts-row"><th>Шрифты</th><td :colspan="back ? 2 : 1"><b>{{ fonts.count }}</b>: {{ fontsList }}</td><td>Кривые</td></tr>
-              <tr><th>Автоповорот</th><td>{{ rotation(face) }}</td><td v-if="back">{{ rotation(back) }}</td><td>Минимальный</td></tr>
+              <tr><th>Размер с вылетами</th><td>{{ size(face) }}</td><td v-if="back">{{ size(back) }}</td><td v-if="SHOW_NORM">{{ expectedSize }}</td></tr>
+              <tr><th>Разрешение</th><td>{{ dpi(face) }}</td><td v-if="back">{{ dpi(back) }}</td><td v-if="SHOW_NORM">≥ 250 DPI</td></tr>
+              <tr><th>Цветовая модель</th><td>{{ color(face) }}</td><td v-if="back">{{ color(back) }}</td><td v-if="SHOW_NORM">CMYK</td></tr>
+              <tr><th>Формат файла</th><td>{{ format(face) }}</td><td v-if="back">{{ format(back) }}</td><td v-if="SHOW_NORM">JPG / JPEG / TIFF / PDF</td></tr>
+              <tr v-if="fonts && fonts.count > 0" class="fonts-row"><th>Шрифты</th><td :colspan="back ? 2 : 1"><b>{{ fonts.count }}</b>: {{ fontsList }}</td><td v-if="SHOW_NORM">Кривые</td></tr>
+              <tr><th>Автоповорот</th><td>{{ rotation(face) }}</td><td v-if="back">{{ rotation(back) }}</td><td v-if="SHOW_NORM">Минимальный</td></tr>
             </tbody>
           </table>
         </div>

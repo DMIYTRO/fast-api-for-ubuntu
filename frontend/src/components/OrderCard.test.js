@@ -139,14 +139,15 @@ describe("OrderCard expected size", () => {
   });
   const order = (files) => ({ order_id: "1", customer_id: "3773", status: "passed", errors: [], files });
 
-  it("shows the backend reference size (SRA3 already includes bleed)", async () => {
+  // Колонка «Норма» скрыта (SHOW_NORM = false в OrderCard.vue) — вернуть it, когда её включат.
+  it.skip("shows the backend reference size (SRA3 already includes bleed)", async () => {
     const host = mount(order([file({ expected_mm: [314, 434] })]));
     await nextTick();
     expect(host.textContent).toContain("314.0 × 434.0 мм");
     expect(host.textContent).not.toContain("438.0 × 318.0 мм");
   });
 
-  it("falls back to format + 4 mm for old runs without expected_mm", async () => {
+  it.skip("falls back to format + 4 mm for old runs without expected_mm", async () => {
     const host = mount(order([file({})]));
     await nextTick();
     expect(host.textContent).toContain("438.0 × 318.0 мм");
