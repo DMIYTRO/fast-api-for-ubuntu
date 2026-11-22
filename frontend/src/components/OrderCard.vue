@@ -8,6 +8,7 @@ import ReturnReasons from "./ReturnReasons.vue";
 import PitStopReport from "./PitStopReport.vue";
 import OrderActions from "./OrderActions.vue";
 import CallasFixControl from "./CallasFixControl.vue";
+import LowResPreview from "./LowResPreview.vue";
 import { orderIssueGroups } from "./issueGroups.js";
 import InkCoverage from "./InkCoverage.vue";
 import { availableFixes, checkPolicyBadge, fontLabel, fontsInfo, iccOff, isOverprintGroup, recommendedFixes, sizeFixBadge, visiblePrepressNotices } from "./prepress.js";
@@ -159,6 +160,7 @@ async function uploadPreview(file) {
   } catch (error) { uploadError.value = error.message; }
   finally { uploadingPreview.value = false; }
 }
+function onLowResAttached(url) { if (url) props.order.custom_preview_url = url; }
 function onDrop(event) { uploadPreview(event.dataTransfer?.files?.[0]); }
 function choosePreview() { uploadInput.value?.click(); }
 function withLayeredTiffPreview(file, result) {
@@ -342,6 +344,7 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
         <PitStopReport v-if="order.pitstop" :pitstop="order.pitstop" section-title="Проверка PDF из первоначальной обработки" />
         <PitStopReport v-if="order.action_result?.pitstop" :pitstop="order.action_result.pitstop" section-title="Повторная проверка печатного PDF из просмотренных TIFF" />
         <CallasFixControl v-if="order.pdf_path || order.pdf_url || order.callas_fix?.comparison" :run-id="runId" :order-id="actionId" :initial="order.callas_fix" :can-start="Boolean(order.pdf_path || order.pdf_url)" :fixes="fixButtons" :recommended="recommendedButtons" @applied="emit('fix-applied')" />
+        <LowResPreview v-if="runId && (order.pdf_path || order.pdf_url)" :run-id="runId" :order-id="String(actionId)" :order="order" @attached="onLowResAttached" />
         <CallasFixControl
           v-for="file in sourceFixFiles"
           :key="`fix-${file.callas_fix_file_id}`"

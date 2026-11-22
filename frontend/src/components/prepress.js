@@ -29,6 +29,8 @@ export const FIX_BUTTONS = {
 export const CLIPPING_CODE = "action:2079";
 // «Total ink coverage of an object is more than 310%» (Enfocus PitStop).
 export const INK_COVERAGE_CODE = "action:1153";
+// «Low resolution image» (Enfocus PitStop, ниже 275 ppi): подсвечивает кнопку «Показать разрешение».
+export const LOW_RESOLUTION_CODE = "action:1150";
 
 const ok = (block) => block && block.status === "ok";
 
@@ -187,7 +189,7 @@ export function fontLabel(font) {
 
 function visibleGroup(order, code, plan) {
   const groups = visibleIssueGroups(Array.isArray(order?.issue_groups) ? order.issue_groups : [], order?.pitstop);
-  return groups.find((group) => group.code === code || group.fix_plan === plan) || null;
+  return groups.find((group) => group.code === code || (plan && group.fix_plan === plan)) || null;
 }
 
 export function clippingGroup(order) {
@@ -197,6 +199,11 @@ export function clippingGroup(order) {
 // Группа PitStop о суммарном покрытии; скрытые сравнением с исходником находки не считаются.
 export function inkCoverageGroup(order) {
   return visibleGroup(order, INK_COVERAGE_CODE, "reduce_tac");
+}
+
+// Группа PitStop о низком разрешении; находки, скрытые сравнением с исходником, не считаются.
+export function lowResolutionGroup(order) {
+  return visibleGroup(order, LOW_RESOLUTION_CODE);
 }
 
 // Справочные строки (уровень info: понижённая обтравка, «RGB → CMYK скорректирована», «ICC снят»…)

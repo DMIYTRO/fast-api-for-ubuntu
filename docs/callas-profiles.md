@@ -65,6 +65,7 @@ Overprint: `IMAGE_MAGIC_CALLAS_OVERPRINT_ENABLED` (`true`; работает и �
 | `Black to rich black.kfpx` | `Image Magic/Black to rich black` | любой «только чёрный» объект в C40 M40 Y40 K100 (не использовать, см. ниже) | fix |
 | `Overprint - any object.kfpx` | `Image Magic/Overprint - any object` | overprint заливки или обводки у любого объекта (одно правило, Error) | analyze, авто на каждом PDF; влияет на статус |
 | `List potential overprint problems.kfpx` | `Image Magic/List potential overprint problems` | 32 проверки наложения (overprint/knockout) | analyze |
+| `Mark_images_with_resolution_in_a_loop_via_a_r.kfpx` | `Image Magic/Mark_images_with_resolution_in_a_loop_via_a_r` | надпись «<N>ppi» на каждом цветном/полутоновом изображении (красная ниже 250 ppi, зелёная от 250) | fix, кнопка «Показать разрешение»; результат только для просмотра, в печать не идёт |
 | `chek and fix bleed to js script.kfpx`, `new_size_correction.kfpx` | `Image Magic/chek and fix bleed to js script`, `Image Magic/new_size_correction` | коррекция размера/вылетов (JS), дубликаты рабочего `size_correction` | fix |
 
 Профили развёрнуты на сервере 10.20.2.109 в `/opt/pdfToolbox-17.0.682/var/Profiles/Image Magic/` (root:root 644, как у соседних).
@@ -142,6 +143,15 @@ Overprint: `IMAGE_MAGIC_CALLAS_OVERPRINT_ENABLED` (`true`; работает и �
 - 32 правила (все важность Warning, `analysis=17`): чёрный/белый/серый/RGB/спот/Lab/CMYK объекты с неверным knockout/overprint, белый и мелкий чёрный текст (до 12 pt) и др. Fixup нет, переменных нет.
 - Отчёт: `<hits rule_id=... severity="Warning">`, имя правила в `<rules><rule><display_name>` (например `Black object is set to knock out`). Код 2 при срабатывании, 0 если нет.
 - На реальных макетах чисто (`real_np50x50`, `soft_*`: код 0). Срабатывает на `black_vector.pdf` (4 предупреждения «Black object is set to knock out»).
+
+### Mark_images_with_resolution_in_a_loop_via_a_r («Показать разрешение»)
+
+- Образцовый процесс-план callas (развёрнут на сервере, копия в `callas_profiles/` побайтово совпадает с шарой; не править). Внутри: проверка «Color Image» (все цветные и полутоновые изображения с разрешением > 25 ppi), переменная-JS собирает массив разрешений найденных изображений, затем цикл вложенного плана «Print resolution on one image» ставит fixup «Output image resolution on image» — текст «<N>ppi» посередине изображения: красный (magenta) ниже 249,9 ppi, зелёный (cyan) от 250 ppi. Цвета и порог задаёт сам профиль. Переменных нет.
+- Порог 250 ppi оставлен как в профиле (решение оператора), хотя PitStop (ActionID 1150) считает низким разрешение ниже 275 ppi. Легенда в интерфейсе: «Красные — ниже 250 ppi, зелёные — 250 ppi и выше. PitStop считает низким разрешение ниже 275 ppi.»
+- Режим `fix` (`-o`): результат — новый PDF с надписями. Код выхода **8** («ошибки после исправления», статус `errors`) нормален: так профиль отчитывается всегда; успех — есть выходной PDF и код ≤ 8. `fixups_applied` = число размеченных изображений (по `<fixup count="1" severity="SUCCESS">` на изображение). `fixups_applied == 0` — изображений нет, приложение отвечает «В PDF нет цветных или полутоновых изображений: размечать нечего.»
+- XML-отчёт **не содержит** ppi и страниц отдельных изображений (только последовательность шагов и счётчики fixup), поэтому список «стр. 1: 118 ppi…» в интерфейсе не строится; ppi видны только на картинке.
+- Замеры на 192.168.88.109 (2026-11-22): двусторонний A4 с изображениями 118/173/292 ppi — 4,8 с, `fixups_applied=4`; односторонний 80×45 с изображением 171 ppi — 1,8 с, `fixups_applied=1`. Вся кнопка (копия, профиль, рендер, сборка картинки) — около 7,5 с и 2,8 с.
+- Приложение (`services/lowres_preview.py`, ручки `server/lowres_preview_routes.py`): только по нажатию, из текущего PDF заказа (производственная текущая ревизия — после RGB → CMYK и коррекции размера, то, что проверял PitStop; иначе диагностический PDF). Профиль запускается на копии во временной папке на общем диске, страницы размеченного PDF рендерятся callas (одним DPI, длинная сторона страницы около 1800 px), ImageMagick собирает одну JPEG-картинку (двусторонний — лицо слева, оборот справа, подписи «Лицо»/«Оборот», если найден шрифт DejaVu; до 1 МБ). Файлы: `Previews/LowRes/<id>_lowres.jpg`, `<id>_lowres.pdf` (размеченный PDF только для скачивания, **никогда** не попадает в `PDF/Checked|Rework|Failed|Print` и в печать), `<id>_lowres.json` (кэш по SHA-256 исходного PDF: повторное нажатие при неизменном PDF отвечает сразу). «Приложить к возврату» публикует картинку через `publish_custom_return_preview` — дальше её отправляет обычный возврат в Sborka.
 
 ### chek and fix bleed to js script / new_size_correction
 

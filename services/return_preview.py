@@ -141,6 +141,63 @@ class ReturnPreviewCollageError(RuntimeError):
     """A face/back return preview could not be rendered."""
 
 
+#: White gap between pages of a side-by-side sheet, px.
+SIDE_BY_SIDE_GAP_PX = 28
+
+
+def side_by_side_command(
+    magick: str,
+    pages: Iterable[Path],
+    output_path: Path,
+    *,
+    height: int | None,
+    output_options: Iterable[str] = (),
+    captions: Iterable[str] | None = None,
+    font: Path | str | None = None,
+    caption_bar_px: int = 48,
+) -> list[str]:
+    """ImageMagick argv that puts pages left to right, top-aligned, white gap between.
+
+    Parenthesized image sequences keep each page independent before appending;
+    ``-resize x<height>`` changes only height, so each aspect ratio is retained
+    (``height=None`` keeps the pages as rendered). ``captions`` (one per page, e.g.
+    «Лицо» / «Оборот») are drawn on a white bar of ``caption_bar_px`` above each
+    page only when ``font`` is given: ImageMagick installations do not always have
+    a usable font, so callers pass a font file they found.
+    """
+    page_list = [Path(item) for item in pages]
+    labels = list(captions) if captions is not None and font else [None] * len(page_list)
+    bar = max(24, int(caption_bar_px))
+    pointsize = max(14, int(bar * 0.62))
+
+    def page_arguments(path: Path, caption: str | None) -> list[str]:
+        arguments = ["(", str(path), "-auto-orient"]
+        if height is not None:
+            arguments += ["-resize", f"x{int(height)}"]
+        if caption:
+            arguments += [
+                "-background", "white", "-gravity", "north", "-splice", f"0x{bar}",
+                "-font", str(font), "-pointsize", str(pointsize), "-fill", "#1f2937",
+                "-annotate", f"+0+{max(2, (bar - pointsize) // 2)}", caption, "+gravity",
+            ]
+        return [*arguments, ")"]
+
+    return [
+        magick,
+        *(
+            argument
+            for path, caption in zip(page_list, labels)
+            for argument in page_arguments(path, caption)
+        ),
+        "-background",
+        "white",
+        "+smush",
+        str(SIDE_BY_SIDE_GAP_PX),
+        *output_options,
+        str(output_path),
+    ]
+
+
 def create_return_preview_collage(
     order_id: str,
     *,
@@ -209,29 +266,9 @@ def create_return_preview_sheet(
         f"{normalized_order_id}_return-preview{preview_extension(resolved_format)}"
     )
     output_options = jpeg_output_arguments() if resolved_format == "jpeg" else []
-
-    # Parenthesized image sequences keep each side independent before appending.
-    # -resize x1000 changes only height, so the original aspect ratio is retained.
-    def side_arguments(path: Path) -> list[str]:
-        return [
-            "(",
-            str(path),
-            "-auto-orient",
-            "-resize",
-            "x1000",
-            ")",
-        ]
-
-    command = [
-        magick,
-        *(argument for path in previews for argument in side_arguments(path)),
-        "-background",
-        "white",
-        "+smush",
-        "28",
-        *output_options,
-        str(output_path),
-    ]
+    command = side_by_side_command(
+        magick, previews, output_path, height=1000, output_options=output_options
+    )
     try:
         run_command(command, check=True, capture_output=True)
     except (ExternalToolError, OSError, subprocess.CalledProcessError) as exc:

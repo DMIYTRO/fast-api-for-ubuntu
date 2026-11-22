@@ -33,6 +33,7 @@ from core.inspector import inspect_tiff_structure
 from core.tool_runner import run_command
 from server.auth import AuthService, create_auth_router, require_session
 from server.callas_fix_routes import create_callas_fix_router
+from server.lowres_preview_routes import create_lowres_preview_router
 from server.database import Database, configure_database, get_db, upgrade_database
 from server.errors import APIError, error_payload, install_error_handlers
 from server.logging_config import configure_logging
@@ -707,6 +708,32 @@ def _callas_fix_service(settings: Settings):
     return CallasFixService(client, plans, post_checks=build_post_checks(analyzer))
 
 
+def _lowres_preview_service(settings: Settings):
+    """«Показать разрешение» (services/lowres_preview.py) или ``None`` без процесс-заданий callas."""
+    if not (settings.callas_process_enabled and settings.callas_url):
+        return None
+    from services.lowres_preview import LowResPreviewService
+
+    return LowResPreviewService(_shared_callas_client(settings))
+
+
+def _lowres_preview_order(
+    request: Request, run_id: str, order_id: str
+) -> tuple[dict[str, Any], dict[str, Any], Path]:
+    """Запуск, заказ и входная папка (внутри разрешённых корней) для разметки разрешения."""
+    run, order = _find_order(_get_coordinator(request), order_id, run_id)
+    input_root = Path((run.get("options") or {}).get("input_path", "")).resolve()
+    if not input_root.is_dir() or not any(
+        _is_inside(input_root, root) for root in _get_roots(request)
+    ):
+        raise APIError(
+            403,
+            "folder_not_allowed",
+            "Папка заказа находится за пределами разрешённой рабочей области.",
+        )
+    return run, order, input_root
+
+
 def _configure_callas_pdf_renderer(settings: Settings) -> None:
     """Все рендеры PDF вне BatchProcessor (ревизии, сравнение, экспорт) — через callas."""
     if not settings.callas_url:
@@ -985,6 +1012,7 @@ def create_app(
     default_input_dir: Path | None = None,
     adapter_factory=None,
     callas_fix_service=None,
+    lowres_preview_service=None,
     initialize_schema: bool = False,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
@@ -1147,6 +1175,11 @@ def create_app(
     application.state.default_input_dir = default_input_dir or DEFAULT_INPUT_DIR
     application.state.layered_tiff_export_jobs = {}
     application.state.callas_fix_service = callas_fix_service
+    application.state.lowres_preview_service = (
+        lowres_preview_service
+        if lowres_preview_service is not None
+        else _lowres_preview_service(settings)
+    )
     install_error_handlers(application)
 
     @application.middleware("http")
@@ -1194,6 +1227,13 @@ def create_app(
     application.include_router(create_auth_router(settings, auth_service))
     application.include_router(
         create_callas_fix_router(protected=protected, resolve_order=_callas_fix_order)
+    )
+    application.include_router(
+        create_lowres_preview_router(
+            protected=protected,
+            resolve_order=_lowres_preview_order,
+            storage_id=_custom_preview_storage_id,
+        )
     )
 
     @application.get("/api/config", dependencies=[Depends(protected)])

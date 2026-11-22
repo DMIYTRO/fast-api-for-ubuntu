@@ -129,6 +129,8 @@ PitStop); `introduced_by_fix` / `baseline_occurrences` — частично до
 | `operator:size_fix:<method>` / `operator:callas_source_fix:<plan>` | подтверждённая коррекция без события (старые запуски) |
 | `pdf_revision` | PDF заменён не исправлением Callas (`data.pdf_revision`, `status`); `source: system` — ревизия без события |
 | `forced_print` | отправлено в печать с ошибками по подтверждению оператора (`severity: warning`) |
+| `operator:lowres_preview` | оператор построил разметку разрешения («Показать разрешение», событие `order.lowres_preview.generated`; `source: callas`, `outcome: done`): `count` и `data.marked_images` — число размеченных цветных/полутоновых изображений, `data.pages_total`, `threshold_ppi` (250), `pdf_kind` (`production`/`diagnostic`), `source_pdf_revision` — ревизия, по которой строилась разметка; `data.low_images` и `pages` — только если известны ppi отдельных изображений (сейчас отчёт профиля их не даёт, поля нет). Повторное нажатие при неизменном PDF берёт кэш и записи не добавляет. PDF заказа не меняется |
+| `operator:lowres_preview_attached` | картинка разметки приложена к возврату как пользовательское превью для Sborka (событие `order.lowres_preview.attached`, `outcome: applied`): `data.preview` — имя файла превью, `marked_images`, `source_pdf_revision` |
 
 ### Решения (`kind: "decision"`)
 
