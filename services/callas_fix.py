@@ -146,6 +146,55 @@ def _write_state(directory: Path, state: dict[str, Any]) -> None:
     os.replace(temporary, directory / STATE_NAME)
 
 
+OTHER_RUN_MESSAGE = (
+    "Результат исправления относится к прошлой проверке заказа: PDF собран заново. "
+    "Запустите исправление заново."
+)
+
+
+def state_for_run(
+    state: dict[str, Any] | None, pdf_path: Path | str, run_id: str | None
+) -> dict[str, Any] | None:
+    """Состояние исправления собранного PDF, если оно относится к проверке ``run_id``, иначе ``None``.
+
+    Состояние лежит в ``PDF/CallasFix/<имя>`` и привязано к имени файла, а новая проверка
+    (повторный запуск, перезалитый клиентом заказ) собирает PDF под тем же именем. Без
+    этого фильтра она унаследовала бы чужой результат: старые картинки, блокировку печати
+    «ждёт решения» и отказ «PDF изменился» на «Принять»/«Отклонить» (заказ 26251571).
+    Состояние с ``run_id`` — только своей проверки. Записи до появления ``run_id`` сверяются
+    с текущим PDF: подпись исходника, опубликованная ревизия или сам результат исправления.
+    ``run_id=None`` — без фильтра. Исправления исходных файлов (``<имя>.source``) намеренно
+    переходят между проверками и сюда не передаются.
+    """
+    if not state or run_id is None:
+        return state
+    owner = state.get("run_id")
+    if owner:
+        return state if str(owner) == str(run_id) else None
+    return state if _legacy_state_current(state, Path(pdf_path)) else None
+
+
+def _legacy_state_current(state: Mapping[str, Any], pdf: Path) -> bool:
+    if state.get("status") == STATUS_PROCESSING:
+        return True
+    if not pdf.is_file():
+        return False
+    source = state.get("source") or {}
+    current = _signature(pdf)
+    if (source.get("size"), source.get("mtime_ns")) == (current["size"], current["mtime_ns"]):
+        return True
+    published = (state.get("published") or {}).get("sha256")
+    if published and hashlib.sha256(pdf.read_bytes()).hexdigest() == published:
+        return True
+    fixed = fix_dir_for(pdf) / str(state.get("fixed_pdf") or FIXED_PDF_NAME)
+    return fixed.is_file() and filecmp.cmp(fixed, pdf, shallow=False)
+
+
+def read_state_for_run(pdf_path: Path | str, run_id: str | None) -> dict[str, Any] | None:
+    """``read_state_file`` для собранного PDF заказа проверки ``run_id`` (см. ``state_for_run``)."""
+    return state_for_run(read_state_file(pdf_path), pdf_path, run_id)
+
+
 LEGACY_BLEED_REASON = "исправление выполнено до проверки вылетов: запустите его заново"
 
 
@@ -261,8 +310,11 @@ class CallasFixService:
         return self._plans.get(key)
 
     # ------------------------------------------------------------------ state
-    def read_state(self, pdf_path: Path | str) -> dict[str, Any] | None:
-        """Состояние с поправкой: ``processing`` без живой задачи — это прерванная перезапуском."""
+    def read_state(self, pdf_path: Path | str, *, run_id: str | None = None) -> dict[str, Any] | None:
+        """Состояние с поправкой: ``processing`` без живой задачи — это прерванная перезапуском.
+
+        ``run_id`` — только состояние этой проверки (для собранного PDF, см. ``state_for_run``).
+        """
         state = read_state_file(pdf_path)
         if state and state.get("status") == STATUS_PROCESSING:
             with self._lock:
@@ -275,10 +327,22 @@ class CallasFixService:
                     "finished_at": _now(),
                 }
                 _write_state(fix_dir_for(pdf_path), state)
-        return state
+        return state_for_run(state, pdf_path, run_id)
 
-    def start(self, pdf_path: Path | str, plan_key: str, *, direction: str | None = None) -> dict[str, Any]:
-        """Проверяет запрос и записывает состояние ``processing``; саму работу делает ``execute``."""
+    def start(
+        self,
+        pdf_path: Path | str,
+        plan_key: str,
+        *,
+        direction: str | None = None,
+        run_id: str | None = None,
+        order_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Проверяет запрос и записывает состояние ``processing``; саму работу делает ``execute``.
+
+        ``run_id``/``order_id`` — проверка, к которой относится исправление собранного PDF:
+        следующая проверка того же заказа это состояние не наследует (``state_for_run``).
+        """
         pdf = Path(pdf_path)
         plan = self._plans.get(plan_key)
         if plan is None:
@@ -314,6 +378,10 @@ class CallasFixService:
                 "images": {},
                 "summary": {},
             }
+            if run_id:
+                state["run_id"] = str(run_id)
+            if order_id:
+                state["order_id"] = str(order_id)
             _write_state(fix_dir_for(pdf), state)
         except BaseException:
             with self._lock:
@@ -519,16 +587,26 @@ class CallasFixService:
             logger.warning("callas_fix.cleanup_failed job_id=%s", job_id, exc_info=True)
 
     # --------------------------------------------------------------- decision
-    def decide(self, pdf_path: Path | str, decision: str, *, redecide_accepted: bool = False) -> dict[str, Any]:
+    def decide(
+        self,
+        pdf_path: Path | str,
+        decision: str,
+        *,
+        redecide_accepted: bool = False,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
         """Решение оператора по готовому результату.
 
         ``redecide_accepted`` — только для исходного PDF, чьё принятое исправление
         текущий заказ не использует (принято в другой проверке): его можно отклонить.
+        ``run_id`` — решение в этой проверке: результат прошлой проверки не принимается.
         """
         if decision not in {"accept", "reject"}:
             raise CallasFixError("Решение должно быть «accept» или «reject».", code="invalid_decision")
         pdf = Path(pdf_path)
         state = self.read_state(pdf)
+        if state and state_for_run(state, pdf, run_id) is None:
+            raise CallasFixError(OTHER_RUN_MESSAGE, status_code=409, code="callas_fix_other_run")
         if state and state.get("status") == STATUS_ACCEPTED and decision == "accept":
             return state
         decidable = {STATUS_READY, STATUS_ACCEPTED} if redecide_accepted else {STATUS_READY}
@@ -620,13 +698,17 @@ class CallasFixService:
         fixed = fix_dir_for(pdf_path) / str(state.get("fixed_pdf") or FIXED_PDF_NAME)
         return fixed if fixed.is_file() else None
 
-    def publish_accepted(self, pdf_path: Path | str) -> Path | None:
+    def publish_accepted(self, pdf_path: Path | str, *, run_id: str | None = None) -> Path | None:
         """Печатная копия принятого исправления рядом с исходным PDF или ``None``.
 
         Нужна на шаге «в печать»: результат копируется в ``<имя>_callas-fixed.pdf``, и
         дальше заказ идёт обычным путём (проверка PDF, PitStop, новая ревизия). Если
         исходный PDF изменился после принятия, печать отклоняется, а не подменяется.
+        Исправление, принятое в прошлой проверке (``run_id``), к новой сборке не относится:
+        публиковать нечего, в печать идёт PDF этой проверки.
         """
+        if run_id is not None and read_state_for_run(pdf_path, run_id) is None:
+            return None
         accepted = self.accepted_pdf(pdf_path)
         if accepted is None:
             return None
@@ -666,10 +748,12 @@ class CallasFixService:
             temporary.unlink(missing_ok=True)
         return target
 
-    def file_path(self, pdf_path: Path | str, kind: str, *, page: int = 1) -> Path | None:
+    def file_path(
+        self, pdf_path: Path | str, kind: str, *, page: int = 1, run_id: str | None = None
+    ) -> Path | None:
         """Путь к картинке сравнения (``original|result|overlay``) страницы ``page``
-        или к ``pdf`` результата."""
-        state = read_state_file(pdf_path)
+        или к ``pdf`` результата; ``run_id`` — только исправление этой проверки."""
+        state = read_state_for_run(pdf_path, run_id)
         if not state:
             return None
         directory = fix_dir_for(pdf_path)

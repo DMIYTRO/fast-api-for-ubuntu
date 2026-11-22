@@ -68,7 +68,11 @@ from services.sborka_integration import (
     build_sender,
 )
 from services.check_policy import PolicySettings, set_strict_source_dirs, source_output_root
-from services.callas_fix import comparison_payload as callas_fix_payload, read_state_file as read_callas_fix_state
+from services.callas_fix import (
+    comparison_payload as callas_fix_payload,
+    read_state_file as read_callas_fix_state,
+    read_state_for_run as read_callas_fix_state_for_run,
+)
 from services.callas_source_fix import fixable_source_path, source_comparison as source_fix_comparison
 from services.print_readiness import print_blockers, print_mode
 from services.ftp_preview_uploader import build_ftp_preview_uploader
@@ -228,7 +232,9 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
         fix_base = f"/api/checks/{run_id}/orders/{order_ref}/callas/fix"
         if order.get("pdf_path"):
             order["pdf_url"] = f"/api/orders/{order_ref}/pdf?run_id={run_id}"
-            fix_state = read_callas_fix_state(order["pdf_path"])
+            # Только исправление этой проверки: новая сборка заказа под тем же именем
+            # не наследует результат прошлой (иначе печать ждёт решения, которое уже не принять).
+            fix_state = read_callas_fix_state_for_run(order["pdf_path"], run_id)
             if fix_state:
                 order["callas_fix"] = {"comparison": callas_fix_payload(fix_state, fix_base)}
             order["print_blockers"] = print_blockers(order, fix_state)

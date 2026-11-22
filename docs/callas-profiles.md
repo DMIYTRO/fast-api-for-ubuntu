@@ -24,6 +24,8 @@
 Исключение — overprint (`order["prepress"]["overprint"]`, см. «Overprint - any object»): он меняет
 статус через `services.pdf_routing.completed_status(prepress=...)`.
 
+Состояние исправления собранного PDF (`PDF/CallasFix/<имя PDF>/state.json`) привязано к проверке: `run_id` записывается при запуске, и новая проверка того же заказа (повторный запуск, перезалитый клиентом заказ — PDF собирается под тем же именем) его не наследует (`state_for_run`): нет старых картинок, блокировки печати «ждёт решения», а принятое раньше исправление не уходит в печать; решение по чужому результату — 409 `callas_fix_other_run`. Записи без `run_id` сверяются с текущим PDF (подпись, опубликованная ревизия, `fixed.pdf`). Исправления исходных файлов (`<имя>.source`) переходят между проверками намеренно и сверяются только по подписи файла (заказ 26251571).
+
 | Действие | Как | Где видно |
 |---|---|---|
 | RGB → CMYK, авто | `Image Magic/NEW_Convert color to 4c for digital printing` вместо ISO Coated v2; `IMAGE_MAGIC_CALLAS_RGB_TO_CMYK_ENABLED/_PROFILE` как были; «был RGB» по `find_rgb_pages` до и после | бейдж RGB |

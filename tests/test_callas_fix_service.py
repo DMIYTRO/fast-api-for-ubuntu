@@ -202,3 +202,50 @@ def test_file_path_rejects_unknown_kind(env):
     run(env.service, env.source)
     assert env.service.file_path(env.source, "../state.json") is None
     assert env.service.file_path(env.tmp / "PDF" / "other.pdf", "overlay") is None
+
+
+# ------------------------------------------------------------- привязка к проверке
+def _legacy_state(pdf: Path, **extra) -> dict:
+    """Запись до появления ``run_id``: только подпись исходника."""
+    from services.callas_fix import _signature
+
+    return {"status": "ready", "source": {"name": pdf.name, **_signature(pdf)}, **extra}
+
+
+def test_state_for_run_keeps_own_run_and_hides_other(tmp_path):
+    from services.callas_fix import state_for_run
+
+    (tmp_path / "PDF").mkdir()
+    pdf = make_pdf(tmp_path / "PDF" / "a.pdf", 90, 50)
+    state = {"status": "ready", "run_id": "run-1"}
+    assert state_for_run(state, pdf, "run-1") is state
+    assert state_for_run(state, pdf, "run-2") is None
+    assert state_for_run(state, pdf, None) is state  # без проверки — без фильтра
+    assert state_for_run(None, pdf, "run-1") is None
+
+
+def test_legacy_state_matches_by_signature_published_revision_or_fixed_pdf(tmp_path):
+    import hashlib
+    import os
+
+    from services.callas_fix import FIXED_PDF_NAME, fix_dir_for, state_for_run
+
+    (tmp_path / "PDF").mkdir()
+    pdf = make_pdf(tmp_path / "PDF" / "a.pdf", 90, 50)
+    state = _legacy_state(pdf)
+    assert state_for_run(state, pdf, "any") is state
+
+    # PDF собран заново (новая проверка): подпись другая — чужое состояние.
+    stat = pdf.stat()
+    os.utime(pdf, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert state_for_run(state, pdf, "any") is None
+
+    # Но опубликованная из исправления ревизия — та же самая.
+    published = {**state, "published": {"sha256": hashlib.sha256(pdf.read_bytes()).hexdigest()}}
+    assert state_for_run(published, pdf, "any") is published
+
+    # И результат исправления, ставший производственным PDF, — тоже.
+    fixed = fix_dir_for(pdf) / FIXED_PDF_NAME
+    fixed.parent.mkdir(parents=True)
+    fixed.write_bytes(pdf.read_bytes())
+    assert state_for_run(state, pdf, "any") is state

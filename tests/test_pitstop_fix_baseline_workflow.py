@@ -368,11 +368,14 @@ class BaselineFixTests(CallasFixApiTests):
         state_dir = fix_dir_for(pdf)
         state_dir.mkdir(parents=True, exist_ok=True)
         (state_dir / STATE_NAME).write_text(
-            json.dumps({"status": "accepted", "plan": "size_correction", "summary": {"bleed_only": True}}),
+            json.dumps({
+                "status": "accepted", "plan": "size_correction", "summary": {"bleed_only": True},
+                "run_id": run_id,
+            }),
             encoding="utf-8",
         )
         candidate = make_pdf(self.root / "PDF" / "sample_callas-fixed.pdf", 103, 214)
-        self.workflow.accepted_pdf_provider = lambda _pdf: candidate
+        self.workflow.accepted_pdf_provider = lambda _pdf, **_kwargs: candidate
         self.pitstop.reports.append(report((LOWRES, 8), (CLIPPING, 8)))
         self.client.post("/api/orders/prepare-print", json={"run_id": run_id, "order_ids": ["1001"]})
         deadline = time.monotonic() + 10

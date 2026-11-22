@@ -31,7 +31,7 @@ from .coordinator import RunCoordinator
 from .domain import validate_operator_transition
 from .order_kits import KitResolver, run_orders
 from .file_lifecycle import FileConflictError, FileLifecycle, FileLifecycleError
-from .callas_fix import read_state_file as read_callas_fix_state
+from .callas_fix import read_state_for_run as read_callas_fix_state_for_run
 from .check_policy import PolicySettings, apply_check_policy, stored_order_policy
 from .print_readiness import is_forced_print, pitstop_ready, print_blockers
 from .overprint import overprint_block
@@ -87,7 +87,8 @@ class OrderWorkflowService:
         reviewed_pdf_pitstop_service_factory: Callable[[Path, str], Any] | None = None,
         pdf_merger: Callable[[Any, Path, str], None] | None = None,
         pdf_page_extractor: Callable[[Path, int, Path, str], None] | None = None,
-        accepted_pdf_provider: Callable[[Path], Path | None] | None = None,
+        # ``provider(pdf, run_id=...)``: принятое исправление собранного PDF этой проверки или ``None``.
+        accepted_pdf_provider: Callable[..., Path | None] | None = None,
         pdf_color_converter: Callable[[Path, Path, str], Any] | None = None,
         pdf_prepress_checker: Callable[..., dict[str, Any]] | None = None,
         pitstop_fix_baseline: FixBaselinePolicy | None = None,
@@ -811,7 +812,7 @@ class OrderWorkflowService:
             eligible_external_ids = [
                 str(order.get("order_id") or order.get("id") or order_ref)
                 for order_ref, _run, order in resolved_orders
-                if self._batch_print_eligible(order, command)
+                if self._batch_print_eligible(order, command, run_id=str(_run["id"]))
             ]
             if len(eligible_external_ids) > 1:
                 batch_prepress_result = self.prepress_sender(
@@ -876,7 +877,7 @@ class OrderWorkflowService:
                     )
                     continue
                 fix_state = (
-                    read_callas_fix_state(order["pdf_path"])
+                    read_callas_fix_state_for_run(order["pdf_path"], run["id"])
                     if order.get("pdf_path")
                     else None
                 )
@@ -1111,10 +1112,10 @@ class OrderWorkflowService:
                                 # тем же путём, что и PDF из просмотренных TIFF:
                                 # проверка PDF, PitStop, новая ревизия.
                                 accepted_bleed_only = _fix_is_bleed_only(
-                                    read_callas_fix_state(order["pdf_path"])
+                                    read_callas_fix_state_for_run(order["pdf_path"], run["id"])
                                 )
                                 reviewed_pdf = self.accepted_pdf_provider(
-                                    Path(str(order["pdf_path"]))
+                                    Path(str(order["pdf_path"])), run_id=run["id"]
                                 )
                                 accepted_callas_fix = reviewed_pdf is not None
                             if reviewed_pdf is not None:
@@ -1364,14 +1365,14 @@ class OrderWorkflowService:
 
     @staticmethod
     def _batch_print_eligible(
-        order: dict[str, Any], command: OrderActionCommand
+        order: dict[str, Any], command: OrderActionCommand, *, run_id: str | None = None
     ) -> bool:
         """Mirror the per-order checks that must pass before an external send."""
         status = str(order.get("status") or "")
         if status in {"accepted_for_print", "returned_for_rework"}:
             return False
         fix_state = (
-            read_callas_fix_state(order["pdf_path"]) if order.get("pdf_path") else None
+            read_callas_fix_state_for_run(order["pdf_path"], run_id) if order.get("pdf_path") else None
         )
         if not (
             (status in {"passed", "warning"} and pitstop_ready(order))

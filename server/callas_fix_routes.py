@@ -56,6 +56,15 @@ def _service(request: Request) -> CallasFixService:
     return service
 
 
+def _built_pdf_run(run_id: str, file_id: str | None) -> str | None:
+    """Проверка, к которой привязано исправление: только для собранного PDF заказа.
+
+    Исправления исходных файлов (``file_id``) намеренно переходят между проверками
+    (сверка по подписи файла), поэтому для них фильтра по проверке нет.
+    """
+    return None if file_id else run_id
+
+
 def _raise(error: CallasFixError) -> None:
     raise APIError(error.status_code, error.code, str(error)) from error
 
@@ -149,7 +158,8 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
     ) -> dict[str, Any]:
         service = _service(request)
         run, order, pdf = resolve_order(request, run_id, order_id, file_id)
-        return {"comparison": payload(service.read_state(pdf), run_id, order_id, file_id, run, order, pdf)}
+        state = service.read_state(pdf, run_id=_built_pdf_run(run_id, file_id))
+        return {"comparison": payload(state, run_id, order_id, file_id, run, order, pdf)}
 
     @router.post(
         "/api/checks/{run_id}/orders/{order_id}/callas/fix",
@@ -173,7 +183,11 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
         run, _order, pdf = resolve_order(request, run_id, order_id, file_id)
         direction = str((run.get("options") or {}).get("direction") or "") or None
         try:
-            state = service.start(pdf, body.plan, direction=direction)
+            state = service.start(
+                pdf, body.plan, direction=direction,
+                run_id=_built_pdf_run(run_id, file_id),
+                order_id=None if file_id else str(_order.get("order_id") or order_id),
+            )
         except CallasFixError as exc:
             _raise(exc)
         record(request, run_id, _order, "order.callas_fix.started", plan=body.plan, file_id=file_id, status="processing")
@@ -213,11 +227,11 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
         try:
             with request.app.state.order_workflow.correction_guard(run_id, order):
                 previous_state = service.read_state(pdf)
-                state = service.decide(pdf, body.decision)
+                state = service.decide(pdf, body.decision, run_id=run_id)
                 if body.decision == "accept":
                     candidate = None
                     try:
-                        candidate = service.publish_accepted(pdf)
+                        candidate = service.publish_accepted(pdf, run_id=run_id)
                         if candidate is not None:
                             _updated, _pitstop, revision, sha256 = (
                                 request.app.state.order_workflow.recheck_pdf_revision(
@@ -308,7 +322,7 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
     ) -> FileResponse:
         service = _service(request)
         _run, _order, pdf = resolve_order(request, run_id, order_id, file_id)
-        target = service.file_path(pdf, kind, page=page)
+        target = service.file_path(pdf, kind, page=page, run_id=_built_pdf_run(run_id, file_id))
         if target is None:
             raise APIError(404, "file_not_found", "Файл исправления не найден.")
         if kind == "pdf":

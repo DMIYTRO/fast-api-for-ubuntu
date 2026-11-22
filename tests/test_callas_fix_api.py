@@ -34,6 +34,20 @@ class RealPdfAdapter(OneOrderAdapter):
         return OrderArtifacts(pdf_path=pdf, preview_paths=[preview])
 
 
+class RebuildingPdfAdapter(RealPdfAdapter):
+    """Каждая проверка заново собирает PDF под тем же именем (повторная проверка, перезаливка)."""
+
+    def process_order(self, _order):
+        self.order.files[0].parsed = replace(self.order.files[0].parsed, width_mm=99, height_mm=210)
+        pdf = self.input_dir / "PDF" / "sample.pdf"
+        preview = self.input_dir / "Previews" / "sample-face.png"
+        pdf.parent.mkdir(exist_ok=True)
+        preview.parent.mkdir(exist_ok=True)
+        make_pdf(pdf, 104, 204)
+        preview.write_bytes(b"preview-image")
+        return OrderArtifacts(pdf_path=pdf, preview_paths=[preview])
+
+
 class SourcePdfAdapter(OneOrderAdapter):
     """Заказ с ошибкой: исходник — PDF, итоговый PDF не собран."""
 
@@ -336,6 +350,79 @@ class EnabledTests(CallasFixApiTests):
         self.client.post("/api/auth/logout")
         self.assertEqual(self.client.get(self.url(run_id)).status_code, 401)
         self.assertEqual(self.client.get("/api/callas/plans").status_code, 401)
+
+
+class RepeatedRunTests(CallasFixApiTests):
+    """Заказ 26251571: новая проверка собирает PDF под тем же именем и не наследует
+    исправление Callas прошлой проверки (оно не блокирует печать и не уходит в неё)."""
+
+    adapter_class = RebuildingPdfAdapter
+
+    def order(self, run_id: str) -> dict:
+        return self.client.get(f"/api/checks/{run_id}/orders").json()["items"][0]
+
+    def wait_for_print(self, run_id: str) -> dict:
+        import time
+
+        deadline = time.monotonic() + 10
+        order: dict = {}
+        while time.monotonic() < deadline:
+            order = self.order(run_id)
+            if order["status"] == "accepted_for_print" or (order.get("action_result") or {}).get("status") == "failed":
+                break
+            time.sleep(0.1)
+        return order
+
+    def test_new_run_does_not_inherit_pending_fix(self):
+        first = self.make_run()
+        self.client.post(self.url(first), json={"plan": "size_correction"})
+        self.assertEqual(self.client.get(self.url(first)).json()["comparison"]["status"], "ready")
+        self.assertIn("callas_fix_pending", [b["code"] for b in self.order(first)["print_blockers"]])
+
+        second = self.make_run()
+        self.assertEqual(self.client.get(self.url(second)).json(), {"comparison": None})
+        order = self.order(second)
+        self.assertNotIn("callas_fix", order)
+        self.assertNotIn("callas_fix_pending", [b["code"] for b in order["print_blockers"]])
+        self.assertEqual(self.client.get(self.url(second, "/files/overlay")).status_code, 404)
+        # Решение по чужому результату — понятный отказ, а не «PDF изменился».
+        decision = self.client.post(self.url(second, "/decision"), json={"decision": "reject"})
+        self.assertEqual(decision.status_code, 409)
+        self.assertIn("прошлой проверке", decision.text)
+        # История первой проверки сохраняется как была.
+        self.assertEqual(self.client.get(self.url(first)).json()["comparison"]["status"], "ready")
+
+        self.client.post("/api/orders/prepare-print", json={"run_id": second, "order_ids": ["1001"]})
+        self.assertEqual(self.wait_for_print(second)["status"], "accepted_for_print")
+
+    def test_fix_accepted_in_previous_run_is_not_printed(self):
+        import fitz
+
+        first = self.make_run()
+        self.client.post(self.url(first), json={"plan": "size_correction"})
+        accepted = self.client.post(self.url(first, "/decision"), json={"decision": "accept"})
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+
+        second = self.make_run()
+        self.client.post("/api/orders/prepare-print", json={"run_id": second, "order_ids": ["1001"]})
+        order = self.wait_for_print(second)
+        self.assertEqual(order["status"], "accepted_for_print", order)
+        # В печать ушёл PDF новой проверки (104×204), а не исправление прошлой (103×214).
+        with fitz.open(self.root / "PDF" / "Print" / "sample.pdf") as document:
+            self.assertAlmostEqual(document[0].rect.width / (72 / 25.4), 104, places=0)
+            self.assertAlmostEqual(document[0].rect.height / (72 / 25.4), 204, places=0)
+
+    def test_fix_started_in_new_run_replaces_the_old_one(self):
+        first = self.make_run()
+        self.client.post(self.url(first), json={"plan": "size_correction"})
+        second = self.make_run()
+        started = self.client.post(self.url(second), json={"plan": "size_correction"})
+        self.assertEqual(started.status_code, 202, started.text)
+        self.assertEqual(self.client.get(self.url(second)).json()["comparison"]["status"], "ready")
+        self.assertEqual(self.order(second)["callas_fix"]["comparison"]["status"], "ready")
+        decision = self.client.post(self.url(second, "/decision"), json={"decision": "reject"})
+        self.assertEqual(decision.status_code, 200, decision.text)
+        self.assertEqual(self.client.get(self.url(first)).json(), {"comparison": None})
 
 
 class SourcePdfTests(CallasFixApiTests):
