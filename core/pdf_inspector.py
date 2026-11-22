@@ -171,7 +171,7 @@ def _inspect_page(page: pymupdf.Page, page_number: int) -> PdfPageInfo:
     mediabox = _rect_tuple(page.mediabox)
     images = tuple(
         _image_info(page_number, raw)
-        for raw in page.get_image_info(xrefs=True)
+        for raw in displayed_images(page)
     )
     return PdfPageInfo(
         page_number=page_number,
@@ -267,6 +267,119 @@ def expected_page_count_error(actual_page_count: int, expected_page_count: int) 
     return None
 
 
+# --------------------------------------------------------------------------- shadings
+# MuPDF отдаёт в get_image_info() не только изображения, но и градиенты (оператор ``sh`` и
+# заливка узором-градиентом): «картинку» без xref в DeviceRGB, по пикселю на пункт, то есть
+# 72 dpi. Из-за этого CMYK-градиент давал ложные «effective DPI 72; требуется не менее 250»
+# и «растровое изображение имеет RGB colorspace» (проверено на 312 файлах прода, 2026-11-22).
+# Настоящее изображение без xref (inline ``BI … EI``) в get_bboxlog() — «fill-image» с той же
+# рамкой, градиент — «fill-shade» с бесконечной рамкой; по этому и отличаем.
+_IMAGE_LOG_KINDS = frozenset({"fill-image", "fill-imgmask"})
+_IMAGE_BBOX_TOLERANCE_PT = 0.5
+
+
+def displayed_images(page: pymupdf.Page) -> list[dict[str, Any]]:
+    """``page.get_image_info(xrefs=True)`` без псевдо-изображений градиентов (см. выше)."""
+    infos = page.get_image_info(xrefs=True)
+    if all(raw.get("xref") for raw in infos):
+        return infos
+    try:
+        log = page.get_bboxlog()
+    except Exception:  # noqa: BLE001 — без журнала оставляем как было (консервативно)
+        return infos
+    image_rects = [tuple(rect) for kind, rect in log if kind in _IMAGE_LOG_KINDS]
+
+    def drawn_as_image(bbox: Any) -> bool:
+        return any(
+            all(abs(float(bbox[i]) - float(rect[i])) <= _IMAGE_BBOX_TOLERANCE_PT for i in range(4))
+            for rect in image_rects
+        )
+
+    return [raw for raw in infos if raw.get("xref") or drawn_as_image(raw.get("bbox") or ())]
+
+
+_REF_VALUE = re.compile(r"^(\d+)\s+0\s+R$")
+_NAMED_REF = re.compile(r"/[^\s/<>\[\]()]+\s*(\d+)\s+0\s+R")
+_MAX_RESOURCE_DEPTH = 8
+
+
+def _resolve(document: pymupdf.Document, kind: str, value: str) -> str:
+    if kind == "xref":
+        match = _REF_VALUE.match(value.strip())
+        if match:
+            return document.xref_object(int(match.group(1)), compressed=True)
+    return value
+
+
+def _colorspace_is_rgb(document: pymupdf.Document, value: str, depth: int = 0) -> bool:
+    """DeviceRGB, CalRGB, ICCBased с N 3 и Indexed по ним. Separation/DeviceN — нет (плашки)."""
+    if depth > 4:
+        return False
+    value = value.strip()
+    match = _REF_VALUE.match(value)
+    if match:
+        value = document.xref_object(int(match.group(1)), compressed=True).strip()
+    if value.startswith("/"):
+        return value.split()[0] in ("/DeviceRGB", "/CalRGB", "/RGB")
+    if not value.startswith("["):
+        return False
+    inner = value[1:].lstrip()
+    if inner.startswith("/CalRGB"):
+        return True
+    if inner.startswith("/ICCBased"):
+        ref = re.match(r"/ICCBased\s*(\d+)\s+0\s+R", inner)
+        if not ref:
+            return False
+        kind, n = document.xref_get_key(int(ref.group(1)), "N")
+        return kind == "int" and n.strip() == "3"
+    if inner.startswith("/Indexed") or inner.startswith("/I "):
+        base = re.match(r"/(?:Indexed|I)\s*(/\w+|\d+\s+0\s+R|\[[^\]]*\])", inner)
+        return bool(base) and _colorspace_is_rgb(document, base.group(1), depth + 1)
+    return False
+
+
+def _has_rgb_shading(document: pymupdf.Document, page: pymupdf.Page) -> bool:
+    """Есть ли на странице (с формами и узорами) градиент в RGB; см. ``displayed_images``."""
+    seen: set[int] = set()
+
+    def shading_is_rgb(shading_xref: int) -> bool:
+        kind, value = document.xref_get_key(shading_xref, "ColorSpace")
+        return kind != "null" and _colorspace_is_rgb(document, value)
+
+    def walk(owner: int, depth: int) -> bool:
+        if owner in seen or depth > _MAX_RESOURCE_DEPTH:
+            return False
+        seen.add(owner)
+        for key in ("Shading", "Pattern", "XObject"):
+            kind, value = document.xref_get_key(owner, f"Resources/{key}")
+            if kind in ("null", "none"):
+                continue
+            for ref in _NAMED_REF.findall(_resolve(document, kind, value)):
+                xref = int(ref)
+                if key == "Shading":
+                    if shading_is_rgb(xref):
+                        return True
+                elif key == "Pattern":
+                    pattern_type = document.xref_get_key(xref, "PatternType")[1].strip()
+                    if pattern_type == "2":
+                        shading_kind, shading = document.xref_get_key(xref, "Shading")
+                        match = _REF_VALUE.match(shading.strip()) if shading_kind == "xref" else None
+                        if match and shading_is_rgb(int(match.group(1))):
+                            return True
+                        if shading_kind == "dict" and re.search(r"/ColorSpace\s*/(?:DeviceRGB|CalRGB)\b", shading):
+                            return True
+                    elif walk(xref, depth + 1):  # узор-плитка со своими ресурсами
+                        return True
+                elif document.xref_get_key(xref, "Subtype")[1].strip() == "/Form" and walk(xref, depth + 1):
+                    return True
+        return False
+
+    try:
+        return walk(page.xref, 0)
+    except Exception:  # noqa: BLE001 — нестандартные ресурсы не должны ломать проверку цвета
+        return False
+
+
 _RGB_OPERATOR = re.compile(
     rb"(?:(?:^|\s)-?[\d.]+\s+-?[\d.]+\s+-?[\d.]+\s+(?:rg|RG)(?=\s|$)|/DeviceRGB\s+(?:cs|CS)(?=\s|$))"
 )
@@ -275,15 +388,17 @@ _RGB_OPERATOR = re.compile(
 def find_rgb_pages(path: str | Path) -> tuple[int, ...]:
     """Номера страниц (с 1), где есть RGB: растры с 3 компонентами и векторные/текстовые операторы цвета DeviceRGB в потоке страницы.
 
-    Только чтение. Lab (тоже 3 компоненты) не считается RGB. Объекты внутри Form XObject не
-    просматриваются.
+    Только чтение. Lab (тоже 3 компоненты) не считается RGB. Операторы цвета внутри Form
+    XObject не просматриваются. Градиенты MuPDF показывает как RGB-«картинки» без xref; они
+    не считаются изображениями (``displayed_images``), а их цвет проверяется по ресурсам
+    (``_has_rgb_shading``): CMYK/DeviceN-градиент больше не даёт ложный RGB.
     """
     found: list[int] = []
     with pymupdf.open(str(path)) as document:
         for index in range(document.page_count):
             page = document[index]
             has_rgb = False
-            for raw in page.get_image_info():
+            for raw in displayed_images(page):
                 name = str(raw.get("cs-name") or "").lower()
                 if raw.get("colorspace") == 3 and "lab" not in name:
                     has_rgb = True
@@ -292,6 +407,8 @@ def find_rgb_pages(path: str | Path) -> tuple[int, ...]:
                 # get_cdrawings() пересчитывает CMYK в RGB-тройки, поэтому смотрим
                 # операторы цвета DeviceRGB прямо в потоке содержимого страницы.
                 has_rgb = bool(_RGB_OPERATOR.search(page.read_contents()))
+            if not has_rgb:
+                has_rgb = _has_rgb_shading(document, page)
             if has_rgb:
                 found.append(index + 1)
     return tuple(found)

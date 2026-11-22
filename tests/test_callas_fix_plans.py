@@ -419,3 +419,79 @@ def test_tac_nothing_to_recalculate_is_reported(env):
 def test_tac_uses_exit_code_when_report_has_no_fixup_counters(env):
     env.profiles[TAC] = lambda pdf, mode: {"exit_code": 5, "xml": "<r/>", "fixed": env.fixed}
     assert env.run("reduce_tac")["status"] == "ready"
+
+
+# ------------------------------------------------------- RGB перед планом (диагностический PDF)
+class _FakeRgbConverter:
+    """``converter(source, target, label)`` как ``CallasRgbToCmykConverter``: пишет CMYK-PDF."""
+
+    profile = "Image Magic/NEW_Convert color to 4c for digital printing"
+
+    def __init__(self, *, leave_rgb: bool = False) -> None:
+        self.leave_rgb = leave_rgb
+        self.sources: list[Path] = []
+
+    def __call__(self, source, target, label):
+        self.sources.append(Path(source))
+        make_pdf(Path(target), (1, 0, 0) if self.leave_rgb else (0, 0, 0, 1))
+        return {"fixups_applied": 1}
+
+
+def _env_with_converter(tmp_path, converter):
+    env = Env(tmp_path)
+    env.service = CallasFixService(
+        env.client, compare=fake_compare(0.0), post_checks={}, rgb_converter=converter
+    )
+    return env
+
+
+@pytest.mark.parametrize("plan_key", ["reduce_tac", "black_to_rich"])
+def test_cmyk_plan_converts_rgb_first_when_a_converter_is_wired(tmp_path, plan_key):
+    """Диагностический PDF собран «как есть», RGB в нём остаётся: план с ``requires_cmyk``
+    сам переводит RGB тем же профилем, что и автоконвертация, и только потом запускается."""
+    from core.pdf_inspector import find_rgb_pages
+
+    converter = _FakeRgbConverter()
+    env = _env_with_converter(tmp_path, converter)
+    rgb = make_pdf(tmp_path / "PDF" / "rgb.pdf", (1, 0, 0))
+    seen: list[tuple[Path, tuple[int, ...]]] = []
+    profile = CALLAS_PLANS[plan_key].profile
+    original = env.profiles[profile]
+
+    def handler(pdf, mode):
+        seen.append((Path(pdf), find_rgb_pages(pdf)))
+        return original(pdf, mode)
+
+    env.profiles[profile] = handler
+    env.service.start(rgb, plan_key)  # без отказа 409
+    state = env.service.execute(rgb, plan_key)
+
+    assert state["status"] == "ready", state.get("error")
+    assert converter.sources, "RGB→CMYK не вызывался"
+    [(plan_input, rgb_pages)] = seen
+    assert rgb_pages == ()  # план получил уже CMYK
+    # callas получает локальный снимок, а не свежий файл на шаре (mtime на CIFS «плывёт»)
+    assert tmp_path not in plan_input.parents
+    converted = state["summary"]["rgb_converted"]
+    assert converted["pages"] == [1] and converted["profile"] == converter.profile
+    assert state["summary"]["post_check"]["messages"][0].startswith("Перед исправлением RGB переведён в CMYK (стр. 1)")
+    assert find_rgb_pages(rgb) == (1,)  # исходник заказа не тронут
+
+
+def test_cmyk_plan_fails_clearly_when_rgb_conversion_leaves_rgb(tmp_path):
+    env = _env_with_converter(tmp_path, _FakeRgbConverter(leave_rgb=True))
+    rgb = make_pdf(tmp_path / "PDF" / "rgb.pdf", (1, 0, 0))
+    env.service.start(rgb, "reduce_tac")
+    state = env.service.execute(rgb, "reduce_tac")
+    assert state["status"] == "failed"
+    assert "перевести его в CMYK перед планом не удалось" in state["error"]
+    assert "покрытие RGB-объектов он не ограничит" in state["error"]
+    assert (CALLAS_PLANS["reduce_tac"].profile, "fix") not in env.client.calls
+
+
+def test_cmyk_plan_on_cmyk_pdf_skips_conversion(tmp_path):
+    converter = _FakeRgbConverter()
+    env = _env_with_converter(tmp_path, converter)
+    state = env.run("reduce_tac")
+    assert state["status"] == "ready"
+    assert not converter.sources and "rgb_converted" not in state["summary"]
