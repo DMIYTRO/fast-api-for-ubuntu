@@ -1,0 +1,461 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<pdfpreflight version="17.0">
+	<package>
+		<id3>0772ca1bd25fe2871f272220ad29efe4</id3>
+		<pdfxoutintentlist>
+		</pdfxoutintentlist>
+		<iccprofilelist>
+		</iccprofilelist>
+		<ccpolicies>
+		</ccpolicies>
+		<occdsetups>
+		</occdsetups>
+		<curves>
+		</curves>
+		<fspolicies>
+		</fspolicies>
+		<resources>
+		</resources>
+		<variables>
+			<variable>
+				<id1>V01403710925060fec18c58e7a9c2dfda</id1>
+				<id2>V489b31a09aab159b8333cde39f56c621</id2>
+				<id3>481faafd6e2b84a570a19edabac0eb72</id3>
+				<id4>1f805d81ecbbc38b371018949996055b</id4>
+				<id5>V3dcbdd58a9879c132cedf9059567daea</id5>
+				<name>List of image resolutions</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20190902155140+02&apos;00&apos;</creation>
+				<modification>D:20190903152630+02&apos;00&apos;</modification>
+				<varkey>BuildArrayWithImageResolutions</varkey>
+				<varscript>// Create variable array from check results&#10;&#10;app.vars.hitarray = app.doc.result.checks[0].hits;&#10;// app.vars.imgnumber = 0;&#10;&#10;// For Debug:&#10;// console.log( JSON.stringify(app.vars.hitarray) )&#10;&#10;JSON.stringify(app.vars.hitarray);</varscript>
+				<varlistvalues varval_type="0" varval_flags="0">
+				</varlistvalues>
+			</variable>
+			<variable>
+				<id1>Vb5d6945dc354eac57bef237024fb6695</id1>
+				<id2>V67fa29786ebcd05ab7d6a4523a520779</id2>
+				<id3>4b019af384eb1860762cb37df1d50a42</id3>
+				<id4>dfe17727cb623006364a8415332ac72d</id4>
+				<id5>V2cfeaf86073b83dcf34b39cdc9964b9b</id5>
+				<name>Is Hit Array Empty?</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20190902155140+02&apos;00&apos;</creation>
+				<modification>D:20190902160551+02&apos;00&apos;</modification>
+				<varkey>ExitIfAllHitsProcessed</varkey>
+				<varscript>// Check whether the array with the results is empty.&#10;// Each entry is removed from the array when it is processed, so if the array is empty we should finish processing.&#10;// So, in that case the result of this variable should be 0, which is the same as an &quot;On Failure&quot; result, &#10;// so that the Process Plan sequence is exited&#10;// For Debug:&#10;// app.vars.hitarray = app.doc.result.checks[0].hits;&#10;&#10;if ( app.vars.hitarray.length &gt; 0 )&#10;&#9;1;&#10;else&#10;&#9;0;</varscript>
+				<varlistvalues varval_type="0" varval_flags="0">
+				</varlistvalues>
+			</variable>
+			<variable>
+				<id1>Vd3d460c5d0c40f88f95650d6f8a051d9</id1>
+				<id2>V323482965a1375a72c08263c70786e94</id2>
+				<id3>74330107fce1afcd2806e20845e76163</id3>
+				<id4>ecf164d5b88f14ed697799283e4d7d72</id4>
+				<id5>V323482965a1375a72c08263c70786e94</id5>
+				<name>Calculate Page Number</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20190902155140+02&apos;00&apos;</creation>
+				<modification>D:20190902155140+02&apos;00&apos;</modification>
+				<varkey>calculatepagenumber</varkey>
+				<varscript>// Set the page number to the page in the current hit, which is the number in the temparray.&#10;// Add 1 because the page number in the temparray are zero based, while this check is 1 based.&#10;// &#10;// For Debug:&#10;// app.vars.hitarray = app.doc.result.checks[0].hits;&#10;// loc_hitarray = app.vars.hitarray;&#10;// app.vars.temparray = loc_hitarray.splice(1,1);&#10;&#10;app.vars.temparray[0].page+1;</varscript>
+				<varlistvalues varval_type="0" varval_flags="0">
+				</varlistvalues>
+			</variable>
+			<variable>
+				<id1>V2885bad85540552907bd58648a96f54e</id1>
+				<id2>V1eab8e4b54888700b133058a2ab0c723</id2>
+				<id3>b46312189c5645be9357356204af06d3</id3>
+				<id4>b39d3db059648b770019e4f918df7ca3</id4>
+				<id5>Va5d74e9a21298eec716c7a92252587ac</id5>
+				<name>Make Output</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20190902161140+02&apos;00&apos;</creation>
+				<modification>D:20190903122206+02&apos;00&apos;</modification>
+				<varkey>imageresolution</varkey>
+				<varscript>// Take the resolution from the global temparray object and put it on the current image.&#10;// The current page is defined via the Apply To entry that uses the filter &quot;Sequential page number&quot; where the&#10;// page number is as well taken from the temparray.&#10;&#10;// For Debug:&#10;// app.vars.hitarray = app.doc.result.checks[0].hits;&#10;// loc_hitarray = app.vars.hitarray;&#10;// app.vars.temparray = loc_hitarray;&#10;&#10;Math.round(app.vars.temparray[0].triggers[1].value).toString() + &quot;ppi&quot;;&#10;&#10;</varscript>
+				<varlistvalues varval_type="0" varval_flags="0">
+				</varlistvalues>
+			</variable>
+			<variable>
+				<id1>Va2d8c947a5c6c389d9c1ad1806c97181</id1>
+				<id2>V1bcd7e4423090a9bea3b529d49d5ba39</id2>
+				<id3>9f6313144faba22460c405cfa31df803</id3>
+				<id4>0c92459b235263629e4aa30d8b1bdda6</id4>
+				<id5>V0d8ad8eaa050c82e0bf8f4dd6ef3c939</id5>
+				<name>Horizontal offset:</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20190902161533+02&apos;00&apos;</creation>
+				<modification>D:20190902164713+02&apos;00&apos;</modification>
+				<varkey>horizontal_offset</varkey>
+				<varscript>app.vars.temparray[0].llx + ( ( ( app.vars.temparray[0].urx - app.vars.temparray[0].llx ) / 2 ) - 32 )</varscript>
+				<varlistvalues varval_type="0" varval_flags="0">
+				</varlistvalues>
+			</variable>
+			<variable>
+				<id1>Ve8c1470f6d11b21bcbf6e9457c9cf85d</id1>
+				<id2>Vc05667257fb9c3292ce9257756abce00</id2>
+				<id3>e98f9d094d9fc24d479c2dea5d63de85</id3>
+				<id4>8dcd5231be5774ca2dcf0dbd1f6fa347</id4>
+				<id5>V2266bfd39457ae17fd3e07211bb58b2f</id5>
+				<name>Vertical offset:</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20190902161747+02&apos;00&apos;</creation>
+				<modification>D:20190902165129+02&apos;00&apos;</modification>
+				<varkey>vertical_offset</varkey>
+				<varscript>app.vars.temparray[0].lly + ( ( ( app.vars.temparray[0].ury - app.vars.temparray[0].lly ) / 2 ) -12 )</varscript>
+				<varlistvalues varval_type="0" varval_flags="0">
+				</varlistvalues>
+			</variable>
+			<variable>
+				<id1>V12572415d1dcc2abf22b56896d302232</id1>
+				<id2>V8245fed7ab97b4f4ce5d539cd4fe8e62</id2>
+				<id3>d109136505b663f14c12950289cf59c7</id3>
+				<id4>582f545ec6a68362cd90f87216624a18</id4>
+				<id5>Vecf75ce98c47235e64317d865d0fa8fa</id5>
+				<name>Cyan</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20190903131947+02&apos;00&apos;</creation>
+				<modification>D:20190903140937+02&apos;00&apos;</modification>
+				<varkey>Cyan</varkey>
+				<varscript>if ( app.vars.temparray[0].triggers[1].value &lt; 249.9 )&#10;0;&#10;else&#10;100;&#10;</varscript>
+				<varlistvalues varval_type="0" varval_flags="0">
+				</varlistvalues>
+			</variable>
+			<variable>
+				<id1>Vbe8328f52405f656bd387156fb0377f7</id1>
+				<id2>V9edb1acccf380d47fdc8d84a5b990bc9</id2>
+				<id3>29b45d762e9a632e66718e25c9f58de3</id3>
+				<id4>079e3a54d65bf30ac8e55a60c11e20ea</id4>
+				<id5>Vdbbe80300e46329eb56837c1fa4d73ef</id5>
+				<name>Magenta</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20190903132340+02&apos;00&apos;</creation>
+				<modification>D:20190903140953+02&apos;00&apos;</modification>
+				<varkey>Magenta</varkey>
+				<varscript>if ( app.vars.temparray[0].triggers[1].value &gt;= 249.9 )&#10;0;&#10;else&#10;100;&#10;</varscript>
+				<varlistvalues varval_type="0" varval_flags="0">
+				</varlistvalues>
+			</variable>
+			<variable>
+				<id1>V9f4ba2b856ee0f67171931a9058ab79a</id1>
+				<id2>Vff05bf724d71e8ca6ec51bc50c278dba</id2>
+				<id3>555d685aa6804db2a5b6162aef24de5e</id3>
+				<id4>93b9131faba87e036b15ccf29aa85bae</id4>
+				<id5>Vcdef52c454424745fe163533e92939a2</id5>
+				<name>Make Temparray</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<creation>D:20190903125151+02&apos;00&apos;</creation>
+				<modification>D:20190903125253+02&apos;00&apos;</modification>
+				<varkey>Extract one of severral hits</varkey>
+				<varscript>// For Debug:&#10;// app.vars.hitarray = app.doc.result.checks[0].hits;&#10;&#10;loc_hitarray = app.vars.hitarray;&#10;loc_item = loc_hitarray.splice(0,1);&#10;&#10;&#10;// For Debug:&#10;//console.log ( JSON.stringify(loc_hitarray[0] ) )&#10;//console.log ( loc_item[0].page )&#10;&#10;// Write results into the global variables:&#10;app.vars.temparray = loc_item;&#10;app.vars.hitarray = loc_hitarray;&#10;&#10;// For Debug:&#10;// loc_item&#10;// loc_item[0]</varscript>
+				<varlistvalues varval_type="0" varval_flags="0">
+				</varlistvalues>
+			</variable>
+		</variables>
+		<conditions>
+			<condition>
+				<id1>C3396ebf64a5e0fe9f4c92185897f94df</id1>
+				<id2>C2e37f555dd4aa814bff64de6796bd188</id2>
+				<id3>d0198f181c57e790a6e24bf925436364</id3>
+				<id4>c6876190a96468431c5c341c9608f061</id4>
+				<id5>C2e37f555dd4aa814bff64de6796bd188</id5>
+				<name></name>
+				<comment></comment>
+				<flags user_units="1" edit="1" visible="1"></flags>
+				<atom>
+					<group>Group::CONTSTM</group>
+					<token>CONTSTM::IsColorImage</token>
+					<operator>OP::is_true</operator>
+					<data>
+						<text>
+							<value></value>
+						</text>
+					</data>
+				</atom>
+			</condition>
+			<condition>
+				<id1>C6828b4567ca37cd86b1d2f3d6a46a825</id1>
+				<id2>Cc711300d26b9aa2cbba9af9dbf6863f8</id2>
+				<id3>959c209fe8035538d84c958fe7f5aaa9</id3>
+				<id4>d13dfe8c18136deedef8b14e0fa15a42</id4>
+				<id5>Cc711300d26b9aa2cbba9af9dbf6863f8</id5>
+				<name></name>
+				<comment></comment>
+				<flags user_units="1" edit="1" visible="1"></flags>
+				<atom>
+					<group>Group::CSIMAGE</group>
+					<token>CSIMAGE::Resolution</token>
+					<operator>OP::greater</operator>
+					<data>
+						<num>
+							<value>25</value>
+							<tolerance></tolerance>
+						</num>
+					</data>
+				</atom>
+			</condition>
+			<condition>
+				<id1>C2f5c53e3c14b644d03e014caeabb32d2</id1>
+				<id2>C9f0476d6957883af646cc15732130b99</id2>
+				<id3>09f95ea5f8bb246c6bdde2f6c32a5ac8</id3>
+				<id4>905a75d1af7baa445727f7151ce02f4e</id4>
+				<id5>C9f0476d6957883af646cc15732130b99</id5>
+				<name></name>
+				<comment></comment>
+				<flags user_units="1" edit="1" visible="1"></flags>
+				<atom>
+					<group>Group::PAGE</group>
+					<token>PAGE::PageNo</token>
+					<operator>OP::equal</operator>
+					<data>
+						<num>
+							<value var_idx="1" var_pos="0" var_len="1">0</value>
+							<tolerance></tolerance>
+						</num>
+				</data>
+				</atom>
+				<variables>
+					<variable var_idx="1">Vd3d460c5d0c40f88f95650d6f8a051d9</variable>
+				</variables>
+			</condition>
+		</conditions>
+		<rules>
+			<rule>
+				<id1>Rcb9a6079f6823049eed72d44a43ac4fa</id1>
+				<id2>R9c3e07b73ed377057e4fc16f01f7775a</id2>
+				<id3>0a6a5f6e8b66c83e167e6ed442ca0614</id3>
+				<id4>1b5e2137d9de5eed4d83b06273468543</id4>
+				<id5>R6ee36174103b8d0e732e6d79c94c95d9</id5>
+				<name>Color Image</name>
+				<comment></comment>
+				<flags analysis="17" condition_logic="0" ignore_objects="0" edit="1" visible="1"></flags>
+				<creation>D:20190902153955+02&apos;00&apos;</creation>
+				<modification>D:20191009112618+02&apos;00&apos;</modification>
+				<report_no_match></report_no_match>
+				<conditions>
+					<condition>C3396ebf64a5e0fe9f4c92185897f94df</condition>
+					<condition>C6828b4567ca37cd86b1d2f3d6a46a825</condition>
+				</conditions>
+			</rule>
+			<rule>
+				<id1>Rf9f67d60c64f9a27f3a70aa709b1ea25</id1>
+				<id2>R4458eb99c648f9b5739793bfec624fac</id2>
+				<id3>7d218c3bc7c255c9a581fd0a20db58ac</id3>
+				<id4>514bc55fa52a7833b38dd0ff59d1dc27</id4>
+				<id5>R4458eb99c648f9b5739793bfec624fac</id5>
+				<name>Calculate Page From Page Array</name>
+				<comment></comment>
+				<flags analysis="17" condition_logic="0" ignore_objects="0" edit="1" visible="1"></flags>
+				<creation>D:20190902155140+02&apos;00&apos;</creation>
+				<modification>D:20191009112618+02&apos;00&apos;</modification>
+				<report_no_match></report_no_match>
+				<conditions>
+					<condition>C2f5c53e3c14b644d03e014caeabb32d2</condition>
+				</conditions>
+			</rule>
+		</rules>
+		<rulesets>
+		</rulesets>
+		<fixups>
+			<fixup>
+				<id1>Ff0e0200b64539a03c3e5942881bfb119</id1>
+				<id2>F84114d67181f344319d8c992cb37a143</id2>
+				<id3>4c1d22871d6665fea13e5f131797a058</id3>
+				<id4>02f3154eda6b5097aadb0f219954a243</id4>
+				<id5>F9c3212b1d7d9d4519d41df5b6d7ed9f4</id5>
+				<name>Output image resolution on image</name>
+				<comment></comment>
+				<flags user_units="1" scope="16" edit="1" visible="1"></flags>
+				<creation>D:20190902161410+02&apos;00&apos;</creation>
+				<modification>D:20191009112618+02&apos;00&apos;</modification>
+				<fcfgs>
+					<fcfg>
+						<ffeat>PlaceText</ffeat>
+						<fparams>
+							<fparam var_idx="5" var_pos="0" var_len="1">0</fparam>
+							<fparam>Arial, Helvetica, sans-serif</fparam>
+							<fparam>24</fparam>
+							<fparam var_idx="7" var_pos="0" var_len="1">0</fparam>
+							<fparam var_idx="8" var_pos="0" var_len="1">0</fparam>
+							<fparam>pt</fparam>
+							<fparam>LowerLeft</fparam>
+							<fparam>CropBox</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+							<fparam>image resolutions</fparam>
+							<fparam>CMYKPercent</fparam>
+							<fparam var_idx="9" var_pos="0" var_len="1">0</fparam>
+							<fparam var_idx="10" var_pos="0" var_len="1">0</fparam>
+							<fparam>100</fparam>
+							<fparam>0</fparam>
+							<fparam>0</fparam>
+							<fparam></fparam>
+							<fparam>100</fparam>
+							<fparam>Off</fparam>
+							<fparam>PRCCUSTOMCHECK</fparam>
+							<fparam>1</fparam>
+						</fparams>
+					</fcfg>
+				</fcfgs>
+				<reportFailed></reportFailed>
+				<rules>
+					<metalists>
+						<metalist metaid="M0aa8b18e8b655aaf0be44fa6ecf2e507">
+							<metadata>
+								<metakey>CALS_CLM_REFRULE_IDX</metakey>
+								<metavalue>0</metavalue>
+							</metadata>
+						</metalist>
+					</metalists>
+					<rule metaid="M0aa8b18e8b655aaf0be44fa6ecf2e507">Rf9f67d60c64f9a27f3a70aa709b1ea25</rule>
+				</rules>
+				<variables>
+					<variable var_idx="5">V2885bad85540552907bd58648a96f54e</variable>
+					<variable var_idx="7">Va2d8c947a5c6c389d9c1ad1806c97181</variable>
+					<variable var_idx="8">Ve8c1470f6d11b21bcbf6e9457c9cf85d</variable>
+					<variable var_idx="9">V12572415d1dcc2abf22b56896d302232</variable>
+					<variable var_idx="10">Vbe8328f52405f656bd387156fb0377f7</variable>
+				</variables>
+			</fixup>
+		</fixups>
+		<fixupsets>
+		</fixupsets>
+		<actions>
+		</actions>
+		<profiles>
+		</profiles>
+		<metaprofs>
+			<metaprof>
+				<id1>M1a006b933f9c1a207528934ca4c42ea2</id1>
+				<id2>M93ac3fb02e3cd484cb453e65e65386c2</id2>
+				<id3>ed867647aa8c605452cf8d169cc10d54</id3>
+				<id4>1e0360a5bd6cf8e3dd78dd52679aa41c</id4>
+				<id5>M2b9a86e9f1b611ee83081e0e6cb17367</id5>
+				<name>Mark images with resolution in a loop via a referenced Process Plan</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<metalist>
+					<metadata>
+						<metakey>author</metakey>
+						<metavalue>Dietrich von Seggern</metavalue>
+					</metadata>
+					<metadata>
+						<metakey>email</metakey>
+						<metavalue>d.seggern@callassoftware.com</metavalue>
+					</metadata>
+				</metalist>
+				<creation>D:20190903121054+02&apos;00&apos;</creation>
+				<modification>D:20191009112618+02&apos;00&apos;</modification>
+				<layout></layout>
+				<aar_template></aar_template>
+				<sequence>
+					<step type="1">
+						<enabled disablednext="-1">1</enabled>
+						<rule check_severity="3" check_timing="2">Rcb9a6079f6823049eed72d44a43ac4fa</rule>
+						<ppoptions>
+							<ppoption ret="0" next="-1">
+							</ppoption>
+							<ppoption ret="1" next="-1">
+							</ppoption>
+						</ppoptions>
+					</step>
+					<step type="4">
+						<enabled disablednext="-1">1</enabled>
+						<variable>V01403710925060fec18c58e7a9c2dfda</variable>
+						<ppoptions>
+							<ppoption ret="0" next="-1">
+							</ppoption>
+							<ppoption ret="1" next="-1">
+							</ppoption>
+						</ppoptions>
+					</step>
+					<step type="4">
+						<enabled disablednext="-1">1</enabled>
+						<variable>Vb5d6945dc354eac57bef237024fb6695</variable>
+						<ppoptions>
+							<ppoption ret="0" next="-1">
+							</ppoption>
+							<ppoption ret="1" next="-2">
+							</ppoption>
+						</ppoptions>
+					</step>
+					<step type="6">
+						<enabled disablednext="-1">1</enabled>
+						<metaprof>M6d7c6faf318f43ad91a1f02c3e6afcac</metaprof>
+						<ppoptions>
+							<ppoption ret="0" next="2">
+							</ppoption>
+							<ppoption ret="1" next="2">
+							</ppoption>
+						</ppoptions>
+					</step>
+				</sequence>
+				<variables>
+					<variable var_idx="0">V01403710925060fec18c58e7a9c2dfda</variable>
+					<variable var_idx="0">Vb5d6945dc354eac57bef237024fb6695</variable>
+				</variables>
+			</metaprof>
+			<metaprof>
+				<id1>M6d7c6faf318f43ad91a1f02c3e6afcac</id1>
+				<id2>M6c431554a9a82477c8723bc2e9340b3f</id2>
+				<id3>71c397855220fbbdc92266c57f79eec1</id3>
+				<id4>940953a95ff5dcb337cc758b7d72a5fe</id4>
+				<id5>Md91bbc2f0b6f1ebaa0b0d81a5fd178ec</id5>
+				<name>Print resolution on one image</name>
+				<comment></comment>
+				<flags edit="1" visible="1"></flags>
+				<metalist>
+					<metadata>
+						<metakey>author</metakey>
+						<metavalue></metavalue>
+					</metadata>
+					<metadata>
+						<metakey>email</metakey>
+						<metavalue></metavalue>
+					</metadata>
+				</metalist>
+				<creation>D:20190928150830+02&apos;00&apos;</creation>
+				<modification>D:20191009112618+02&apos;00&apos;</modification>
+				<layout></layout>
+				<aar_template></aar_template>
+				<sequence>
+					<step type="4">
+						<enabled disablednext="-1">1</enabled>
+						<variable>V9f4ba2b856ee0f67171931a9058ab79a</variable>
+						<ppoptions>
+							<ppoption ret="0" next="-1">
+							</ppoption>
+							<ppoption ret="1" next="-1">
+							</ppoption>
+						</ppoptions>
+					</step>
+					<step type="2">
+						<enabled disablednext="-1">1</enabled>
+						<fixup>Ff0e0200b64539a03c3e5942881bfb119</fixup>
+						<ppoptions>
+							<ppoption ret="0" next="-1">
+							</ppoption>
+							<ppoption ret="1" next="-1">
+							</ppoption>
+						</ppoptions>
+					</step>
+				</sequence>
+				<variables>
+					<variable var_idx="0">V9f4ba2b856ee0f67171931a9058ab79a</variable>
+				</variables>
+			</metaprof>
+		</metaprofs>
+		<profgroups>
+		</profgroups>
+	</package>
+</pdfpreflight>

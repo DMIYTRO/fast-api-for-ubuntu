@@ -24,6 +24,8 @@ _LABELS = {
     "order.callas_fix.accepted": "Исправление Callas принято",
     "order.callas_fix.rejected": "Исправление Callas отклонено",
     "order.callas_fix.reset": "Исправление Callas запущено заново: файл снова проверяется по исходнику",
+    "order.lowres_preview.generated": "Построена разметка разрешения",
+    "order.lowres_preview.attached": "Разметка разрешения приложена к возврату",
     "pdf.created": "PDF создан",
 }
 

@@ -20,6 +20,10 @@ export async function request(path, options = {}) {
   return payload;
 }
 
+// «Показать разрешение»: разметка ppi изображений PDF заказа (services/lowres_preview.py).
+const lowResBase = (runId, orderId) =>
+  `/api/checks/${encodeURIComponent(runId)}/orders/${encodeURIComponent(orderId)}/lowres-preview`;
+
 // Без fileId — собранный PDF заказа; с fileId — исходный PDF-файл заказа (заказ без итогового PDF).
 const callasFixBase = (runId, orderId, fileId = "") =>
   `/api/checks/${encodeURIComponent(runId)}/orders/${encodeURIComponent(orderId)}/callas/fix${fileId ? `/source/${encodeURIComponent(fileId)}` : ""}`;
@@ -47,6 +51,8 @@ export const api = {
   startCallasFix: (runId, orderId, planKey, fileId = "") => request(`${callasFixBase(runId, orderId, fileId)}`, { method: "POST", body: JSON.stringify({ plan: planKey }) }),
   callasFixStatus: (runId, orderId, fileId = "") => request(`${callasFixBase(runId, orderId, fileId)}`),
   decideCallasFix: (runId, orderId, decision, fileId = "") => request(`${callasFixBase(runId, orderId, fileId)}/decision`, { method: "POST", body: JSON.stringify({ decision }) }),
+  lowResPreview: (runId, orderId) => request(lowResBase(runId, orderId), { method: "POST" }),
+  attachLowResPreview: (runId, orderId) => request(`${lowResBase(runId, orderId)}/attach`, { method: "POST" }),
   history: (params = {}) => request(`/api/order-history?${new URLSearchParams(params)}`),
   // Журнал заказа записи истории: найденные проблемы, автоисправления, действия оператора, решение.
   orderJournal: (actionId) => request(`/api/order-history/${encodeURIComponent(actionId)}/journal`),

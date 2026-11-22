@@ -58,6 +58,8 @@ JOURNAL_EVENT_TYPES: tuple[str, ...] = (
     "order.callas_fix.reset",
     "order.callas_fix.save_failed",
     "order.callas_source_fix",
+    "order.lowres_preview.generated",
+    "order.lowres_preview.attached",
     "order.correction_confirmed",
     "order.correction_rejected",
     "order.pdf_revision",
@@ -791,6 +793,37 @@ def _operator_changes(
                 "at": at, "event_id": event["id"], "status": data.get("status") or snapshot.get("status"),
                 "revision": snapshot.get("current_pdf_revision"),
             })
+        elif kind == "order.lowres_preview.generated":
+            marked = data.get("marked_images")
+            images = [_mapping(item) for item in _list(data.get("images"))]
+            low = [item for item in images if item.get("low") is True]
+            parts = [f"размечено изображений: {marked}" if isinstance(marked, int) else None]
+            if images:
+                parts.append(f"ниже {data.get('threshold_ppi') or 250} ppi: {len(low)}")
+            entries.append(_entry(
+                KIND_OPERATOR, "operator:lowres_preview", "callas",
+                "Построена разметка разрешения изображений («Показать разрешение»)",
+                detail="; ".join(filter(None, parts)) or None, file=file,
+                pages=[item.get("page") for item in low] or None,
+                count=marked if isinstance(marked, int) else None, at=at, outcome="done",
+                data={
+                    "event_id": event["id"], "pages_total": data.get("pages"),
+                    "marked_images": marked, "low_images": len(low) if images else None,
+                    "threshold_ppi": data.get("threshold_ppi"), "pdf_kind": data.get("pdf_kind"),
+                    # Не ``pdf_revision``: этот ключ означает «ревизию создало это действие».
+                    "source_pdf_revision": data.get("pdf_revision"),
+                },
+            ))
+        elif kind == "order.lowres_preview.attached":
+            entries.append(_entry(
+                KIND_OPERATOR, "operator:lowres_preview_attached", "operator",
+                "Разметка разрешения приложена к возврату как превью для клиента",
+                file=file, at=at, outcome="applied",
+                data={
+                    "event_id": event["id"], "preview": _name(data.get("preview")),
+                    "marked_images": data.get("marked_images"), "source_pdf_revision": data.get("pdf_revision"),
+                },
+            ))
         elif kind == "order.forced_print":
             errors = [str(item) for item in _list(data.get("errors"))]
             entries.append(_entry(
