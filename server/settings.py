@@ -186,6 +186,50 @@ def _env_strict_source_dirs(
     return tuple(names)
 
 
+def _env_allowed_roots() -> tuple[Path, ...]:
+    """IMAGE_MAGIC_ALLOWED_ROOTS (через os.pathsep), как в control_panel; пусто — папка проекта."""
+    configured = os.environ.get("IMAGE_MAGIC_ALLOWED_ROOTS", "")
+    roots = [
+        Path(value).expanduser().resolve()
+        for value in configured.split(os.pathsep)
+        if value.strip()
+    ]
+    return tuple(roots or [PROJECT_DIR.resolve()])
+
+
+def _env_fetch_mode(name: str) -> str:
+    raw = os.environ.get(name, "").strip().lower() or "move"
+    if raw not in {"move", "copy"}:
+        # Опечатка не должна удалять исходники: неизвестное значение — безопасный copy.
+        logging.getLogger("image_magic").warning(
+            "%s=%r не распознан (move|copy), используется copy", name, raw
+        )
+        return "copy"
+    return raw
+
+
+def _env_fetch_routes(name: str) -> tuple[tuple[tuple[tuple[str, ...], str], ...], str]:
+    """(маршруты, ошибка): неверный формат не роняет приложение, а запрещает получение."""
+    from services.order_fetch import FetchConfigError, parse_routes
+
+    try:
+        return parse_routes(os.environ.get(name, "")), ""
+    except FetchConfigError as exc:
+        logging.getLogger("image_magic").warning("%s: %s", name, exc)
+        return (), f"{name}: {exc}"
+
+
+def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return min(max(value, minimum), maximum)
+
+
 def _callas_poll_intervals() -> tuple[float, float]:
     """Начальный и максимальный интервал опроса callas; максимум не меньше начального."""
     interval = max(0.1, float(os.environ.get("IMAGE_MAGIC_CALLAS_POLL_INTERVAL_SECONDS", "0.2")))
@@ -305,6 +349,27 @@ class Settings:
     # 6 — лимит рендер-линии сервера callas (из 8 рабочих слотов).
     callas_max_concurrent_jobs: int = 6
     callas_max_retries: int = 4
+    # Входная папка по умолчанию и разрешённые корни (те же переменные, что у control_panel).
+    input_dir: Path = (PROJECT_DIR / "input_files").resolve()
+    allowed_roots: tuple[Path, ...] = (PROJECT_DIR.resolve(),)
+    # «Получить заказ» (services/order_fetch.py): перенос из сетевых папок во входную.
+    fetch_source_root: Path = Path("/mnt/work20")
+    # Полная замена маршрутов «src1|src2>dst;...», пусто — маршруты по умолчанию.
+    fetch_routes: tuple[tuple[tuple[str, ...], str], ...] = ()
+    # Ошибка разбора IMAGE_MAGIC_FETCH_ROUTES: получение заказов отказывает с этим текстом.
+    fetch_routes_error: str = ""
+    # Корень источника обязан быть точкой монтирования (иначе — пустая локальная папка).
+    fetch_require_mount: bool = True
+    fetch_workers: int = 4
+    fetch_mode: str = "move"
+    # Файл, изменённый позже этого, ещё дописывается клиентом — не трогаем.
+    fetch_min_age_seconds: float = 10.0
+    fetch_retries: int = 3
+    # Окно стабильности исходника (с): последний stat — не раньше, чем через столько
+    # секунд после stat сканирования (атрибуты CIFS кэшируются).
+    fetch_stable_seconds: float = 2.0
+    # None — <log_dir>/order-fetch.log.
+    fetch_log: Path | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -341,6 +406,7 @@ class Settings:
                 "IMAGE_MAGIC_CORRECTION_CONFIRM_MAX_MM не может быть меньше "
                 f"IMAGE_MAGIC_AUTO_CORRECT_MAX_MM ({auto_correct_max_mm:g} мм)"
             )
+        fetch_routes, fetch_routes_error = _env_fetch_routes("IMAGE_MAGIC_FETCH_ROUTES")
         return cls(
             database_url=os.environ.get(
                 "IMAGE_MAGIC_DATABASE_URL", f"sqlite:///{default_db}"
@@ -578,5 +644,29 @@ class Settings:
             ),
             callas_max_retries=max(
                 0, int(os.environ.get("IMAGE_MAGIC_CALLAS_MAX_RETRIES", "4"))
+            ),
+            input_dir=Path(
+                os.environ.get("IMAGE_MAGIC_INPUT_DIR", PROJECT_DIR / "input_files")
+            ).expanduser().resolve(),
+            allowed_roots=_env_allowed_roots(),
+            fetch_source_root=Path(
+                os.environ.get("IMAGE_MAGIC_FETCH_SOURCE_ROOT", "").strip() or "/mnt/work20"
+            ).expanduser(),
+            fetch_routes=fetch_routes,
+            fetch_routes_error=fetch_routes_error,
+            fetch_require_mount=_env_bool("IMAGE_MAGIC_FETCH_REQUIRE_MOUNT", True),
+            fetch_workers=_env_int("IMAGE_MAGIC_FETCH_WORKERS", 4, minimum=1, maximum=32),
+            fetch_mode=_env_fetch_mode("IMAGE_MAGIC_FETCH_MODE"),
+            fetch_min_age_seconds=_env_float(
+                "IMAGE_MAGIC_FETCH_MIN_AGE_SECONDS", 10.0, minimum=0.0, maximum=86400.0
+            ),
+            fetch_retries=_env_int("IMAGE_MAGIC_FETCH_RETRIES", 3, minimum=0, maximum=10),
+            fetch_stable_seconds=_env_float(
+                "IMAGE_MAGIC_FETCH_STABLE_SECONDS", 2.0, minimum=0.0, maximum=600.0
+            ),
+            fetch_log=(
+                Path(os.environ["IMAGE_MAGIC_FETCH_LOG"].strip()).expanduser()
+                if os.environ.get("IMAGE_MAGIC_FETCH_LOG", "").strip()
+                else None
             ),
         )

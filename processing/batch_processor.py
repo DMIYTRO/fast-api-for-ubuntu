@@ -426,11 +426,15 @@ class BatchProcessor:
         # os.scandir entries carry the file type from the directory listing, so
         # is_file() costs no extra stat per entry (matters on a network share);
         # the cheap suffix test runs first and spares even that for junk files.
+        # Имена с точкой в начале — служебные (``.DS_Store``, ``._*`` macOS, временные
+        # ``.imfetch-*.part`` «Получить заказ», services/order_fetch.py): не исходники.
         with os.scandir(folder) as entries:
             return [
                 folder / entry.name
                 for entry in entries
-                if Path(entry.name).suffix.lower() in wanted and entry.is_file()
+                if not entry.name.startswith(".")
+                and Path(entry.name).suffix.lower() in wanted
+                and entry.is_file()
             ]
 
     def source_folder_of(self, path: Path) -> str:

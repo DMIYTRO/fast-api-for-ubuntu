@@ -3,16 +3,18 @@ import { onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useAuthStore } from "../stores/auth.js";
 import { useChecksStore } from "../stores/checks.js";
+import { useOrderFetchStore } from "../stores/orderFetch.js";
 import { orderIdentity } from "../stores/orderIdentity.js";
 import AppHeader from "../components/AppHeader.vue";
 import StartCheckPanel from "../components/StartCheckPanel.vue";
 import ActiveRun from "../components/ActiveRun.vue";
+import OrderFetch from "../components/OrderFetch.vue";
 import RunHistory from "../components/RunHistory.vue";
 import OrderFilters from "../components/OrderFilters.vue";
 import OrderCard from "../components/OrderCard.vue";
 import ActionBar from "../components/ActionBar.vue";
 
-const auth = useAuthStore(); const checks = useChecksStore(); const router = useRouter();
+const auth = useAuthStore(); const checks = useChecksStore(); const orderFetch = useOrderFetchStore(); const router = useRouter();
 const actionBusy = ref(false); const toast = ref("");
 const showBackToTop = ref(false);
 async function logout() { await auth.logout(); router.replace("/login"); }
@@ -58,18 +60,21 @@ onMounted(() => {
   window.addEventListener("scroll", updateBackToTop, { passive: true });
   updateBackToTop();
   checks.initialize();
+  orderFetch.initialize();
 });
 onBeforeUnmount(() => {
   window.removeEventListener("auth:expired", expired);
   window.removeEventListener("scroll", updateBackToTop);
   checks.stopListening();
+  orderFetch.stop();
 });
 </script>
 
 <template>
-  <AppHeader :path="checks.activeRun?.input_path || checks.config?.default_input_path" :status="checks.activeRun?.status" :connection="checks.connection" @new-check="checks.drawerOpen = true" @logout="logout" />
+  <AppHeader :path="checks.activeRun?.input_path || checks.config?.default_input_path" :status="checks.activeRun?.status" :connection="checks.connection" show-fetch :fetch-busy="orderFetch.busy" @new-check="checks.drawerOpen = true" @fetch-orders="orderFetch.start()" @logout="logout" />
   <main class="dashboard">
     <div v-if="checks.error" class="page-error" role="alert">{{ checks.error }} <button @click="checks.initialize()">Повторить</button></div>
+    <OrderFetch />
     <template v-if="checks.activeRun">
       <ActiveRun :run="checks.activeRun" :events="checks.events" :connection="checks.connection" :file-progress="checks.fileProgress" @cancel="checks.cancel" />
       <RunHistory :runs="checks.runs" :active-id="checks.activeRun.id" @select="checks.selectRun" />

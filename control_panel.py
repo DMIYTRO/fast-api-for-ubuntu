@@ -34,6 +34,7 @@ from core.tool_runner import run_command
 from server.auth import AuthService, create_auth_router, require_session
 from server.callas_fix_routes import create_callas_fix_router
 from server.lowres_preview_routes import create_lowres_preview_router
+from server.order_fetch_routes import create_order_fetch_router
 from server.database import Database, configure_database, get_db, upgrade_database
 from server.errors import APIError, error_payload, install_error_handlers
 from server.logging_config import configure_logging
@@ -52,6 +53,7 @@ from services import (
     RunNotFoundError,
     BatchProcessorAdapter,
 )
+from services.order_fetch import OrderFetchService, fetch_config_from_settings
 from services.pitstop.baseline import FixBaselinePolicy
 from services.pitstop import (
     PitStopProfile,
@@ -1020,6 +1022,7 @@ def create_app(
     adapter_factory=None,
     callas_fix_service=None,
     lowres_preview_service=None,
+    order_fetch_service=None,
     initialize_schema: bool = False,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
@@ -1113,6 +1116,11 @@ def create_app(
             with suppress(asyncio.CancelledError):
                 await heartbeat_task
             application.state.order_workflow.shutdown()
+            # Получение заказов: отменить между блоками (временный файл удаляется,
+            # исходник не тронут), чтобы рестарт не обрывал копирование на полуслове.
+            fetch_service = application.state.order_fetch_service
+            if callable(getattr(fetch_service, "cancel", None)) and fetch_service.cancel():
+                await asyncio.to_thread(fetch_service.wait, 15)
             coordinator.shutdown(timeout=None)
             database.dispose()
             logger.info("application.stopped")
@@ -1187,6 +1195,13 @@ def create_app(
         if lowres_preview_service is not None
         else _lowres_preview_service(settings)
     )
+    # «Получить заказ»: конфиг читается при каждом запуске, чтобы подхватить
+    # монтирование сетевой папки, сделанное после старта приложения.
+    application.state.order_fetch_service = (
+        order_fetch_service
+        if order_fetch_service is not None
+        else OrderFetchService(lambda: fetch_config_from_settings(settings))
+    )
     install_error_handlers(application)
 
     @application.middleware("http")
@@ -1242,6 +1257,7 @@ def create_app(
             storage_id=_custom_preview_storage_id,
         )
     )
+    application.include_router(create_order_fetch_router(protected=protected))
 
     @application.get("/api/config", dependencies=[Depends(protected)])
     def get_config(request: Request) -> dict[str, Any]:

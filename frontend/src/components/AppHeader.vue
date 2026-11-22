@@ -1,6 +1,7 @@
 <script setup>
-defineProps({ path: String, status: String, connection: String });
-defineEmits(["new-check", "logout"]);
+// showFetch/fetchBusy — кнопка «Получить заказ» (только на рабочем пульте, см. OrderFetch.vue).
+defineProps({ path: String, status: String, connection: String, showFetch: Boolean, fetchBusy: Boolean });
+defineEmits(["new-check", "fetch-orders", "logout"]);
 const labels = { queued: "В очереди", running: "Проверка идёт", waiting_confirmation: "Нужно решение", completed: "Готово", failed: "Ошибка", cancelled: "Отменено" };
 </script>
 
@@ -26,6 +27,7 @@ const labels = { queued: "В очереди", running: "Проверка идё�
     </div>
     <div class="header-actions">
       <RouterLink class="button ghost small" to="/history">История</RouterLink>
+      <button v-if="showFetch" class="button ghost small order-fetch-button" type="button" :disabled="fetchBusy" :aria-busy="fetchBusy" title="Перенести файлы заказов из сетевых папок в рабочую папку" @click="$emit('fetch-orders')">Получить заказ</button>
       <button class="button primary small" @click="$emit('new-check')">＋ Новая проверка</button>
       <button class="button ghost small" @click="$emit('logout')">Выйти</button>
     </div>
