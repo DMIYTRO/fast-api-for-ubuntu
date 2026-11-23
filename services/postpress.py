@@ -16,6 +16,19 @@ _COUNT_PATTERN = re.compile(
 )
 
 
+def normalize_customer_comment(value: object) -> str | None:
+    """Full customer comment from Sborka ``comment_client`` as plain text.
+
+    Every line is kept (line breaks are unified to ``\\n``); only blank space around
+    the whole text is dropped.  Anything that is not a non-empty string means
+    "no comment".
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    return text or None
+
+
 def normalize_postpress(post_text: object) -> dict[str, Any] | None:
     """Return fold metadata, preserving unknown Sborka text for operators.
 

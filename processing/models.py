@@ -131,6 +131,9 @@ class OrderCheck:
     warnings: list[str] = field(default_factory=list)
     # Enriched from Sborka orderinfo when that optional integration is enabled.
     postpress: dict[str, object] | None = None
+    # Полный комментарий заказчика (``comment_client`` записи orderinfo Sborka), строки
+    # сохранены; None — комментария нет или Sborka не ответила.
+    customer_comment: str | None = None
     # Комплект Sborka (``services/order_kits.py``): main_id, member_ids, position, size.
     kit: dict[str, object] | None = None
     # Нарушено правило числа страниц на уровне заказа (лишний двухстраничный PDF и т. п.).

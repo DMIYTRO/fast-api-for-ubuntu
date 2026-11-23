@@ -51,6 +51,19 @@ describe("connectRunEvents", () => {
     expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ order_id: "1", type: "order.completed", event_id: "42" }));
   });
 
+  it("delivers the late customer comment update to the store", () => {
+    const onEvent = vi.fn();
+    connectRunEvents("run-1", { onEvent });
+    FakeEventSource.instances[0].emit(
+      "order.customer_comment",
+      { order_id: "1", order: { order_id: "1", customer_comment: "текст" } },
+      9,
+    );
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "order.customer_comment", event_id: "9", order: { order_id: "1", customer_comment: "текст" },
+    }));
+  });
+
   it("tracks ids of default (unnamed) messages and never moves the cursor backwards", () => {
     connectRunEvents("run-1", { onEvent: vi.fn() });
     const first = FakeEventSource.instances[0];
