@@ -16,15 +16,21 @@
   номера этих страниц). Блок ``document`` службы (средние по всему документу)
   в DTO не переносится, чтобы не смешивать его со страничными значениями;
 * флаг ``overflow`` («Перелив») — максимум выше ``max_percent``;
-* флаг ``light_areas`` («Светлые участки») — НЕ по среднему: по цветоделениям callas
-  (``sep_process``, PNG, ``LIGHT_AREA_PPI``) ищутся сплошные участки, где сумма красок
-  в точке (TAC) от ``LIGHT_FLOOR_PERCENT`` до ``min_percent``, шириной не меньше
-  ``min_width_mm``; флаг ставится каждой странице, где такие участки занимают не меньше
-  ``min_area_percent`` площади. Среднее путало: одинаковый светлый фон на лице с
-  тёмной картинкой давал 50 %, а на обороте — 15 % и флаг только обороту (26226163).
-  Белая бумага (TAC < ``LIGHT_FLOOR_PERCENT``) светлым участком не считается.
-  Старый флаг ``underflow`` (среднее ниже минимума) больше не ставится; в сохранённых
-  запусках он остаётся и показывается как есть.
+* флаг ``light_areas`` («Светлые участки») означает: БОЛЬШАЯ ЧАСТЬ макета напечатана
+  светлой, но не нулевой заливкой (плохо и неровно ложится в печати). По цветоделениям
+  callas (``sep_process``, PNG, ``LIGHT_AREA_PPI``) ищутся сплошные участки, где сумма
+  красок в точке (TAC) от ``floor_percent`` (включительно) до ``min_percent``, шириной не
+  меньше ``min_width_mm``; флаг ставится странице, где такие участки занимают не меньше
+  ``min_area_percent`` ПЛОЩАДИ СТРАНИЦЫ (по умолчанию 50 %). Доля считается от страницы,
+  а не от запечатанной площади: иначе маленький светлый логотип на белом давал бы 100 %.
+  Белая бумага и шум около нуля (TAC < ``floor_percent``, по умолчанию 3 %: шаг PNG —
+  0.4 %, «белый» фон растра после RGB→CMYK даёт 1–3 % — 26251771, 30 % листа при 2–3 %)
+  светлым участком не считаются, поэтому белый макет и макет с небольшой заливкой
+  флага не получают. До 2026-11-23 порог доли был 5 % и пол 1 %: из 15 заказов с флагом
+  14 приняты в печать (акварель, фото со светлым фоном), а заказы, которые операторы
+  вернули с «Мінімальна барвистість», имеют 74–86 % (docs/ink-coverage.md).
+  Старый флаг ``underflow`` (среднее ниже минимума — срабатывал на белых макетах)
+  больше не ставится; в сохранённых запусках он остаётся и показывается как есть.
 
 Флаги пока не меняют статус заказа: это основа для отображения на карточке.
 """
@@ -52,9 +58,10 @@ FLAG_LABELS = {
 }
 #: Разрешение цветоделений для поиска светлых участков (1 px ≈ 0.5 мм).
 LIGHT_AREA_PPI = 50
-#: Ниже этой суммы красок точка считается белой бумагой, а не светлым участком.
-LIGHT_FLOOR_PERCENT = 1.0
-DEFAULT_LIGHT_MIN_AREA_PERCENT = 5.0
+#: Ниже этой суммы красок точка считается белой бумагой (или шумом), а не светлым участком.
+LIGHT_FLOOR_PERCENT = 3.0
+#: Флаг — если светлые участки занимают не меньше этой доли площади страницы, %.
+DEFAULT_LIGHT_MIN_AREA_PERCENT = 50.0
 DEFAULT_LIGHT_MIN_WIDTH_MM = 2.5
 _PROCESS_INKS = frozenset({"cyan", "magenta", "yellow", "black"})
 
@@ -103,13 +110,15 @@ class InkCoverageThresholds:
 
 @dataclass(frozen=True, slots=True)
 class LightAreaSettings:
-    """Поиск светлых участков: доля площади страницы и минимальная ширина участка."""
+    """Поиск светлых участков: доля площади страницы, минимальная ширина участка и
+    пол суммы красок (ниже — белая бумага)."""
 
     min_area_percent: float = DEFAULT_LIGHT_MIN_AREA_PERCENT
     min_width_mm: float = DEFAULT_LIGHT_MIN_WIDTH_MM
+    floor_percent: float = LIGHT_FLOOR_PERCENT
 
     def __post_init__(self) -> None:
-        for value in (self.min_area_percent, self.min_width_mm):
+        for value in (self.min_area_percent, self.min_width_mm, self.floor_percent):
             if not math.isfinite(value) or value < 0:
                 raise ValueError("Настройки светлых участков должны быть неотрицательными числами.")
 
@@ -128,7 +137,7 @@ class LightAreas:
         return {
             "status": self.status,
             "tac_max_percent": self.tac_max_percent,
-            "floor_percent": LIGHT_FLOOR_PERCENT,
+            "floor_percent": self.settings.floor_percent,
             "min_area_percent": self.settings.min_area_percent,
             "min_width_mm": self.settings.min_width_mm,
             "pages": [{"page": page, "area_percent": share} for page, share in self.pages],
@@ -259,6 +268,7 @@ def evaluate(result: InkCoverageResult, thresholds: InkCoverageThresholds | None
     light = result.light_areas
     if thresholds.min_percent is not None and light is not None and light.status == "completed":
         for page, share in light.pages:
+            # Доля 0 (белая страница) — никогда не флаг, даже при пороге 0.
             if share > 0 and share >= light.settings.min_area_percent:
                 flags.append(
                     InkCoverageFlag(
@@ -350,8 +360,10 @@ def thresholds_for(
 def light_area_share(
     cyan: Path, magenta: Path, yellow: Path, black: Path,
     *, tac_max_percent: float, min_width_mm: float, ppi: int = LIGHT_AREA_PPI,
+    floor_percent: float = LIGHT_FLOOR_PERCENT,
 ) -> float:
-    """Доля страницы (0..100) в сплошных светлых участках: TAC от пола до ``tac_max_percent``.
+    """Доля ВСЕЙ страницы (0..100) в сплошных светлых участках: TAC от ``floor_percent``
+    (белая бумага и шум ниже него не считаются) до ``tac_max_percent``.
 
     PNG цветоделений callas: 255 — краски нет, 0 — 100 %. Участок уже ``min_width_mm``
     (кромки текста, тонкие линии, сглаживание) отбрасывается морфологическим открытием.
@@ -376,7 +388,7 @@ def light_area_share(
         lambda a: (a["c"] + a["m"] + a["y"] + a["k"]) * 100 / 255,
         c=channels[0], m=channels[1], y=channels[2], k=channels[3],
     ).convert("L")
-    low = max(1, math.ceil(LIGHT_FLOOR_PERCENT))
+    low = max(1, math.ceil(floor_percent))
     high = max(low, math.ceil(tac_max_percent))
     mask = tac.point([255 if low <= value < high else 0 for value in range(256)])
     width_px = int(round(min_width_mm / 25.4 * ppi))
@@ -406,7 +418,8 @@ def measure_light_areas(
                 continue
             pages.append(
                 (page, light_area_share(*paths, tac_max_percent=tac_max_percent,
-                                        min_width_mm=settings.min_width_mm))
+                                        min_width_mm=settings.min_width_mm,
+                                        floor_percent=settings.floor_percent))
             )
         return LightAreas(
             status="completed", tac_max_percent=tac_max_percent, settings=settings, pages=tuple(pages)

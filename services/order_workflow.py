@@ -33,14 +33,22 @@ from .order_kits import KitResolver, run_orders
 from .file_lifecycle import FileConflictError, FileLifecycle, FileLifecycleError
 from .callas_fix import read_state_for_run as read_callas_fix_state_for_run
 from .check_policy import PolicySettings, apply_check_policy, stored_order_policy
-from .print_readiness import is_forced_build, pitstop_ready, print_blockers, print_mode
+from .print_readiness import (
+    is_forced_build,
+    needs_print_build,
+    pitstop_ready,
+    print_blockers,
+    print_mode,
+)
 from .forced_print import (
     FORCED_PRINT_BUILD,
+    PRINT_BUILD,
     ForcedPrintBuild,
     ForcedPrintBuildError,
     forced_build_assessment,
+    print_build_assessment,
 )
-from .overprint import overprint_block
+from .overprint import overprint_block, overprint_status_effect
 from .pdf_routing import completed_status, pdf_root_for, route_pdf
 from .pdf_revision_validation import readable_pdf, validate_pdf_revision
 from .return_preview import (
@@ -75,6 +83,11 @@ FINISHED_RUN_STATUSES = frozenset({"completed", "failed", "cancelled"})
 KIT_RETURN_MEMORY = timedelta(days=3)
 #: Статусы заказа комплекта, которые возврат комплекта уже не меняет.
 TERMINAL_KIT_STATUSES = frozenset({"returned_for_rework", "accepted_for_print"})
+
+
+class PrintBuildNeedsConfirmation(FileLifecycleError):
+    """Итоговый PDF жёлтого заказа собран, но вышел красным (например, overprint):
+    ревизия сохранена, печать — только по подтверждению оператора."""
 
 
 class OrderWorkflowService:
@@ -349,16 +362,27 @@ class OrderWorkflowService:
         return updated, pitstop, revision, sha256
 
     def _forced_print_build(
-        self, run: dict[str, Any], order: dict[str, Any]
+        self,
+        run: dict[str, Any],
+        order: dict[str, Any],
+        *,
+        created_by_action: str = FORCED_PRINT_BUILD,
     ) -> tuple[dict[str, Any], dict[str, Any] | None, int, str, dict[str, Any]]:
-        """Собрать итоговый PDF красного заказа с одним лишь низким разрешением и
-        зарегистрировать его новой ревизией с проверкой PitStop (как ``recheck_pdf_revision``).
+        """Собрать итоговый PDF заказа с диагностическим PDF и одним лишь низким разрешением
+        и зарегистрировать его новой ревизией с проверкой PitStop (как ``recheck_pdf_revision``).
+
+        ``created_by_action``: ``forced_print_build`` — красный заказ по подтверждению
+        оператора; ``print_build`` — жёлтый заказ (диагностический PDF не печатается).
 
         Возвращает ``(заказ, pitstop, ревизия, sha256, сведения для журнала)``. Любой сбой
         (сборка, PitStop, превью) — ``FileLifecycleError`` с текстом для оператора; тогда
         ревизия не сохраняется и диагностический PDF остаётся на месте.
         """
-        assessment = forced_build_assessment(order)
+        assessment = (
+            print_build_assessment(order)
+            if created_by_action == PRINT_BUILD
+            else forced_build_assessment(order)
+        )
         if assessment is None or not assessment.eligible:
             raise FileLifecycleError(
                 "Заказ нельзя собрать для печати: кроме низкого разрешения у него есть другие "
@@ -373,8 +397,8 @@ class OrderWorkflowService:
         root = pdf_root_for(previous) if previous else Path(run["options"]["input_path"]) / "PDF"
         root.mkdir(parents=True, exist_ok=True)
         logger.info(
-            "order.forced_print_build.start run_id=%s order_id=%s min_dpi=%s",
-            run.get("id"), order.get("order_id"), assessment.min_dpi,
+            "order.forced_print_build.start run_id=%s order_id=%s min_dpi=%s action=%s",
+            run.get("id"), order.get("order_id"), assessment.min_dpi, created_by_action,
         )
         with share_temp_dir(prefix=".forced-build-", dir=root) as build_dir:
             try:
@@ -392,10 +416,10 @@ class OrderWorkflowService:
                 ) from exc
             updated, pitstop, revision, sha256 = self.recheck_pdf_revision(
                 run, order, Path(build.pdf_path),
-                prebuilt=build, created_by_action=FORCED_PRINT_BUILD,
+                prebuilt=build, created_by_action=created_by_action,
             )
         info = {
-            "created_by_action": FORCED_PRINT_BUILD,
+            "created_by_action": created_by_action,
             "pdf_revision": revision,
             "pdf_sha256": sha256,
             "status_after_build": updated.get("status"),
@@ -407,9 +431,9 @@ class OrderWorkflowService:
             "low_dpi_errors": list(assessment.low_dpi_messages[:20]),
         }
         logger.warning(
-            "order.forced_print_build.done run_id=%s order_id=%s revision=%s status=%s verdict=%s",
+            "order.forced_print_build.done run_id=%s order_id=%s revision=%s status=%s verdict=%s action=%s",
             run.get("id"), order.get("order_id"), revision, info["status_after_build"],
-            info["pitstop_verdict"],
+            info["pitstop_verdict"], created_by_action,
         )
         return updated, pitstop, revision, sha256, info
 
@@ -1034,6 +1058,39 @@ class OrderWorkflowService:
                         }
                     )
                     continue
+                # Жёлтый (зелёный) заказ с диагностическим PDF: сам файл не печатается.
+                # Одно лишь низкое разрешение — итоговый PDF собирается при печати
+                # (``print_build``), иначе печать заблокирована.
+                print_build = False
+                if (
+                    action == "print"
+                    and order_status in {"passed", "warning"}
+                    and order.get("pdf_kind") == "diagnostic"
+                ):
+                    hard_blockers = [
+                        item for item in print_blockers(order, fix_state)
+                        if item["kind"] != "approval"
+                    ]
+                    if hard_blockers:
+                        add_result(
+                            {
+                                "order_id": order_id,
+                                "status": "rejected",
+                                "code": hard_blockers[0]["code"],
+                                "message": " ".join(item["message"] for item in hard_blockers),
+                                "blockers": hard_blockers,
+                            }
+                        )
+                        continue
+                    print_build = needs_print_build(order)
+                    if not print_build:  # pragma: no cover — print_blockers дал бы no_final_pdf
+                        add_result({
+                            "order_id": order_id, "status": "rejected", "code": "no_final_pdf",
+                            "message": "Готового итогового PDF нет: диагностический PDF в печать не отправляется.",
+                        })
+                        continue
+                builds_pdf = forced_build or print_build
+                build_key = FORCED_PRINT_BUILD if forced_build else PRINT_BUILD
                 if action == "print" and order.get("pdf_path"):
                     approval = [
                         item
@@ -1198,20 +1255,33 @@ class OrderWorkflowService:
                         add_result(self._busy_result(order_id, action, active))
                         continue
                     forced_build_info: dict[str, Any] | None = None
-                    forced_source_order = deepcopy(order) if forced_build else None
+                    forced_source_order = deepcopy(order) if builds_pdf else None
                     try:
                         transition_order = order
                         reviewed_pitstop = None
                         reviewed_revision = None
                         reviewed_sha256 = None
-                        if forced_build:
+                        if builds_pdf:
                             # Итоговый PDF собирается и проверяется PitStop прямо сейчас;
                             # без завершённого PitStop ревизия не сохраняется и печати нет.
                             order, reviewed_pitstop, reviewed_revision, reviewed_sha256, forced_build_info = (
-                                self._forced_print_build(run, order)
+                                self._forced_print_build(run, order, created_by_action=build_key)
                             )
                             previous_order = deepcopy(order)
                             transition_order = order
+                            if print_build and order.get("status") not in {"passed", "warning"}:
+                                # Собранный PDF жёлтого заказа вышел красным: без подтверждения
+                                # оператора не печатаем (ревизия сохранена, заказ теперь красный).
+                                raise PrintBuildNeedsConfirmation(
+                                    "Итоговый PDF собран, но содержит ошибки (статус «ошибка»"
+                                    + (
+                                        ", overprint"
+                                        if overprint_status_effect(order.get("prepress")) == "error"
+                                        else ""
+                                    )
+                                    + "): заказ не отправлен в печать. Проверьте новую ревизию и "
+                                    "отправьте её в печать с подтверждением под вашу ответственность."
+                                )
                         elif action == "print":
                             input_root = Path(run["options"]["input_path"]).resolve()
                             current_pdf = Path(str(order.get("pdf_path") or ""))
@@ -1295,10 +1365,14 @@ class OrderWorkflowService:
                         failure_response: dict[str, Any] = {}
                         if reviewed_pitstop is not None:
                             failure_response["pitstop"] = reviewed_pitstop
-                        if forced_build:
-                            failure_response[FORCED_PRINT_BUILD] = {
+                        if builds_pdf:
+                            failure_response[build_key] = {
                                 **(forced_build_info or {}),
-                                "status": "failed",
+                                "status": (
+                                    "needs_confirmation"
+                                    if isinstance(exc, PrintBuildNeedsConfirmation)
+                                    else "failed"
+                                ),
                                 "message": str(exc),
                             }
                         if failure_response:
@@ -1325,12 +1399,27 @@ class OrderWorkflowService:
                                 "order_id": order_id,
                                 "status": "conflict"
                                 if conflict is not None
+                                else "rejected"
+                                if isinstance(exc, PrintBuildNeedsConfirmation)
                                 else "error",
                                 "message": missing[0]["message"] if missing else str(exc),
                                 **({"code": "pdf_missing", "blockers": missing} if missing else {}),
                                 **(
                                     {"code": "forced_print_build_failed"}
                                     if forced_build and not missing and conflict is None
+                                    else {}
+                                ),
+                                **(
+                                    (
+                                        {
+                                            "code": "forced_print_confirmation",
+                                            "blockers": print_blockers(order),
+                                            PRINT_BUILD: forced_build_info,
+                                        }
+                                        if isinstance(exc, PrintBuildNeedsConfirmation)
+                                        else {"code": "print_build_failed"}
+                                    )
+                                    if print_build and not missing and conflict is None
                                     else {}
                                 ),
                                 **({"conflict": conflict} if conflict else {}),
@@ -1427,13 +1516,17 @@ class OrderWorkflowService:
                                 else {"prepress": prepress_result} if prepress_result is not None
                                 else {}
                             )
-                            stored_response = {**base, FORCED_PRINT_BUILD: forced_build_info}
+                            stored_response = {**base, build_key: forced_build_info}
                         if stored_response is not None:
                             action_record.cms_response_json = json.dumps(
                                 stored_response, ensure_ascii=False
                             )
                         session.commit()
-                        if forced_build_info is not None and forced_source_order is not None:
+                        if print_build and forced_build_info is not None and forced_source_order is not None:
+                            self._record_print_build(
+                                run["id"], forced_source_order, aggregate_id, forced_build_info
+                            )
+                        elif forced_build_info is not None and forced_source_order is not None:
                             self._record_forced_print(
                                 run["id"], forced_source_order, aggregate_id, build=forced_build_info
                             )
@@ -1445,7 +1538,7 @@ class OrderWorkflowService:
                                 "status": "prepared",
                                 **({"prepress": prepress_result} if prepress_result else {}),
                                 **(
-                                    {FORCED_PRINT_BUILD: forced_build_info}
+                                    {build_key: forced_build_info}
                                     if forced_build_info is not None
                                     else {}
                                 ),
@@ -1539,6 +1632,37 @@ class OrderWorkflowService:
                 order.get("order_id"),
             )
 
+    def _record_print_build(
+        self, run_id: str, order: dict[str, Any], aggregate_id: str, build: dict[str, Any]
+    ) -> None:
+        """Журнал и лог: жёлтый заказ с диагностическим PDF напечатан собранным при печати
+        итоговым PDF (``print_build``). ``order`` — заказ до сборки."""
+        logger.info(
+            "order.print_build run_id=%s order_id=%s revision=%s sha256=%s",
+            run_id, order.get("order_id"), build.get("pdf_revision"), build.get("pdf_sha256"),
+        )
+        repository = getattr(self.coordinator, "repository", None)
+        if repository is None:
+            return
+        errors = [*list(order.get("errors") or []), *(build.get("low_dpi_errors") or [])]
+        data: dict[str, Any] = {
+            "aggregate_id": aggregate_id,
+            "order_id": order.get("order_id"),
+            "customer_id": order.get("customer_id"),
+            "status": order.get("status"),
+            "errors": errors[:20],
+            "pdf_revision": build.get("pdf_revision"),
+            "pdf_sha256": build.get("pdf_sha256"),
+            "created_by_action": PRINT_BUILD,
+            PRINT_BUILD: {key: value for key, value in build.items() if key != "low_dpi_errors"},
+        }
+        try:
+            repository.append_event(run_id, "order.print_build", data)
+        except Exception:
+            logger.exception(
+                "order.print_build_record_failed run_id=%s order_id=%s", run_id, order.get("order_id")
+            )
+
     @staticmethod
     def _batch_print_eligible(
         order: dict[str, Any], command: OrderActionCommand, *, run_id: str | None = None
@@ -1550,6 +1674,10 @@ class OrderWorkflowService:
         fix_state = (
             read_callas_fix_state_for_run(order["pdf_path"], run_id) if order.get("pdf_path") else None
         )
+        if status in {"passed", "warning"} and order.get("pdf_kind") == "diagnostic":
+            # Итоговый PDF собирается при печати (или печать заблокирована): в Sborka —
+            # отдельно, только после успешной сборки.
+            return False
         blockers = print_blockers(order, fix_state) if status == "error" else []
         if not (
             (status in {"passed", "warning"} and pitstop_ready(order))

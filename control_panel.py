@@ -77,7 +77,7 @@ from services.callas_fix import (
     read_state_for_run as read_callas_fix_state_for_run,
 )
 from services.callas_source_fix import fixable_source_path, source_comparison as source_fix_comparison
-from services.print_readiness import print_blockers, print_mode
+from services.print_readiness import needs_print_build, print_blockers, print_mode
 from services.return_suggestions import attach_return_suggestions
 from services.ftp_preview_uploader import build_ftp_preview_uploader
 from services.return_preview import (
@@ -252,6 +252,8 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
                 order["callas_fix"] = {"comparison": callas_fix_payload(fix_state, fix_base)}
             order["print_blockers"] = print_blockers(order, fix_state)
             order["print_mode"] = print_mode(order["print_blockers"])
+            # Жёлтый заказ с диагностическим PDF: при печати собирается итоговый PDF.
+            order["print_build"] = needs_print_build(order)
         elif input_path:
             order["print_blockers"] = print_blockers(order)
             order["print_mode"] = print_mode(order["print_blockers"])
@@ -881,6 +883,7 @@ def _ink_coverage_checker(settings: Settings):
         light_areas=LightAreaSettings(
             min_area_percent=settings.ink_light_min_area_percent,
             min_width_mm=settings.ink_light_min_width_mm,
+            floor_percent=settings.ink_light_floor_percent,
         ),
     )
 

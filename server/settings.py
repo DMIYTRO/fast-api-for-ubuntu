@@ -294,10 +294,14 @@ class Settings:
     # Переопределение порогов красочности профиля (None — из профиля направления).
     ink_min_percent: float | None = None
     ink_max_percent: float | None = None
-    # Светлые участки (сумма красок ниже ink_min_percent): от какой доли площади страницы
-    # и от какой ширины участка ставится флаг (services/callas/ink_coverage.py).
-    ink_light_min_area_percent: float = 5.0
+    # Светлые участки (сумма красок от ink_light_floor_percent до ink_min_percent): флаг —
+    # если они занимают не меньше ink_light_min_area_percent площади страницы
+    # (IMAGE_MAGIC_INK_LIGHT_MIN_AREA_PERCENT, 50 — «большая часть макета»), участки уже
+    # ink_light_min_width_mm не считаются, ниже ink_light_floor_percent — белая бумага
+    # (IMAGE_MAGIC_INK_LIGHT_FLOOR_PERCENT, 3). См. services/callas/ink_coverage.py.
+    ink_light_min_area_percent: float = 50.0
     ink_light_min_width_mm: float = 2.5
+    ink_light_floor_percent: float = 3.0
     # Предел автоматической коррекции размера (мм обрезки), IMAGE_MAGIC_AUTO_CORRECT_MAX_MM.
     auto_correct_max_mm: float = DEFAULT_AUTO_CORRECT_MAX_MM
     # Жёсткий максимум коррекции с подтверждением оператора (выше — отклонение).
@@ -568,10 +572,13 @@ class Settings:
             ink_min_percent=_env_optional_float("IMAGE_MAGIC_INK_MIN_PERCENT"),
             ink_max_percent=_env_optional_float("IMAGE_MAGIC_INK_MAX_PERCENT"),
             ink_light_min_area_percent=_env_float(
-                "IMAGE_MAGIC_INK_LIGHT_MIN_AREA_PERCENT", 5.0, minimum=0.0, maximum=100.0
+                "IMAGE_MAGIC_INK_LIGHT_MIN_AREA_PERCENT", 50.0, minimum=0.0, maximum=100.0
             ),
             ink_light_min_width_mm=_env_float(
                 "IMAGE_MAGIC_INK_LIGHT_MIN_WIDTH_MM", 2.5, minimum=0.0, maximum=100.0
+            ),
+            ink_light_floor_percent=_env_float(
+                "IMAGE_MAGIC_INK_LIGHT_FLOOR_PERCENT", 3.0, minimum=0.0, maximum=100.0
             ),
             auto_correct_max_mm=auto_correct_max_mm,
             correction_confirm_max_mm=correction_confirm_max_mm,

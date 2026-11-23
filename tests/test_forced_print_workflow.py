@@ -100,10 +100,11 @@ class ForcedPrintWorkflowTests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory(dir=control_panel.PROJECT_DIR)
         self.root = Path(self.temporary_directory.name)
         self.prepress = FakePrepress()
-        self.pitstop = FakePitStop()
+        self.pitstop = self.make_pitstop()
         self.merger = FakeCallasMerger()
         processor_factory = partial(
-            BatchProcessor, pdf_merger=self.merger, pdf_prepress_checker=self.prepress
+            BatchProcessor, pdf_merger=self.merger, pdf_prepress_checker=self.prepress,
+            **self.processor_kwargs(),
         )
         settings = Settings(
             database_url=f"sqlite:///{self.root / 'state.sqlite3'}",
@@ -127,6 +128,13 @@ class ForcedPrintWorkflowTests(unittest.TestCase):
         self.workflow.reviewed_pdf_pitstop_service_factory = lambda _root, _direction: self.pitstop
         self.sent: list[object] = []
         self.workflow.prepress_sender = lambda ids, _comment: self.sent.append(ids) or {"ok": True}
+
+    def make_pitstop(self) -> "FakePitStop":
+        return FakePitStop()
+
+    def processor_kwargs(self) -> dict:
+        """Дополнительные зависимости ``BatchProcessor`` (наследники стенда)."""
+        return {}
 
     def tearDown(self) -> None:
         self.context.__exit__(None, None, None)

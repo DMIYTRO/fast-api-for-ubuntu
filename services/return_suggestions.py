@@ -138,11 +138,11 @@ _PITSTOP_TRAILING_COUNT_RE = re.compile(r"\s*\(\d+x on pages? [^()]*\)\s*$", re.
 
 #: Порог «Максимальна барвистість - 300%»: флаг «Перелив» ниже него — не этот пункт.
 _INK_MAX_PERCENT = 300.0
-#: Флаги красочности «Мінімальна барвистість - 20%»: светлые участки (доля площади страницы)
-#: и старый ``underflow`` (среднее покрытие; ниже ``_INK_BLANK_PERCENT`` — пустая страница
-#: без краски, это не светлый макет: так ``LIGHT_FLOOR_PERCENT`` в services/callas/ink_coverage.py).
-_INK_MIN_KINDS = frozenset({"light_areas", "underflow"})
-_INK_BLANK_PERCENT = 1.0
+#: «Мінімальна барвистість - 20%» — только флаг ``light_areas``: большая часть страницы
+#: (``IMAGE_MAGIC_INK_LIGHT_MIN_AREA_PERCENT``) в светлой, но не нулевой заливке
+#: (services/callas/ink_coverage.py). Старый ``underflow`` (среднее покрытие страницы ниже
+#: 20 %) срабатывал на белых макетах и макетах с небольшой заливкой — не сигнал.
+_INK_MIN_KINDS = frozenset({"light_areas"})
 #: Предупреждение «PDF страница 1: растровое изображение имеет RGB colorspace».
 _RGB_RASTER_WARNING_RE = re.compile(r"растровое изображение имеет RGB colorspace", re.IGNORECASE)
 _TECHNICAL_SEPARATIONS = (*DEFAULT_OVERPRINT_IGNORE_SPOTS, *EXTRA_TECHNICAL_SEPARATIONS)
@@ -401,13 +401,10 @@ def _collect(dto: Mapping[str, Any]) -> tuple[_Hits, list[tuple[float, float]], 
             if kind == "overflow":
                 if percent > _INK_MAX_PERCENT:
                     hits.add("ink_max", f"Красочность {percent:g}%{on_page}")
-            elif kind == "light_areas":
-                if percent > 0:
-                    threshold = _flag_threshold(flag)
-                    lighter = f" светлее {threshold:g}%" if threshold is not None else ""
-                    hits.add("ink_min", f"Светлые участки{lighter}: {percent:g}% площади{on_page}")
-            elif percent >= _INK_BLANK_PERCENT:
-                hits.add("ink_min", f"Средняя красочность {percent:g}%{on_page}")
+            elif percent > 0:  # light_areas
+                threshold = _flag_threshold(flag)
+                lighter = f" светлее {threshold:g}%" if threshold is not None else ""
+                hits.add("ink_min", f"Светлые участки{lighter}: {percent:g}% площади{on_page}")
 
     prepress = dto.get("prepress")
     if overprint_status_effect(prepress) == "error":

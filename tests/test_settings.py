@@ -56,6 +56,19 @@ class SettingsTests(unittest.TestCase):
         self.assertFalse(settings.callas_inkcoverage_enabled)
         self.assertIsNone(settings.ink_min_percent)
         self.assertIsNone(settings.ink_max_percent)
+        # Светлые участки: флаг от половины площади страницы, ниже 3 % — белая бумага.
+        self.assertEqual(settings.ink_light_min_area_percent, 50.0)
+        self.assertEqual(settings.ink_light_floor_percent, 3.0)
+
+    def test_ink_light_area_settings_are_read_from_environment(self):
+        with patch.dict(
+            os.environ,
+            {"IMAGE_MAGIC_INK_LIGHT_MIN_AREA_PERCENT": "60", "IMAGE_MAGIC_INK_LIGHT_FLOOR_PERCENT": "2"},
+        ):
+            settings = Settings.from_env()
+
+        self.assertEqual(settings.ink_light_min_area_percent, 60.0)
+        self.assertEqual(settings.ink_light_floor_percent, 2.0)
 
     def test_ink_coverage_flag_and_thresholds_are_read_from_environment(self):
         with patch.dict(

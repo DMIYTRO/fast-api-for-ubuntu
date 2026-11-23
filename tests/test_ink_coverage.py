@@ -369,3 +369,91 @@ def test_light_areas_not_searched_without_minimum_threshold(tmp_path):
 
     assert dto["light_areas"] is None
     assert not any("separations" in call for call in client.calls)
+
+
+# --- семантика «большая часть макета в светлой заливке» (2026-11-23) ----------------
+
+def _share(tmp_path: Path, **regions) -> float:
+    from services.callas.ink_coverage import light_area_share
+
+    page = _page(tmp_path, 1, **regions)
+    return light_area_share(*(page[(1, ink)] for ink in ("Cyan", "Magenta", "Yellow", "Black")),
+                            tac_max_percent=20, min_width_mm=2.5)
+
+
+def _flags_for(share: float, settings: LightAreaSettings | None = None):
+    light = LightAreas(status="completed", tac_max_percent=20.0,
+                       settings=settings or LightAreaSettings(), pages=((1, share),))
+    result = replace(parse_ink_coverage(SERVICE_RESPONSE), light_areas=light)
+    return [f for f in evaluate(result, InkCoverageThresholds(20.0, None)) if f.kind == "light_areas"]
+
+
+def test_defaults_flag_only_when_most_of_the_page_is_light():
+    settings = LightAreaSettings()
+    assert (settings.min_area_percent, settings.floor_percent, settings.min_width_mm) == (50.0, 3.0, 2.5)
+    assert LightAreas(status="completed").to_dto()["floor_percent"] == 3.0
+
+
+def test_white_page_is_not_flagged(tmp_path):
+    share = _share(tmp_path)
+    assert share == 0.0 and _flags_for(share) == []
+
+
+def test_small_dark_logo_on_white_is_not_flagged(tmp_path):
+    share = _share(tmp_path, black=[((20, 20, 59, 59), 90)])
+    assert share == 0.0 and _flags_for(share) == []
+
+
+def test_small_light_tint_on_white_is_not_flagged(tmp_path):
+    """Небольшая светлая плашка (C10 на 20 % листа): её доля от страницы, а не от заливки."""
+    share = _share(tmp_path, cyan=[((0, 0, 39, 99), 10)])
+    assert share == pytest.approx(20, abs=1)
+    assert _flags_for(share) == []
+
+
+def test_large_light_tint_is_flagged(tmp_path):
+    """C10 на 80 % листа (26234881: кремовый фон ~10 %, 82–86 % площади, вернули)."""
+    share = _share(tmp_path, cyan=[((0, 0, 159, 99), 10)])
+    assert share == pytest.approx(80, abs=1)
+    flags = _flags_for(share)
+    assert [(f.page, f.percent) for f in flags] == [(1, share)]
+    assert flags[0].describe().startswith("Светлые участки: 80")
+
+
+@pytest.mark.parametrize("width, flagged", [(90, False), (110, True)])
+def test_mixed_page_is_flagged_by_the_area_share(tmp_path, width, flagged):
+    """Светлый фон C10 + тёмная картинка: флаг только от половины площади страницы."""
+    share = _share(tmp_path, cyan=[((0, 0, width - 1, 99), 10)], black=[((width, 0, 199, 99), 80)])
+    assert share == pytest.approx(width / 2, abs=1)
+    assert bool(_flags_for(share)) is flagged
+
+
+def test_near_white_noise_is_paper_not_light_area(tmp_path):
+    """«Белый» фон растра после RGB→CMYK: 2 % краски на всём листе (26251771: 30 % листа)."""
+    assert _share(tmp_path, cyan=[((0, 0, 199, 99), 2)]) == 0.0
+    # Сразу над полом — уже светлый участок.
+    assert _share(tmp_path, cyan=[((0, 0, 199, 99), 4)]) == pytest.approx(100, abs=0.1)
+
+
+def test_floor_and_area_share_are_configurable(tmp_path):
+    from services.callas.ink_coverage import light_area_share
+
+    page = _page(tmp_path, 1, cyan=[((0, 0, 199, 99), 2)])
+    paths = [page[(1, ink)] for ink in ("Cyan", "Magenta", "Yellow", "Black")]
+    assert light_area_share(*paths, tac_max_percent=20, min_width_mm=2.5, floor_percent=1) == pytest.approx(100, abs=0.1)
+    assert _flags_for(30.0, LightAreaSettings(min_area_percent=25.0)) != []
+    assert _flags_for(0.0, LightAreaSettings(min_area_percent=0.0)) == []
+
+
+def test_checker_passes_floor_from_settings(tmp_path):
+    pdf = tmp_path / "order.pdf"
+    pdf.write_bytes(b"%PDF-1.4 test")
+    files = _page(tmp_path, 1, cyan=[((0, 0, 199, 99), 2)])
+    client = _SeparationsClient(tmp_path, files)
+
+    dto = build_ink_coverage_checker(
+        client, min_percent_override=20, light_areas=LightAreaSettings(floor_percent=1.0)
+    )(pdf, "digital")
+
+    assert dto["light_areas"]["floor_percent"] == 1.0
+    assert [(f["kind"], f["page"]) for f in dto["flags"]] == [("light_areas", 1)]

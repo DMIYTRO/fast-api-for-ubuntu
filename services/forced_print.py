@@ -11,6 +11,13 @@
 
 Любая другая локальная ошибка (нарушение правила страниц, размер и коррекция, нечитаемый
 файл, слои и альфа TIFF, недостающие стороны…) по-прежнему блокирует печать.
+
+Жёлтый (или зелёный) заказ с диагностическим PDF — заказ с локальными ошибками, у которого
+PitStop диагностического PDF не нашёл ничего хуже предупреждения (ошибка макета при
+диагностическом PDF становится предупреждением, см. ``completed_status`` в
+``services/batch_adapter.py``). Диагностический файл в печать тоже не идёт никогда: если все
+локальные ошибки — низкое разрешение, при печати собирается итоговый PDF тем же путём
+(``print_build``, без красного подтверждения), иначе печать заблокирована (``no_final_pdf``).
 """
 from __future__ import annotations
 
@@ -25,6 +32,10 @@ from .overprint import overprint_status_effect
 
 #: ``created_by_action`` ревизии PDF и код блокера / записи журнала.
 FORCED_PRINT_BUILD = "forced_print_build"
+#: То же для жёлтого заказа с диагностическим PDF: сборка при печати без подтверждения.
+PRINT_BUILD = "print_build"
+#: Статусы, при которых заказ печатается без подтверждения (``print_readiness``).
+_PRINTABLE = frozenset({"passed", "warning"})
 
 #: Коды ``services/issue_groups`` для низкого разрешения (растр и PDF).
 LOW_DPI_CODES = frozenset({"low_dpi", "pdf_low_dpi"})
@@ -173,6 +184,27 @@ def forced_build_assessment(order: Mapping[str, Any]) -> LowDpiAssessment | None
     if order.get("status") != "error" or order.get("pdf_kind") != "diagnostic":
         return None
     return assess_order(order)
+
+
+def print_build_assessment(order: Mapping[str, Any]) -> LowDpiAssessment | None:
+    """Разбор для жёлтого (зелёного) заказа с диагностическим PDF; ``None`` — не тот случай.
+
+    ``eligible`` — при печати собирается итоговый PDF (``PRINT_BUILD``); иначе печать
+    заблокирована: диагностический PDF не печатается ни при каком статусе.
+    """
+    if order.get("status") not in _PRINTABLE or order.get("pdf_kind") != "diagnostic":
+        return None
+    return assess_order(order)
+
+
+def diagnostic_blocked_message(assessment: LowDpiAssessment) -> str:
+    """Почему жёлтый заказ с диагностическим PDF нельзя ни напечатать, ни собрать."""
+    codes = ", ".join(assessment.blocking_codes) or "неизвестно"
+    return (
+        "Готового итогового PDF нет: у заказа только диагностический PDF «как есть», а "
+        f"собрать итоговый при печати нельзя — кроме низкого разрешения есть другие ошибки ({codes}). "
+        "Исправьте макет и повторите проверку."
+    )
 
 
 def _dpi(value: float | None) -> str:

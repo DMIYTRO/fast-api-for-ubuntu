@@ -64,6 +64,7 @@ JOURNAL_EVENT_TYPES: tuple[str, ...] = (
     "order.correction_rejected",
     "order.pdf_revision",
     "order.forced_print",
+    "order.print_build",
     "order.file_transition_rolled_back",
 )
 
@@ -850,6 +851,33 @@ def _operator_changes(
                     "errors": errors or None,
                 },
             ))
+        elif kind == "order.print_build":
+            # Жёлтый заказ с диагностическим PDF: в печать ушёл собранный итоговый PDF.
+            errors = [str(item) for item in _list(data.get("errors"))]
+            build = _mapping(data.get("print_build"))
+            low, norm = build.get("min_dpi"), build.get("required_dpi")
+            entries.append(_entry(
+                KIND_OPERATOR, "print_build", "operator",
+                "При печати собран итоговый PDF вместо диагностического",
+                severity="info",
+                detail=(
+                    f"Низкое разрешение: от {_num(round(low))} DPI при норме {_num(round(norm))}"
+                    if isinstance(low, (int, float)) and isinstance(norm, (int, float))
+                    else "; ".join(errors[:3]) or None
+                ),
+                count=build.get("low_dpi_count") if isinstance(build.get("low_dpi_count"), int) else None,
+                at=at, outcome="accepted",
+                data={
+                    "event_id": event["id"], "pdf_revision": data.get("pdf_revision"),
+                    "created_by_action": data.get("created_by_action"),
+                    "status_before_build": data.get("status"),
+                    "status_after_build": build.get("status_after_build"),
+                    "pitstop_verdict": build.get("pitstop_verdict"),
+                    "color_conversion": build.get("color_conversion"),
+                    "min_dpi": low, "required_dpi": norm,
+                    "errors": errors or None,
+                },
+            ))
         elif kind == "order.forced_print":
             errors = [str(item) for item in _list(data.get("errors"))]
             entries.append(_entry(
@@ -986,6 +1014,7 @@ def _decisions(actions: Sequence[Mapping[str, Any]], events: list[dict[str, Any]
                 "returned_with_kit": response.get("returned_with_kit"),
                 "message": response.get("message") if isinstance(response.get("message"), str) else None,
                 "forced_print_build": _forced_build_summary(response.get("forced_print_build")),
+                "print_build": _forced_build_summary(response.get("print_build")),
             },
         ))
     for event in events:

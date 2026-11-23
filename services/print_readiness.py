@@ -7,13 +7,23 @@
 Исключение — красный заказ с диагностическим PDF, все локальные ошибки которого — низкое
 разрешение (``services/forced_print.py``): блокер ``forced_print_build`` вида CONFIRM, при
 подтверждении итоговый PDF собирается и проверяется PitStop прямо при печати.
+
+Диагностический PDF не печатается и у жёлтого заказа: если его локальные ошибки — одно лишь
+низкое разрешение, блокеров нет, но при печати итоговый PDF собирается тем же путём
+(``needs_print_build``, ``PRINT_BUILD``); иначе блокер ``no_final_pdf``.
 """
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
-from .forced_print import FORCED_PRINT_BUILD, forced_build_assessment, forced_build_message
+from .forced_print import (
+    FORCED_PRINT_BUILD,
+    diagnostic_blocked_message,
+    forced_build_assessment,
+    forced_build_message,
+    print_build_assessment,
+)
 
 FILE = "file"
 CHECK = "check"
@@ -57,6 +67,12 @@ def print_blockers(order: dict[str, Any], fix_state: dict[str, Any] | None = Non
     # соберётся при печати, а PitStop диагностического PDF для него не нужен.
     forced_build = forced_build_assessment(order)
     forced_build = forced_build if forced_build is not None and forced_build.eligible else None
+    # Жёлтый заказ с диагностическим PDF: сам файл не печатается — собирается итоговый
+    # (одно лишь низкое разрешение) или печать заблокирована.
+    print_build = print_build_assessment(order)
+    builds_on_print = forced_build is not None or (print_build is not None and print_build.eligible)
+    if print_build is not None and not print_build.eligible:
+        add(FILE, "no_final_pdf", diagnostic_blocked_message(print_build))
     if pdf_path and not Path(str(pdf_path)).is_file():
         add(FILE, "pdf_missing", f"Файл PDF не найден: {pdf_path}. Запустите проверку или исправление заново.")
     if status == "error":
@@ -82,7 +98,7 @@ def print_blockers(order: dict[str, Any], fix_state: dict[str, Any] | None = Non
     elif fix_status == "processing":
         add(CHECK, "callas_fix_running", "Исправление Callas ещё выполняется.")
     pitstop = order.get("pitstop")
-    if pitstop is not None and forced_build is None:
+    if pitstop is not None and not builds_on_print:
         if pitstop.get("execution_status") != "completed":
             add(CHECK, "pitstop_not_passed", "Проверка PitStop не завершена: дождитесь результата или запустите проверку заново.")
         elif (
@@ -117,3 +133,10 @@ def is_forced_build(blockers: list[dict[str, str]]) -> bool:
     return print_mode(blockers) == "forced" and any(
         item["code"] == FORCED_PRINT_BUILD for item in blockers
     )
+
+
+def needs_print_build(order: dict[str, Any]) -> bool:
+    """Жёлтый (зелёный) заказ с диагностическим PDF и одним лишь низким разрешением:
+    при печати собирается итоговый PDF (без подтверждения оператора)."""
+    assessment = print_build_assessment(order)
+    return assessment is not None and assessment.eligible

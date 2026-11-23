@@ -16,7 +16,7 @@ from services.forced_print import (
     assess_order_check,
 )
 from services.order_journal import build_order_journal
-from services.print_readiness import is_forced_build, print_blockers, print_mode
+from services.print_readiness import is_forced_build, needs_print_build, print_blockers, print_mode
 from tests.fake_callas import FakeCallasMerger
 from tests.test_forced_print_workflow import LOW, TWO_PAGE, make_pdf
 
@@ -115,8 +115,31 @@ def test_other_errors_keep_the_no_final_pdf_blocker(tmp_path):
     # Готовый производственный PDF — прежнее подтверждение без сборки.
     production = diagnostic_order(tmp_path, pdf_kind="production")
     assert [item["code"] for item in print_blockers(production)] == ["forced_print_confirmation"]
-    # Жёлтый заказ не трогаем.
+    # Жёлтый заказ с одним лишь низким разрешением: без блокеров, но со сборкой при печати.
     assert print_blockers(diagnostic_order(tmp_path, status="warning")) == []
+
+
+def test_yellow_diagnostic_order_builds_on_print_or_is_blocked(tmp_path):
+    yellow = diagnostic_order(tmp_path, status="warning")
+    assert print_blockers(yellow) == [] and needs_print_build(yellow)
+    # PitStop диагностического PDF для сборки не важен (проверяется собранный PDF).
+    assert print_blockers({**yellow, "current_pdf_revision": 2}) == []
+    # Жёлтый заказ с готовым производственным PDF печатается как раньше, без сборки.
+    assert not needs_print_build({**yellow, "pdf_kind": "production"})
+    assert print_blockers({**yellow, "pdf_kind": "production"}) == []
+    # Красный заказ — путь forced_print_build, а не print_build.
+    assert not needs_print_build(diagnostic_order(tmp_path))
+    # Любая другая локальная ошибка: диагностический PDF не печатается — блокер no_final_pdf.
+    for name in ("pdf_size", "missing_back", "unreadable", "other"):
+        order = diagnostic_order(tmp_path, status="warning")
+        order["files"][0]["errors"].append(BLOCKING[name])
+        blockers = print_blockers(order)
+        assert [(item["kind"], item["code"]) for item in blockers] == [("file", "no_final_pdf")], name
+        assert "диагностический PDF" in blockers[0]["message"]
+        assert print_mode(blockers) == "blocked" and not needs_print_build(order)
+    no_errors = diagnostic_order(tmp_path, status="warning")
+    no_errors["files"][0]["errors"] = []
+    assert print_mode(print_blockers(no_errors)) == "blocked"
 
 
 def processor(root: Path, **kwargs) -> BatchProcessor:

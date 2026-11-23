@@ -425,7 +425,7 @@ def test_ink_overflow_flag_above_300(reasons):
     assert suggest_return_reasons(low, reasons) == []
 
 
-def test_ink_min_from_light_areas_and_old_underflow(reasons):
+def test_ink_min_only_from_light_areas_not_old_underflow(reasons):
     light = order_dto(status="warning", ink_coverage={"status": "completed", "flags": [
         {"kind": "light_areas", "page": 1, "percent": 74.48, "threshold": 20.0},
     ]})
@@ -438,8 +438,8 @@ def test_ink_min_from_light_areas_and_old_underflow(reasons):
     underflow = order_dto(status="warning", ink_coverage={"status": "completed", "flags": [
         {"kind": "underflow", "page": 2, "percent": 12.5, "threshold": 20.0},
     ]})
-    items = suggest_return_reasons(underflow, reasons)
-    assert signals(items) == ["ink_min"] and items[0]["evidence"] == "Средняя красочность 12.5% на стр. 2"
+    # Старый underflow (среднее ниже 20 %) срабатывал на белых макетах — не сигнал.
+    assert suggest_return_reasons(underflow, reasons) == []
     # Пустая страница (0 % краски, старый underflow 26242124) — не светлый макет.
     blank = order_dto(status="warning", ink_coverage={"status": "completed", "flags": [
         {"kind": "underflow", "page": 1, "percent": 0.0, "threshold": 20.0},
