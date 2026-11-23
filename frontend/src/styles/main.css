@@ -78,3 +78,4 @@ input,select,textarea{width:100%;border:1px solid var(--line-strong);border-radi
 :root[data-theme="dark"] .app-header{box-shadow:0 1px 0 var(--line),0 3px 18px rgba(0,0,0,.35)}
 :root[data-theme="dark"] .action-bar{box-shadow:0 0 0 1px var(--line-strong),0 20px 60px rgba(0,0,0,.5)}
 :root[data-theme="dark"] .login-card{box-shadow:0 0 0 1px var(--line),0 35px 90px rgba(0,0,0,.5)}
+.forced-print-reasons{margin:0 0 10px;padding:9px 12px 9px 26px;border-radius:9px;background:var(--red-bg);color:var(--red);font-size:12px;font-weight:650;line-height:1.45}.forced-print-reasons li+li{margin-top:4px}

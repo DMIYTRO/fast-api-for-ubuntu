@@ -566,6 +566,44 @@ class BatchProcessor:
             for ready_id, corrections in window:
                 yield finish(ready_id, [correction.result() for correction in corrections])
 
+    def inspect_order_files(self, paths: "Sequence[Path]") -> OrderCheck:
+        """Осмотреть заново файлы одного заказа (без просмотра всей входной папки).
+
+        Те же правила, что и ``iter_inspect_orders`` (разбор имени, осмотр файла, правила
+        заказа и страниц), но без полей вылета Callas: принятые исправления исходников
+        переносит вызывающий (``BatchProcessorAdapter.build_forced_print_pdf``).
+        """
+        checks = [
+            FileCheck(path=Path(path), source_folder=self.source_folder_of(Path(path)))
+            for path in paths
+        ]
+        if not checks:
+            raise ValueError("у заказа нет файлов")
+        self._flag_duplicate_names(checks)
+        for check in checks:
+            try:
+                check.parsed = parse_filename(check.path)
+            except ValueError as exc:
+                raise ValueError(f"{check.path.name}: {exc}") from exc
+            try:
+                if _is_pdf_content(check):
+                    self._inspect_pdf_file(check)
+                else:
+                    self._inspect_raster_file(check)
+            except Exception as exc:
+                check.errors.append(f"не удалось прочитать файл: {exc}")
+        keys = {(check.parsed.customer_id, check.parsed.order_id) for check in checks}
+        if len(keys) != 1:
+            raise ValueError("файлы относятся к разным заказам")
+        order = OrderCheck(
+            order_id=checks[0].parsed.order_id,
+            customer_id=checks[0].parsed.customer_id,
+            files=checks,
+        )
+        self._validate_order(order)
+        self._skip_corrections_for_page_rule(order)
+        return order
+
     def _inspect_raster_file(self, check: FileCheck, scopes: Collection[str] = ALL_SCOPES) -> None:
         """Read and validate a raster file (TIFF/JPEG/PNG).
 
@@ -1317,31 +1355,66 @@ class BatchProcessor:
             ordered_files = self._ordered_files_for_creation(order)
             output_path = self.output_dir / f"{self._output_stem(order, ordered_files)}.pdf"
             try:
-                # Уборка папки на SMB не роняет заказ: PDF к этому моменту уже опубликован.
-                with share_temp_dir(
-                    prefix=f".{order.order_id}_",
-                    dir=self.output_dir,
-                ) as temporary_dir:
-                    page_refs = self._build_page_refs(ordered_files)
-                    page_pdfs = self._prepare_page_pdfs(
-                        page_refs,
-                        Path(temporary_dir),
-                    )
-
-                    temporary_output = Path(temporary_dir) / "combined.pdf"
-                    self._merge_page_pdfs(page_pdfs, temporary_output, order)
-                    self._convert_rgb_to_cmyk(temporary_output, order)
-                    self._check_prepress(temporary_output, order)
-                    self._validate_created_pdf(
-                        temporary_output,
-                        page_refs,
-                        Path(temporary_dir) / "validation",
-                    )
-                    temporary_output.replace(output_path)
+                self._build_production_pdf(order, ordered_files, output_path)
                 results.append((order, output_path, None))
             except Exception as exc:
                 results.append((order, output_path, str(exc)))
         return results
+
+    def create_forced_print_pdf(self, order: OrderCheck, output_dir: Path) -> Path:
+        """Итоговый PDF красного заказа с одним лишь низким разрешением (печать под
+        ответственность оператора, ``services/forced_print.py``).
+
+        Тот же производственный путь, что и ``create_pdfs`` (подготовка страниц, склейка
+        callas, RGB → CMYK / снятие ICC, допечатные проверки, контроль итогового PDF), но
+        без проверки ``order.passed``. Разрешение не повышается: растр ниже нормы не
+        пересэмплируется (такой заказ сюда не допускается). Ошибка сборки — исключение.
+        """
+        for item in order.files:
+            dpi = [value for value in (item.dpi_x, item.dpi_y) if value]
+            if (
+                not _is_pdf_content(item)
+                and item.needs_resample
+                and dpi
+                and min(dpi) + DPI_EPSILON < self.min_dpi
+            ):
+                raise ValueError(
+                    f"{item.path.name}: коррекция размера подняла бы разрешение "
+                    f"{min(dpi):.0f} DPI до {self.profile.target_dpi:.0f} DPI; "
+                    "увеличение разрешения при сборке запрещено"
+                )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        self._sweep_temp_dirs(output_dir)
+        ordered_files = self._ordered_files_for_creation(order)
+        output_path = output_dir / f"{self._output_stem(order, ordered_files)}.pdf"
+        self._build_production_pdf(order, ordered_files, output_path)
+        return output_path
+
+    def _build_production_pdf(
+        self, order: OrderCheck, ordered_files: list[FileCheck], output_path: Path
+    ) -> None:
+        """Производственная сборка PDF заказа в ``output_path``; сбой — исключение."""
+        # Уборка папки на SMB не роняет заказ: PDF к этому моменту уже опубликован.
+        with share_temp_dir(
+            prefix=f".{order.order_id}_",
+            dir=output_path.parent,
+        ) as temporary_dir:
+            page_refs = self._build_page_refs(ordered_files)
+            page_pdfs = self._prepare_page_pdfs(
+                page_refs,
+                Path(temporary_dir),
+            )
+
+            temporary_output = Path(temporary_dir) / "combined.pdf"
+            self._merge_page_pdfs(page_pdfs, temporary_output, order)
+            self._convert_rgb_to_cmyk(temporary_output, order)
+            self._check_prepress(temporary_output, order)
+            self._validate_created_pdf(
+                temporary_output,
+                page_refs,
+                Path(temporary_dir) / "validation",
+            )
+            temporary_output.replace(output_path)
 
     def _sweep_temp_dirs(self, root: Path) -> None:
         """Убрать брошенные временные папки (старше часа) в ``root`` — раз за процессор."""

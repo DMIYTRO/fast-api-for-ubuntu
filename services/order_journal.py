@@ -792,6 +792,7 @@ def _operator_changes(
             revision_events.append({
                 "at": at, "event_id": event["id"], "status": data.get("status") or snapshot.get("status"),
                 "revision": snapshot.get("current_pdf_revision"),
+                "created_by_action": snapshot.get("current_pdf_created_by"),
             })
         elif kind == "order.lowres_preview.generated":
             marked = data.get("marked_images")
@@ -824,6 +825,31 @@ def _operator_changes(
                     "marked_images": data.get("marked_images"), "source_pdf_revision": data.get("pdf_revision"),
                 },
             ))
+        elif kind == "order.forced_print" and data.get("build"):
+            # Итоговый PDF собран при печати: красный заказ с одним лишь низким разрешением.
+            errors = [str(item) for item in _list(data.get("errors"))]
+            build = _mapping(data.get("forced_print_build"))
+            low, norm = build.get("min_dpi"), build.get("required_dpi")
+            entries.append(_entry(
+                KIND_OPERATOR, "forced_print_build", "operator",
+                "Собран итоговый PDF и отправлено в печать с ошибками по подтверждению оператора",
+                severity="warning",
+                detail=(
+                    f"Низкое разрешение: от {_num(round(low))} DPI при норме {_num(round(norm))}"
+                    if isinstance(low, (int, float)) and isinstance(norm, (int, float))
+                    else "; ".join(errors[:3]) or None
+                ),
+                count=build.get("low_dpi_count") if isinstance(build.get("low_dpi_count"), int) else None,
+                at=at, outcome="accepted",
+                data={
+                    "event_id": event["id"], "pdf_revision": data.get("pdf_revision"),
+                    "created_by_action": data.get("created_by_action"),
+                    "status_after_build": build.get("status_after_build"),
+                    "pitstop_verdict": build.get("pitstop_verdict"),
+                    "min_dpi": low, "required_dpi": norm,
+                    "errors": errors or None,
+                },
+            ))
         elif kind == "order.forced_print":
             errors = [str(item) for item in _list(data.get("errors"))]
             entries.append(_entry(
@@ -853,7 +879,10 @@ def _operator_changes(
             f"PDF заказа заменён: ревизия r{number}" if number else "PDF заказа заменён",
             detail=f"Повторная проверка: статус {revision['status']}" if revision.get("status") else None,
             at=revision["at"], outcome=str(revision.get("status") or "") or None,
-            data={"event_id": revision["event_id"], "pdf_revision": number, "status": revision.get("status")},
+            data={
+                "event_id": revision["event_id"], "pdf_revision": number, "status": revision.get("status"),
+                "created_by_action": revision.get("created_by_action"),
+            },
         ))
     for folded in folded_corrections:
         match = next((item for item in reversed(attempts) if item.file == folded["file"] and item.status == "accepted"), None)
@@ -923,6 +952,18 @@ def _size_fix_of(order: Mapping[str, Any], file: str | None) -> Mapping[str, Any
 # -------------------------------------------------------------------------- decisions
 
 
+def _forced_build_summary(value: Any) -> dict[str, Any] | None:
+    """Сведения о сборке итогового PDF при печати из ответа ``order_actions``."""
+    build = _mapping(value)
+    if not build:
+        return None
+    return {
+        key: build.get(key)
+        for key in ("status", "message", "pdf_revision", "status_after_build", "pitstop_verdict", "min_dpi", "required_dpi")
+        if build.get(key) is not None
+    } or None
+
+
 def _decisions(actions: Sequence[Mapping[str, Any]], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     entries = []
     for action in actions:
@@ -944,6 +985,7 @@ def _decisions(actions: Sequence[Mapping[str, Any]], events: list[dict[str, Any]
                 "kit_main_id": response.get("kit_main_id"),
                 "returned_with_kit": response.get("returned_with_kit"),
                 "message": response.get("message") if isinstance(response.get("message"), str) else None,
+                "forced_print_build": _forced_build_summary(response.get("forced_print_build")),
             },
         ))
     for event in events:

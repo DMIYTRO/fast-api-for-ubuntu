@@ -27,7 +27,13 @@ from services.pitstop.baseline import (
 )
 from services.check_policy import PolicySettings, apply_check_policy, resolve_order_policy
 from services.callas_fix import source_signature_matches
-from services.callas_source_fix import STALE_SOURCE_WARNING
+from services.callas_source_fix import STALE_SOURCE_WARNING, mark_applied
+from services.forced_print import (
+    ForcedPrintBuild,
+    ForcedPrintBuildError,
+    assess_order_check,
+    blocking_message,
+)
 from services.pdf_routing import CHECKED_FOLDER, FAILED_FOLDER, PRINT_FOLDER, completed_status, route_pdf
 from services.order_kits import kits_from_order_info
 from services.postpress import normalize_customer_comment, normalize_postpress
@@ -402,6 +408,62 @@ class BatchProcessorAdapter:
             changed = True
         if changed:
             self.processor.revalidate_order(order)
+
+    def build_forced_print_pdf(
+        self, order_dto: dict[str, Any], output_dir: Path
+    ) -> ForcedPrintBuild:
+        """Итоговый PDF красного заказа с одним лишь низким разрешением — при печати.
+
+        Файлы заказа осматриваются заново (принятые исправления Callas исходников —
+        как в проверке, по ``callas_source_fix``), разбор ошибок повторяется по свежему
+        осмотру, затем PDF собирается производственным путём ``BatchProcessor``
+        (``create_forced_print_pdf``) в ``output_dir``. PitStop здесь не запускается:
+        его выполняет регистрация новой ревизии (``OrderWorkflowService``).
+        """
+        files = [item for item in order_dto.get("files") or [] if isinstance(item, dict)]
+        paths = [Path(str(item.get("path") or "")) for item in files]
+        missing = [path.name or "?" for path in paths if not path.is_file()]
+        if not files or missing:
+            raise ForcedPrintBuildError(
+                "Итоговый PDF не собран: не найден исходный файл заказа "
+                f"({', '.join(missing) or 'нет файлов'}). Запустите проверку заново."
+            )
+        try:
+            order = self.processor.inspect_order_files(paths)
+        except ValueError as exc:
+            raise ForcedPrintBuildError(f"Итоговый PDF не собран: {exc}.") from exc
+        changed = False
+        for index, item in enumerate(files):
+            fix = item.get("callas_source_fix")
+            content = Path(str(fix.get("pdf_path"))) if isinstance(fix, dict) and fix.get("pdf_path") else None
+            if content is None or not content.is_file():
+                continue
+            replacement = self.processor.reinspect_pdf_file(order.files[index], content, fix=fix)
+            order.files[index] = mark_applied(replacement, fix)
+            changed = True
+        if changed:
+            self.processor.revalidate_order(order)
+        self._drop_stale_source_fixes(order)
+        assessment = assess_order_check(order)
+        if not assessment.eligible:
+            raise ForcedPrintBuildError(blocking_message(assessment))
+        try:
+            pdf_path = self.processor.create_forced_print_pdf(order, Path(output_dir))
+        except ForcedPrintBuildError:
+            raise
+        except Exception as exc:
+            logger.exception("order.forced_print_build_failed order_id=%s", order.order_id)
+            raise ForcedPrintBuildError(
+                f"Итоговый PDF не собран: {exc}. Заказ не отправлен в печать."
+            ) from exc
+        warnings = [*order.warnings, *(warning for item in order.files for warning in item.warnings)]
+        return ForcedPrintBuild(
+            pdf_path=pdf_path,
+            prepress=order.prepress,
+            color_conversion=order.color_conversion,
+            warnings=warnings,
+            assessment=assessment,
+        )
 
     def process_order(self, order: OrderCheck) -> OrderArtifacts:
         result = self._process_order_unrouted(order)

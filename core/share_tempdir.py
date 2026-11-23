@@ -30,7 +30,7 @@ CLEANUP_PAUSES_SECONDS: tuple[float, ...] = (0.5, 1.0, 2.0)
 STALE_AFTER_SECONDS = 3600.0
 #: Скрытые временные папки Image Magic в папках PDF: ``.<заказ>_…``, ``.<заказ>_diag_…``,
 #: ``.raster-pdf-…``, ``.callas-render-…``, ``.pdf-route-…``, ``.revision-…``.
-STALE_NAME_RE = re.compile(r"^\.(?:\d+_|raster-pdf-|callas-render-|pdf-route-|revision-|preview_)")
+STALE_NAME_RE = re.compile(r"^\.(?:\d+_|raster-pdf-|callas-render-|pdf-route-|revision-|preview_|forced-build-)")
 
 
 def _rmtree(path: Path) -> None:

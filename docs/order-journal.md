@@ -127,8 +127,9 @@ PitStop); `introduced_by_fix` / `baseline_occurrences` — частично до
 | `correction:callas_source_fix` | заказ продолжен после принятия исправления исходника (если не удалось привязать к попытке Callas) |
 | `callas_source_fix:applied` / `:reset` | применение / сброс исправления исходника без найденной попытки |
 | `operator:size_fix:<method>` / `operator:callas_source_fix:<plan>` | подтверждённая коррекция без события (старые запуски) |
-| `pdf_revision` | PDF заменён не исправлением Callas (`data.pdf_revision`, `status`); `source: system` — ревизия без события |
+| `pdf_revision` | PDF заменён не исправлением Callas (`data.pdf_revision`, `status`; `data.created_by_action` — кем создана ревизия, напр. `forced_print_build`, иначе `null`); `source: system` — ревизия без события |
 | `forced_print` | отправлено в печать с ошибками по подтверждению оператора (`severity: warning`) |
+| `forced_print_build` | красный заказ с одним лишь низким разрешением и диагностическим PDF: по подтверждению оператора при печати собран итоговый PDF (ревизия `data.pdf_revision`, `data.created_by_action: "forced_print_build"`), проверен PitStop и отправлен в печать (`severity: warning`, `outcome: accepted`); `detail` — «Низкое разрешение: от N DPI при норме M», `count` — число находок низкого разрешения, `data.min_dpi` / `required_dpi`, `status_after_build` (статус собранной ревизии), `pitstop_verdict`, `errors` — исходные сообщения. Заменяет запись `forced_print` для этого события |
 | `operator:lowres_preview` | оператор построил разметку разрешения («Показать разрешение», событие `order.lowres_preview.generated`; `source: callas`, `outcome: done`): `count` и `data.marked_images` — число размеченных цветных/полутоновых изображений, `data.pages_total`, `threshold_ppi` (250), `pdf_kind` (`production`/`diagnostic`), `source_pdf_revision` — ревизия, по которой строилась разметка; `data.low_images` и `pages` — только если известны ppi отдельных изображений (сейчас отчёт профиля их не даёт, поля нет). Повторное нажатие при неизменном PDF берёт кэш и записи не добавляет. PDF заказа не меняется |
 | `operator:lowres_preview_attached` | картинка разметки приложена к возврату как пользовательское превью для Sborka (событие `order.lowres_preview.attached`, `outcome: applied`): `data.preview` — имя файла превью, `marked_images`, `source_pdf_revision` |
 
@@ -136,7 +137,7 @@ PitStop); `introduced_by_fix` / `baseline_occurrences` — частично до
 
 | Код | Что это |
 |---|---|
-| `action:print` / `action:reject` | запись `order_actions`: `outcome` `done`/`failed`, `detail` — комментарий, `data.kit_main_id` / `returned_with_kit` / `message` для возврата в составе комплекта |
+| `action:print` / `action:reject` | запись `order_actions`: `outcome` `done`/`failed`, `detail` — комментарий, `data.kit_main_id` / `returned_with_kit` / `message` для возврата в составе комплекта; `data.forced_print_build` — печать со сборкой итогового PDF (`pdf_revision`, `status_after_build`, `pitstop_verdict`, `min_dpi`, `required_dpi`; при сбое сборки или PitStop — `status: "failed"` и `message`), иначе `null` |
 | `transition:rolled_back` | перемещение файлов отменено |
 
 ## Что намеренно не отражается

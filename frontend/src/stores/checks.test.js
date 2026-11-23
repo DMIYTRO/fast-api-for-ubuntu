@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import { useChecksStore, isOrderPrintable, isOrderForcePrintable } from "./checks.js";
+import { useChecksStore, isOrderPrintable, isOrderForcePrintable, needsForcedBuild } from "./checks.js";
 import { orderIdentity } from "./orderIdentity.js";
 import { peekReturnDraft, returnDraft } from "./returnDrafts.js";
 import { api } from "../services/api.js";
@@ -375,6 +375,30 @@ describe("checks store", () => {
     expect(isOrderForcePrintable({ ...forced, print_mode: "blocked" })).toBe(false);
     expect(isOrderForcePrintable({ ...forced, pitstop: { ...forced.pitstop, execution_status: "failed" } })).toBe(false);
     expect(isOrderForcePrintable({ ...forced, current_pdf_revision: 2 })).toBe(false);
+  });
+
+  it("offers a forced build for a red low-DPI order regardless of the diagnostic PitStop", () => {
+    const store = useChecksStore();
+    const message = "Заказ с ошибками (низкое разрешение: от 197 DPI при норме 250). Будет собран итоговый PDF и отправлен в печать под вашу ответственность.";
+    const build = {
+      order_id: "26252239", status: "error", print_mode: "forced", pdf_kind: "diagnostic", current_pdf_revision: 1,
+      pitstop: { execution_status: "failed", verdict: "error", checked_revision: 1 },
+      print_blockers: [{ kind: "confirm", code: "forced_print_build", message }],
+    };
+    store.orders = [{ order_id: "100", status: "passed" }, build];
+    store.selected = [orderIdentity(build)];
+    expect(isOrderForcePrintable(build)).toBe(true);
+    expect(needsForcedBuild(build)).toBe(true);
+    expect(store.canPrint).toBe(true);
+    expect(store.printNeedsConfirmation).toBe(true);
+    expect(store.printNeedsBuild).toBe(true);
+    expect(store.printConfirmMessages).toEqual([message]);
+    store.selected = store.orders.map(orderIdentity);
+    expect(store.printConfirmMessages).toEqual([`26252239: ${message}`]);
+    // Сборка возможна только для режима forced без других блокеров.
+    expect(isOrderForcePrintable({ ...build, print_mode: "blocked", print_blockers: [...build.print_blockers, { kind: "approval", code: "callas_fix_pending", message: "" }] })).toBe(false);
+    store.selected = [orderIdentity(store.orders[0])];
+    expect(store.printNeedsBuild).toBe(false);
   });
 
   it("requires a clean completed PitStop result tied to the current revision", () => {

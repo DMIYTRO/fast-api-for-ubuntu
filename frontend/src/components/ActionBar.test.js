@@ -4,12 +4,12 @@ import ActionBar from "./ActionBar.vue";
 
 const cleanup = [];
 afterEach(() => cleanup.splice(0).forEach((fn) => fn()));
-function mount(canPrint, needsPrintConfirmation = false) {
+function mount(canPrint, needsPrintConfirmation = false, extra = {}) {
   const host = document.createElement("div");
   document.body.append(host);
   const actions = [];
   const app = createApp(ActionBar, {
-    count: 1, selectedIds: ["100"], canPrint, needsPrintConfirmation, busy: false,
+    count: 1, selectedIds: ["100"], canPrint, needsPrintConfirmation, busy: false, ...extra,
     onAction: (...args) => actions.push(args),
   });
   app.mount(host);
@@ -52,6 +52,28 @@ describe("ActionBar print eligibility", () => {
     [...document.querySelectorAll(".confirm-card button")]
       .find((button) => button.textContent === "Отправить под мою ответственность").click();
     expect(actions).toEqual([["print", "", true]]);
+  });
+});
+
+describe("ActionBar forced build", () => {
+  it("explains that the final PDF will be built and checked before printing", async () => {
+    const message = "Заказ с ошибками (низкое разрешение: от 197 DPI при норме 250). Будет собран итоговый PDF и отправлен в печать под вашу ответственность.";
+    const actions = mount(true, true, { printNeedsBuild: true, confirmMessages: [message] });
+    await nextTick();
+    [...document.querySelectorAll(".action-bar button")].find((button) => button.textContent === "Провести в печать").click();
+    await nextTick();
+    expect(document.querySelector(".forced-print-reasons").textContent).toContain("от 197 DPI при норме 250");
+    expect(document.body.textContent).toContain("проверен PitStop");
+    expect(document.body.textContent).not.toContain("Будет отправлен готовый итоговый PDF");
+    [...document.querySelectorAll(".confirm-card button")]
+      .find((button) => button.textContent === "Собрать и отправить под мою ответственность").click();
+    expect(actions).toEqual([["print", "", true]]);
+  });
+
+  it("shows the build in progress on the print button", async () => {
+    mount(true, true, { printNeedsBuild: true, busy: true });
+    await nextTick();
+    expect(document.querySelector(".action-bar .button.success").textContent).toBe("Сборка итогового PDF…");
   });
 });
 

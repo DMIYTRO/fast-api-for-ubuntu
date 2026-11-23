@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref } from "vue";
-const props = defineProps({ kits: { type: Array, default: () => [] }, count: Number, selectedIds: Array, comments: Object, canPrint: Boolean, needsPrintConfirmation: Boolean, blockReason: String, busy: Boolean, reasons: Array });
+const props = defineProps({ kits: { type: Array, default: () => [] }, count: Number, selectedIds: Array, comments: Object, canPrint: Boolean, needsPrintConfirmation: Boolean, printNeedsBuild: Boolean, confirmMessages: { type: Array, default: () => [] }, blockReason: String, busy: Boolean, reasons: Array });
 const emit = defineEmits(["clear", "action"]);
 const mode = ref("");
 const comment = ref("");
@@ -33,9 +33,9 @@ function confirmForcedPrint() {
     <button class="button ghost" @click="$emit('clear')">Снять выделение</button>
     <div class="action-spacer"></div>
     <button class="button danger" @click="prepare('reject')">Вернуть на доработку</button>
-    <button class="button success" :disabled="!canPrint || busy" :title="!canPrint ? (blockReason || 'В печать можно отправить только прошедшие заказы') : ''" @click="prepare('print')">Провести в печать</button>
+    <button class="button success" :disabled="!canPrint || busy" :title="!canPrint ? (blockReason || 'В печать можно отправить только прошедшие заказы') : ''" @click="prepare('print')">{{ busy && printNeedsBuild ? "Сборка итогового PDF…" : "Провести в печать" }}</button>
   </section>
-  <div v-if="mode === 'force-print'" class="confirm-backdrop"><section class="confirm-card" role="dialog" aria-modal="true"><h3>Заказ с ошибками</h3><p>Заказ с ошибками. Отправить в печать под вашу ответственность?</p><p class="muted">Будет отправлен готовый итоговый PDF текущей версии. Решение будет записано в журнал заказа.</p><div><button class="button secondary" :disabled="busy" @click="mode = ''">Отмена</button><button class="button danger" :disabled="busy" @click="confirmForcedPrint">Отправить под мою ответственность</button></div></section></div>
+  <div v-if="mode === 'force-print'" class="confirm-backdrop"><section class="confirm-card" role="dialog" aria-modal="true"><h3>Заказ с ошибками</h3><p>Заказ с ошибками. Отправить в печать под вашу ответственность?</p><ul v-if="confirmMessages.length" class="forced-print-reasons" role="alert"><li v-for="message in confirmMessages" :key="message">{{ message }}</li></ul><p v-if="printNeedsBuild" class="muted">Итоговый PDF будет собран заново и проверен PitStop — это может занять до минуты. Если PitStop не завершит проверку, заказ в печать не уйдёт. Решение будет записано в журнал заказа.</p><p v-else class="muted">Будет отправлен готовый итоговый PDF текущей версии. Решение будет записано в журнал заказа.</p><div><button class="button secondary" :disabled="busy" @click="mode = ''">Отмена</button><button class="button danger" :disabled="busy" @click="confirmForcedPrint">{{ printNeedsBuild ? "Собрать и отправить под мою ответственность" : "Отправить под мою ответственность" }}</button></div></section></div>
   <div v-if="mode === 'reject'" class="confirm-backdrop"><form class="confirm-card" @submit.prevent="submit"><h3>Вернуть на доработку</h3><p>Для каждого заказа будет создан отдельный запрос в Sborka с его номером, комментарием и именем сформированного превью.</p>
     <div v-for="kit in kits" :key="kit.main_id" class="kit-return-warning" role="alert"><strong>Комплект {{ kit.main_id }} ({{ kit.size }} заказов, выбрано {{ kit.selected }})</strong><span>Sborka вернёт клиенту весь комплект одним возвратом через главный заказ {{ kit.main_id }}: один комментарий и одно превью. Все заказы комплекта в этой проверке тоже будут возвращены; заказы, которые ещё проверяются, — после окончания проверки.</span></div>
     <p v-if="preparedCount" class="prepared-comments">Индивидуальные причины заполнены для {{ preparedCount }} из {{ count }} заказов.</p>

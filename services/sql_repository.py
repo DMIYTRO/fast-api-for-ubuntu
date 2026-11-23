@@ -1009,6 +1009,8 @@ class SqlRunRepository:
                 order_result=record,
                 revision_number=revision_number,
                 pdf_path=pdf_path,
+                # Кем создана ревизия (напр. ``forced_print_build`` — сборка при печати).
+                created_by_action=_optional_str(order.get("current_pdf_created_by")),
             )
             session.add(revision)
         for item in record.pdf_revisions:

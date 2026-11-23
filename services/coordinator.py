@@ -849,8 +849,12 @@ class RunCoordinator:
         prepress: dict[str, Any] | None = None,
         pitstop_baseline: dict[str, Any] | None = None,
         invalidate_pitstop_baseline: bool = False,
+        created_by_action: str | None = None,
     ) -> dict[str, Any]:
         """Replace the production PDF with a re-checked revision.
+
+        ``created_by_action`` (e.g. ``forced_print_build``) is stored as
+        ``current_pdf_created_by`` and becomes ``pdf_revisions.created_by_action``.
 
         This is a system transition (a corrected PDF was re-inspected and
         routed into its status folder), so the operator transition rules do
@@ -878,6 +882,10 @@ class RunCoordinator:
             updated.pop("pitstop_skipped_reason", None)
             updated["current_pdf_revision"] = current_pdf_revision
             updated["current_pdf_sha256"] = current_pdf_sha256
+            if created_by_action:
+                updated["current_pdf_created_by"] = created_by_action
+            else:
+                updated.pop("current_pdf_created_by", None)
             updated["ink_coverage"] = {
                 "status": "not_checked", "flags": [], "pages": [],
                 "error": "PDF изменён: требуется повторная проверка красочности.",

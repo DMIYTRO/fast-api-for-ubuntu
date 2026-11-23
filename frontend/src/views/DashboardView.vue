@@ -20,6 +20,8 @@ const showBackToTop = ref(false);
 async function logout() { await auth.logout(); router.replace("/login"); }
 async function act(action, comment, confirmFailed = false) {
   actionBusy.value = true;
+  // Сборка итогового PDF и PitStop идут в этом же запросе: показываем, что работа идёт.
+  if (action === "print" && confirmFailed && checks.printNeedsBuild) toast.value = "Собираем итоговый PDF и проверяем его в PitStop…";
   try {
     const result = await checks.act(action, comment, "replace", confirmFailed);
     const failed = result.filter((item) => !["prepared", "pending", "conflict"].includes(item.status));
@@ -101,7 +103,7 @@ onBeforeUnmount(() => {
     <div v-else class="loading-page"><span class="spinner"></span> Загружаем рабочий пульт…</div>
   </main>
   <StartCheckPanel :open="checks.drawerOpen" :config="checks.config" :busy="checks.loading" @close="checks.drawerOpen = false" @start="checks.start" />
-  <ActionBar :kits="checks.selectedKits" :count="checks.selected.length" :selected-ids="checks.selected" :comments="checks.selectedReturnComments" :can-print="checks.canPrint" :needs-print-confirmation="checks.printNeedsConfirmation" :block-reason="checks.printBlockReason" :busy="actionBusy" :reasons="checks.config?.return_reasons || []" @clear="checks.clearSelection" @action="act" />
+  <ActionBar :kits="checks.selectedKits" :count="checks.selected.length" :selected-ids="checks.selected" :comments="checks.selectedReturnComments" :can-print="checks.canPrint" :needs-print-confirmation="checks.printNeedsConfirmation" :print-needs-build="checks.printNeedsBuild" :confirm-messages="checks.printConfirmMessages" :block-reason="checks.printBlockReason" :busy="actionBusy" :reasons="checks.config?.return_reasons || []" @clear="checks.clearSelection" @action="act" />
   <div v-if="checks.conflictPrompt" class="confirm-backdrop">
     <section class="confirm-card">
       <h3>Файл уже существует</h3>

@@ -41,12 +41,16 @@ export const isOrderPrintable = (order) => {
   if (!sendableStatuses.includes(order?.status)) return false;
   return pitstopFinishedForCurrentPdf(order);
 };
+// Красный заказ с одним лишь низким разрешением и диагностическим PDF: итоговый PDF
+// соберётся и пройдёт PitStop при печати (блокер forced_print_build).
+export const needsForcedBuild = (order) => (order?.print_blockers || []).some((item) => item.code === "forced_print_build");
 // Красный заказ с готовым итоговым PDF: печать только после явного подтверждения оператора.
 export const isOrderForcePrintable = (order) => {
   if (order?.status !== "error" || order?.print_mode !== "forced") return false;
   const blockers = order.print_blockers || [];
   if (!blockers.length || blockers.some((item) => item.kind !== "confirm")) return false;
-  return pitstopFinishedForCurrentPdf(order);
+  // PitStop диагностического PDF не нужен: собранный при печати PDF проверяется заново.
+  return needsForcedBuild(order) || pitstopFinishedForCurrentPdf(order);
 };
 export const isOrderSendable = (order) => isOrderPrintable(order) || isOrderForcePrintable(order);
 const decorateOrder = (order, runId) => {
@@ -135,6 +139,13 @@ export const useChecksStore = defineStore("checks", {
     canPrint() { return this.selectedOrders.length > 0 && this.selectedOrders.every(isOrderSendable); },
     // Среди выбранных есть красные заказы: перед отправкой нужен диалог подтверждения.
     printNeedsConfirmation() { return this.selectedOrders.some(isOrderForcePrintable); },
+    // Среди выбранных есть заказы, для которых итоговый PDF соберётся при печати.
+    printNeedsBuild() { return this.selectedOrders.some((order) => isOrderForcePrintable(order) && needsForcedBuild(order)); },
+    // Тексты подтверждения (низкое разрешение, overprint) для диалога печати.
+    printConfirmMessages() {
+      return [...new Set(this.selectedOrders.filter(isOrderForcePrintable)
+        .flatMap((order) => (order.print_blockers || []).filter((item) => item.kind === "confirm").map((item) => (this.selectedOrders.length > 1 ? `${order.order_id ?? order.id}: ` : "") + item.message)))];
+    },
   },
   actions: {
     setFilter(value) {

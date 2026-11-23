@@ -999,6 +999,33 @@ def _pitstop_adapter_factory(settings: Settings, callas_fix_service=None):
     return factory
 
 
+def _forced_print_builder(adapter_factory):
+    """Сборка итогового PDF при печати (services/forced_print.py) адаптером проверки.
+
+    Адаптер создаётся той же фабрикой и с теми же опциями, что и проверка запуска, поэтому
+    профиль, политика коррекции и callas-сборка совпадают с обычной проверкой.
+    """
+    from dataclasses import fields
+
+    from services.forced_print import ForcedPrintBuildError
+
+    names = {item.name for item in fields(ProcessingOptions)}
+
+    def build(run: dict[str, Any], order: dict[str, Any], output_dir: Path):
+        options = run.get("options") or {}
+        adapter = adapter_factory(
+            ProcessingOptions(**{key: value for key, value in options.items() if key in names})
+        )
+        builder = getattr(adapter, "build_forced_print_pdf", None)
+        if builder is None:
+            raise ForcedPrintBuildError(
+                "Сборка итогового PDF при печати не поддерживается этим режимом проверки."
+            )
+        return builder(order, output_dir)
+
+    return build
+
+
 def _default_adapter_factory(settings: Settings, callas_fix_service=None):
     """Construct the regular adapter with optional Sborka metadata enrichment."""
     fetcher = (
@@ -1169,6 +1196,7 @@ def create_app(
         accepted_pdf_provider=(
             callas_fix_service.publish_accepted if callas_fix_service else None
         ),
+        forced_print_builder=_forced_print_builder(processor_factory),
         prepress_sender=(
             build_sender(
                 settings.sborka_api_dir,
