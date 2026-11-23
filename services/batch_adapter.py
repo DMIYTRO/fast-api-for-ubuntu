@@ -30,7 +30,7 @@ from services.callas_fix import source_signature_matches
 from services.callas_source_fix import STALE_SOURCE_WARNING
 from services.pdf_routing import CHECKED_FOLDER, FAILED_FOLDER, PRINT_FOLDER, completed_status, route_pdf
 from services.order_kits import kits_from_order_info
-from services.postpress import normalize_postpress
+from services.postpress import normalize_customer_comment, normalize_postpress
 
 
 logger = logging.getLogger("image_magic.processing")
@@ -134,6 +134,9 @@ class BatchProcessorAdapter:
         self._kits_by_id: dict[str, dict[str, Any]] = {}
         self._order_info_failed = False
         self._order_info_lock = threading.Lock()
+        # Вызывается (из потока Sborka), когда ответ orderinfo получен: проверка
+        # дополняет уже показанные карточки комментарием заказчика.
+        self._order_info_listener: Callable[[], None] | None = None
         profile = get_profile(options.direction)
         if correction_limit_mm is not None or correction_confirm_max_mm is not None:
             profile = profile.with_correction_limit(
@@ -219,6 +222,36 @@ class BatchProcessorAdapter:
             policy = self._assign_check_policy(order)
             result.pitstop = apply_check_policy(result.pitstop, policy["key"])
 
+    def set_order_info_listener(self, listener: Callable[[], None] | None) -> None:
+        """Register a callback for the moment the Sborka orderinfo answer arrives."""
+        self._order_info_listener = listener
+
+    def customer_comment_for(self, order: OrderCheck) -> str | None:
+        """Customer comment of *order* if the orderinfo answer is already here.
+
+        Never waits and never starts a request: opening a card must not call Sborka.
+        Works even after the bounded wait of ``process_order`` gave up on a slow
+        answer, as long as the answer eventually arrived successfully.
+        """
+        future = self._order_info_future
+        if future is None or not future.done() or future.exception() is not None:
+            return None
+        record = self._order_info_index(future.result()).get(order.order_id)
+        if record is None:
+            return None
+        return normalize_customer_comment(record.get("comment_client"))
+
+    def _order_info_index(self, records: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        with self._order_info_lock:
+            if self._order_info_by_id is None:
+                self._order_info_by_id = {
+                    str(item["id"]): item
+                    for item in self._order_info_records(records)
+                    if item.get("id") is not None
+                }
+                self._kits_by_id = kits_from_order_info(records)
+            return self._order_info_by_id
+
     def _start_order_info_fetch(self, order_ids: list[str]) -> None:
         if self.order_info_fetcher is None or self._order_info_future is not None:
             return
@@ -232,6 +265,13 @@ class BatchProcessorAdapter:
                 future.set_result(fetcher(list(order_ids)))
             except BaseException as exc:
                 future.set_exception(exc)
+                return
+            listener = self._order_info_listener
+            if listener is not None and self._order_info_future is future:
+                try:
+                    listener()
+                except Exception:  # noqa: BLE001 — never affects the check
+                    logger.exception("sborka.orderinfo_listener_failed")
 
         threading.Thread(target=run, name="sborka-orderinfo", daemon=True).start()
 
@@ -246,18 +286,14 @@ class BatchProcessorAdapter:
             records = future.result(
                 timeout=max(0.0, self._order_info_deadline - time.monotonic())
             )
+            record = self._order_info_index(records).get(order.order_id)
             with self._order_info_lock:
-                if self._order_info_by_id is None:
-                    self._order_info_by_id = {
-                        str(item["id"]): item
-                        for item in self._order_info_records(records)
-                        if item.get("id") is not None
-                    }
-                    self._kits_by_id = kits_from_order_info(records)
-                record = self._order_info_by_id.get(order.order_id)
                 kit = self._kits_by_id.get(order.order_id)
             if record is not None:
                 order.postpress = normalize_postpress(record.get("post_text"))
+                comment = normalize_customer_comment(record.get("comment_client"))
+                if comment:
+                    order.customer_comment = comment
             if kit is not None:
                 order.kit = dict(kit)
         except Exception as exc:

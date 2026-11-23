@@ -28,6 +28,11 @@ const layeredTiffExports = ref({});
 const layeredTiffPolls = new Map();
 const id = computed(() => props.order.order_id ?? props.order.id);
 const actionId = computed(() => props.order.aggregate_id ?? id.value);
+// Полный комментарий заказчика из АК: текст как есть (переносы строк сохраняются стилем).
+const customerComment = computed(() => {
+  const text = props.order.customer_comment;
+  return typeof text === "string" && text.trim() ? text : "";
+});
 const files = computed(() => (props.order.files || props.order.file_results || []).map((file) => {
   const result = layeredTiffExports.value[file.id];
   if (!result) return file;
@@ -272,6 +277,10 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
     <div class="order-body">
       <section class="preview-column">
         <p class="section-title">Превью макетов</p>
+        <div v-if="customerComment" class="customer-comment" data-testid="customer-comment">
+          <span class="customer-comment-label">Комментарий заказчика</span>
+          <span class="customer-comment-text">{{ customerComment }}</span>
+        </div>
         <PreviewViewer :files="files" :has-production-pdf="Boolean(order.pdf_path || order.pdf_url)" @retry-layered-tiff="retryLayeredTiffPreview" />
         <div class="custom-preview" @dragover.prevent @drop.prevent="onDrop">
           <input ref="uploadInput" type="file" accept="image/jpeg,image/png" hidden @change="uploadPreview($event.target.files?.[0])">

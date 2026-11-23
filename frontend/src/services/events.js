@@ -36,7 +36,7 @@ export function connectRunEvents(runId, { onEvent, onState }) {
       "run.started", "scan.progress", "order.detected", "order.checked",
       "order.waiting_confirmation", "pdf.created", "preview.created",
       "order.completed", "order.pdf_revision", "order.correction_confirmed",
-      "order.correction_rejected", "run.cancelling", "run.cancelled",
+      "order.correction_rejected", "order.customer_comment", "run.cancelling", "run.cancelled",
       "run.completed", "run.failed",
     ].forEach((type) => source.addEventListener(type, (event) => {
       remember(event.lastEventId);

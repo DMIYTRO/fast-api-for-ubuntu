@@ -1130,6 +1130,12 @@ class RunCoordinator:
             )
             self._changed.notify_all()
 
+        # Ответ Sborka (комментарий заказчика) может прийти, когда карточки уже показаны,
+        # в том числе у заказов, ждущих подтверждения: адаптер сообщит об этом.
+        set_listener = getattr(context.adapter, "set_order_info_listener", None)
+        if callable(set_listener):
+            set_listener(lambda: self._apply_late_customer_comments(run_id, context))
+
         iterator_method = getattr(context.adapter, "iter_inspect_orders", None)
         known_total: int | None = None
         if callable(iterator_method):
@@ -1170,6 +1176,9 @@ class RunCoordinator:
                     run["current_order"] = order.order_id
                     run["progress"] = max(run["progress"], 10)
                     aggregate_id = context.add_order(order)
+                    # Если ответ Sborka пришёл между проверкой заказа и этим местом,
+                    # слушатель его карточку ещё не видел: берём комментарий здесь.
+                    self._take_customer_comment(context, order)
                     self._commit_order_locked(
                         run,
                         aggregate_id,
@@ -1276,6 +1285,71 @@ class RunCoordinator:
                 include_orders=False,
             )
             self._settle_run_locked(run)
+
+    @staticmethod
+    def _take_customer_comment(context: _RunContext, order: OrderCheck) -> str | None:
+        """Customer comment of *order* if Sborka has already answered (never waits)."""
+        getter = getattr(context.adapter, "customer_comment_for", None)
+        if not callable(getter):
+            return None
+        try:
+            text = getter(order)
+        except Exception:  # noqa: BLE001 — Sborka must never break the check
+            logger.exception(
+                "order.customer_comment_failed order_id=%s", order.order_id
+            )
+            return None
+        if text:
+            order.customer_comment = text
+        return text or None
+
+    def _apply_late_customer_comments(
+        self, run_id: str, context: _RunContext
+    ) -> None:
+        """Add the customer comment to cards that were shown before Sborka answered.
+
+        Runs in the Sborka thread.  Under the coordinator lock the comment is set on
+        the live ``OrderCheck`` (so later rebuilds — confirmation, source fix,
+        completion — keep it) and on the stored order, which is persisted and
+        pushed as ``order.customer_comment`` like any other order update.  An
+        order whose stored card already has the text is left alone.
+        """
+        with self._lock:
+            run = context.run
+            if (
+                self._contexts.get(run_id) is not context
+                or run["status"] in TERMINAL_RUN_STATUSES
+            ):
+                return
+            for key, order in list(context.orders.items()):
+                text = self._take_customer_comment(context, order)
+                stored = run["orders"].get(key)
+                if not text or stored is None or stored.get("customer_comment") == text:
+                    continue
+                updated = deepcopy(stored)
+                updated["customer_comment"] = text
+                try:
+                    self._commit_order_locked(
+                        run,
+                        key,
+                        updated,
+                        "order.customer_comment",
+                        lambda dto, order=order: {
+                            "aggregate_id": order.aggregate_id,
+                            "order_id": order.order_id,
+                            "customer_id": order.customer_id,
+                            "status": dto.get("status"),
+                            "order": dto,
+                        },
+                        update_counts=False,
+                    )
+                except Exception:  # noqa: BLE001 — a lost comment must not break the run
+                    logger.exception(
+                        "order.customer_comment_save_failed run_id=%s order_id=%s",
+                        run_id,
+                        order.order_id,
+                    )
+            self._changed.notify_all()
 
     def _await_orders(
         self,

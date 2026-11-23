@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createApp, nextTick } from "vue";
+import { createApp, h, nextTick } from "vue";
 import OrderCard from "./OrderCard.vue";
 import { prepressDisplay } from "./prepress.js";
 
@@ -280,5 +280,83 @@ describe("OrderCard color correction lines", () => {
     expect(noteText(icc)).toContain("Не удалось снять ICC-профиль: профиль callas недоступен");
     expect(icc.querySelector(".prepress-notes")?.classList.contains("warnings")).toBe(true);
     expect(noteText(rgb)).toContain("Не удалось перевести RGB в CMYK: таймаут");
+  });
+});
+
+describe("OrderCard customer comment", () => {
+  const long = "друк з лицьової сторони\n\nколір не міняти\n  ВЕЛИКЕ_СЛОВО_" + "Ж".repeat(120);
+
+  it("shows the full comment under the previews title and before the images, as text", async () => {
+    const host = mount({
+      order_id: "26252239", status: "passed", files: [],
+      customer_comment: "друк з лицьової сторони",
+    });
+    await nextTick();
+
+    const block = host.querySelector("[data-testid='customer-comment']");
+    expect(block).not.toBeNull();
+    expect(block.textContent).toContain("Комментарий заказчика");
+    expect(block.querySelector(".customer-comment-text").textContent).toBe("друк з лицьової сторони");
+    const column = host.querySelector(".preview-column");
+    const order = [...column.children];
+    expect(order[0].textContent).toContain("Превью макетов");
+    expect(order[1]).toBe(block);
+    expect(order[1].compareDocumentPosition(column.querySelector(".custom-preview")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("keeps every line and the whole long text with no truncation or toggle", async () => {
+    const host = mount({ order_id: "1", status: "passed", files: [], customer_comment: long });
+    await nextTick();
+
+    const text = host.querySelector(".customer-comment-text");
+    expect(text.textContent).toBe(long); // all lines, blank line included, byte for byte
+    expect(host.querySelector(".customer-comment button, .customer-comment a")).toBeNull();
+    expect(host.querySelector(".customer-comment").textContent).not.toContain("…");
+  });
+
+  it("renders HTML-looking comment as plain text", async () => {
+    const host = mount({
+      order_id: "1", status: "passed", files: [],
+      customer_comment: "<img src=x onerror=alert(1)><b>жирний</b>",
+    });
+    await nextTick();
+
+    const text = host.querySelector(".customer-comment-text");
+    expect(text.querySelector("img, b")).toBeNull();
+    expect(text.textContent).toBe("<img src=x onerror=alert(1)><b>жирний</b>");
+  });
+
+  it.each([undefined, null, "", "  \n\t "])("hides the row for an empty comment (%j)", async (value) => {
+    const host = mount({ order_id: "1", status: "passed", files: [], customer_comment: value });
+    await nextTick();
+    expect(host.querySelector("[data-testid='customer-comment']")).toBeNull();
+    expect(host.textContent).not.toContain("Комментарий заказчика");
+  });
+
+  it("is available on a PitStop error and with no images", async () => {
+    const host = mount({
+      order_id: "26252239", status: "error", pitstop_status: "failed", files: [], preview_paths: [],
+      pitstop: { execution_status: "failed", verdict: "error", technical_error: "PitStop недоступен" },
+      customer_comment: "друк з лицьової сторони",
+    });
+    await nextTick();
+    expect(host.querySelector(".customer-comment-text")?.textContent).toBe("друк з лицьової сторони");
+  });
+
+  it("appears on an already shown card when the order is updated", async () => {
+    const order = { order_id: "1", status: "waiting_confirmation", files: [] };
+    const host = document.createElement("div");
+    document.body.append(host);
+    const { reactive } = await import("vue");
+    const state = reactive({ order });
+    const app = createApp({ render: () => h(OrderCard, { order: state.order, runId: "run-1", selected: false, reasons: [] }) });
+    app.mount(host);
+    mounted.push(() => { app.unmount(); host.remove(); });
+    await nextTick();
+    expect(host.querySelector(".customer-comment")).toBeNull();
+
+    state.order = { ...order, customer_comment: "пізня відповідь" };
+    await nextTick();
+    expect(host.querySelector(".customer-comment-text")?.textContent).toBe("пізня відповідь");
   });
 });

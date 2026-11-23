@@ -175,6 +175,8 @@ def order_check_to_dto(
     }
     if value.postpress is not None:
         result["postpress"] = value.postpress
+    if value.customer_comment:
+        result["customer_comment"] = value.customer_comment
     if value.kit is not None:
         result["kit"] = value.kit
     if value.color_conversion is not None:

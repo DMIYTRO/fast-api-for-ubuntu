@@ -712,4 +712,35 @@ describe("run kits", () => {
     await store.loadKits("run-1");
     expect(api.runKits).toHaveBeenCalledTimes(1); // повтор не чаще раза в 20 с
   });
+
+  it("adds a late customer comment to an already shown card, keeping its other fields", () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1", progress: 0 };
+    store.orders = [
+      { aggregate_id: "42:200", customer_id: "42", order_id: "200", status: "waiting_confirmation", pending_confirmations: 1, files: [{ filename: "a.jpg" }] },
+    ];
+    const comment = "друк з лицьової сторони\nдругий рядок";
+
+    store.applyEvent({
+      type: "order.customer_comment", run_id: "run-1", aggregate_id: "42:200", customer_id: "42", order_id: "200",
+      status: "waiting_confirmation",
+      order: { aggregate_id: "42:200", customer_id: "42", order_id: "200", status: "waiting_confirmation", pending_confirmations: 1, customer_comment: comment, files: [{ filename: "a.jpg" }] },
+    });
+
+    expect(store.orders).toHaveLength(1);
+    expect(store.orders[0].customer_comment).toBe(comment);
+    expect(store.orders[0].status).toBe("waiting_confirmation");
+    expect(store.orders[0].pending_confirmations).toBe(1);
+  });
+
+  it("does not lose the comment when a later status-only event arrives", () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1", progress: 0 };
+    store.orders = [{ aggregate_id: "42:200", customer_id: "42", order_id: "200", status: "processing", customer_comment: "текст", files: [] }];
+
+    store.applyEvent({ type: "order.checked", run_id: "run-1", aggregate_id: "42:200", customer_id: "42", order_id: "200", status: "warning" });
+
+    expect(store.orders[0].customer_comment).toBe("текст");
+    expect(store.orders[0].status).toBe("warning");
+  });
 });
