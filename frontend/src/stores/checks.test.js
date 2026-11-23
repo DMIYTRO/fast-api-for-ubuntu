@@ -401,6 +401,25 @@ describe("checks store", () => {
     expect(store.printNeedsBuild).toBe(false);
   });
 
+  it("shows the build state for a yellow diagnostic order without a confirmation", () => {
+    const store = useChecksStore();
+    const yellow = {
+      order_id: "26252239", status: "warning", print_mode: "normal", pdf_kind: "diagnostic", print_build: true,
+      current_pdf_revision: 1, pitstop: { execution_status: "completed", verdict: "passed", checked_revision: 1 },
+      print_blockers: [],
+    };
+    store.orders = [yellow];
+    store.selected = [orderIdentity(yellow)];
+    expect(store.canPrint).toBe(true);
+    expect(store.printNeedsConfirmation).toBe(false);
+    expect(store.printNeedsBuild).toBe(true);
+    store.orders = [{ ...yellow, print_build: false }];
+    expect(store.printNeedsBuild).toBe(false);
+    // Жёлтый диагностический заказ с другими ошибками заблокирован (no_final_pdf).
+    store.orders = [{ ...yellow, print_build: false, print_mode: "blocked", print_blockers: [{ kind: "file", code: "no_final_pdf", message: "Готового итогового PDF нет" }] }];
+    expect(store.canPrint).toBe(false);
+  });
+
   it("requires a clean completed PitStop result tied to the current revision", () => {
     const order = { status: "passed", current_pdf_revision: 2, current_pdf_sha256: "new", pitstop: {
       execution_status: "completed", verdict: "passed", checked_revision: 2, input_sha256: "new",

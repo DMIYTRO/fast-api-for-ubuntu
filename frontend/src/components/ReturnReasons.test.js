@@ -155,6 +155,122 @@ describe("ReturnReasons suggestions", () => {
   });
 });
 
+describe("ReturnReasons dialog layout", () => {
+  const panelLines = (dialog) => [...dialog.querySelectorAll(".return-selected .return-line-text")].map((node) => node.textContent);
+  async function typeCustom(dialog, value) {
+    const textarea = dialog.querySelector(".return-custom textarea");
+    textarea.value = value;
+    textarea.dispatchEvent(new Event("input"));
+    await nextTick();
+  }
+
+  it("shows the final comment lines, including the free text, in the selected panel", async () => {
+    const { host, changes } = mount({ order_id: "20", status: "error", return_suggestions: suggestions });
+    const dialog = await openDialog(host);
+    expect(dialog.querySelector(".return-selected-title").textContent).toBe("Будет отправлено клиенту");
+    expect(panelLines(dialog)).toEqual(["Низкое разрешение изображений."]);
+
+    await typeCustom(dialog, "Проверьте шрифты");
+    expect(panelLines(dialog)).toEqual(["1) Низкое разрешение изображений;", "2) Проверьте шрифты."]);
+    expect(panelLines(dialog).join("\n")).toBe(last(changes));
+    expect(dialog.querySelector(".return-line.custom .return-line-text").textContent).toBe("2) Проверьте шрифты.");
+  });
+
+  it("shows an empty state when nothing is selected", async () => {
+    const { host } = mount({ order_id: "21", status: "passed" });
+    const dialog = await openDialog(host);
+    expect(dialog.querySelector(".return-lines")).toBeNull();
+    expect(dialog.querySelector(".return-selected-empty").textContent).toContain("Пока ничего не выбрано");
+  });
+
+  it("removes a reason and the free text from the selected panel", async () => {
+    const { host, changes } = mount({ order_id: "22", status: "error", return_suggestions: suggestions });
+    const dialog = await openDialog(host);
+    await typeCustom(dialog, "Свой текст");
+    const [reasonRemove] = dialog.querySelectorAll(".return-line-remove");
+    reasonRemove.click();
+    await nextTick();
+    expect(suggestionBoxes(dialog)[0].checked).toBe(false);
+    expect(last(changes)).toBe("Свой текст.");
+
+    dialog.querySelector(".return-line.custom .return-line-remove").click();
+    await nextTick();
+    expect(dialog.querySelector(".return-custom textarea").value).toBe("");
+    expect(last(changes)).toBe("");
+    expect(dialog.querySelector(".return-selected-empty")).not.toBeNull();
+  });
+
+  it("groups the catalogue by category, highlights selected rows and searches text and category", async () => {
+    const { host } = mount({ order_id: "23", status: "error" });
+    const dialog = await openDialog(host);
+    const heads = () => [...dialog.querySelectorAll(".return-group-name")].map((node) => node.textContent);
+    expect(heads()).toEqual(["Разрешение", "Размер", "Цвет", "Прочее"]);
+
+    const row = [...dialog.querySelectorAll(".return-options .return-option")].find((node) => node.textContent.includes("Макет в RGB"));
+    row.querySelector("input").click();
+    await nextTick();
+    expect(row.classList.contains("is-selected")).toBe(true);
+    expect(dialog.querySelector(".return-group-selected").textContent).toContain("1");
+
+    const input = dialog.querySelector(".return-search input");
+    input.value = "размер";
+    input.dispatchEvent(new Event("input"));
+    await nextTick();
+    expect(heads()).toEqual(["Размер"]);
+    input.value = "цвет";
+    input.dispatchEvent(new Event("input"));
+    await nextTick();
+    expect(heads()).toEqual(["Цвет"]);
+    expect(dialog.querySelector(".return-found").textContent).toBe("Найдено: 1");
+  });
+
+  it("collapses a large catalogue by category and expands a group on click", async () => {
+    const big = Array.from({ length: 70 }, (_, index) => ({ category: `Категория ${index % 7}`, text: `Причина ${index}` }));
+    const host = document.createElement("div");
+    document.body.append(host);
+    const app = createApp(ReturnReasons, { order: { order_id: "24", status: "error" }, reasons: big });
+    app.mount(host);
+    mounted.push(() => { app.unmount(); host.remove(); });
+    const dialog = await openDialog(host);
+    const groups = [...dialog.querySelectorAll(".return-group")];
+    expect(groups).toHaveLength(7);
+    expect(groups.every((group) => group.querySelector(".return-group-items").style.display === "none")).toBe(true);
+    groups[2].querySelector(".return-group-head").click();
+    await nextTick();
+    expect(groups[2].querySelector(".return-group-items").style.display).toBe("");
+    expect(groups[2].querySelector(".return-group-head").getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("closes on Escape", async () => {
+    const { host } = mount({ order_id: "25", status: "error" });
+    await openDialog(host);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await nextTick();
+    expect(document.querySelector(".return-dialog")).toBeNull();
+  });
+});
+
+describe("ReturnReasons card summary", () => {
+  it("shows the first reason and the number of further lines next to the trigger", async () => {
+    const { host } = mount({ order_id: "26", status: "error", return_suggestions: suggestions });
+    await nextTick();
+    expect(host.querySelector(".return-summary-text").textContent).toBe("Низкое разрешение изображений");
+    expect(host.querySelector(".return-summary-more")).toBeNull();
+
+    const dialog = await openDialog(host);
+    suggestionBoxes(dialog)[1].click();
+    await nextTick();
+    expect(host.querySelector(".return-summary-more").textContent).toBe("+1");
+    expect(host.querySelector(".return-summary").title).toContain("2) Неверный размер макета.");
+  });
+
+  it("hides the summary when nothing is selected", async () => {
+    const { host } = mount({ order_id: "27", status: "passed", return_suggestions: suggestions });
+    await nextTick();
+    expect(host.querySelector(".return-summary")).toBeNull();
+  });
+});
+
 describe("defaultReturnComment", () => {
   it("builds the comment from high-confidence suggestions of an unmounted order", () => {
     const order = { order_id: "10", status: "error", return_suggestions: suggestions };

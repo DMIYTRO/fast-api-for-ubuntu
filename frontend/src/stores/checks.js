@@ -139,8 +139,9 @@ export const useChecksStore = defineStore("checks", {
     canPrint() { return this.selectedOrders.length > 0 && this.selectedOrders.every(isOrderSendable); },
     // Среди выбранных есть красные заказы: перед отправкой нужен диалог подтверждения.
     printNeedsConfirmation() { return this.selectedOrders.some(isOrderForcePrintable); },
-    // Среди выбранных есть заказы, для которых итоговый PDF соберётся при печати.
-    printNeedsBuild() { return this.selectedOrders.some((order) => isOrderForcePrintable(order) && needsForcedBuild(order)); },
+    // Среди выбранных есть заказы, для которых итоговый PDF соберётся при печати: красный
+    // с подтверждением (forced_print_build) или жёлтый с диагностическим PDF (print_build).
+    printNeedsBuild() { return this.selectedOrders.some((order) => (isOrderForcePrintable(order) && needsForcedBuild(order)) || (isOrderPrintable(order) && order.print_build === true)); },
     // Тексты подтверждения (низкое разрешение, overprint) для диалога печати.
     printConfirmMessages() {
       return [...new Set(this.selectedOrders.filter(isOrderForcePrintable)

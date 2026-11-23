@@ -18,11 +18,28 @@ export const preselectedReasons = (order) => {
   return [...new Set(returnSuggestions(order).filter((item) => item.preselect === true).map((item) => item.text))];
 };
 
+/**
+ * Строки комментария клиенту в том виде, в котором они уйдут: каждая с исходной
+ * причиной (`source`) и признаком своего комментария (`custom`). Одна причина —
+ * без номера, несколько — нумерованный список.
+ */
+export function returnCommentLines(selected, custom = "") {
+  const customText = String(custom || "").trim();
+  const parts = [
+    ...(selected || []).filter(Boolean).map((source) => ({ source, custom: false })),
+    ...(customText ? [{ source: customText, custom: true }] : []),
+  ];
+  return parts.map((part, index) => {
+    const body = part.source.replace(/[.;\s]+$/, "");
+    const text = parts.length === 1
+      ? `${body}.`
+      : `${index + 1}) ${body}${index === parts.length - 1 ? "." : ";"}`;
+    return { ...part, text };
+  });
+}
+
 export function buildReturnComment(selected, custom = "") {
-  const parts = [...(selected || []), String(custom || "").trim()].filter(Boolean);
-  if (!parts.length) return "";
-  if (parts.length === 1) return `${parts[0].replace(/[.;\s]+$/, "")}.`;
-  return parts.map((item, index) => `${index + 1}) ${item.replace(/[.;\s]+$/, "")}${index === parts.length - 1 ? "." : ";"}`).join("\n");
+  return returnCommentLines(selected, custom).map((line) => line.text).join("\n");
 }
 
 const newDraft = () => reactive({ selected: [], custom: "", touched: false, seededKey: "", reviewed: false });

@@ -360,3 +360,16 @@ describe("OrderCard customer comment", () => {
     expect(host.querySelector(".customer-comment-text")?.textContent).toBe("пізня відповідь");
   });
 });
+
+describe("OrderCard return comment summary", () => {
+  it("shows the pre-selected return reason next to the comment button", async () => {
+    const host = mount({
+      order_id: "26242148", customer_id: "3773", status: "error", files: [],
+      return_suggestions: [{ text: "Низкое разрешение изображений", category: "Разрешение", confidence: "high", preselect: true, evidence: "" }],
+    });
+    await nextTick();
+    const actions = host.querySelector(".order-head-actions");
+    expect(actions.querySelector(".return-badge")?.textContent).toBe("1");
+    expect(actions.querySelector(".return-summary-text")?.textContent).toBe("Низкое разрешение изображений");
+  });
+});
