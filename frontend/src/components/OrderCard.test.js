@@ -414,3 +414,39 @@ describe("OrderCard layered TIFF review after reload", () => {
     }
   });
 });
+
+describe("OrderCard postpress operations", () => {
+  it("shows postpress operations next to the fold with rounding and drilling details", async () => {
+    const host = mount({
+      order_id: "1", status: "passed", files: [],
+      postpress: {
+        raw: "биговка : 1; Сгиб : 1; Рулонна ламінація …; скругление углов : 4; Сверление : 2, &empty; - 5 мм; кашировка : 2",
+        fold: { type: "half-fold", count: 1, operation: "Биг", label: "Биг: 1", needs_confirmation: false },
+        operations: [
+          { kind: "lamination", label: "Ламинация", detail: "мат, 2 стороны, 25 мкм", text: "Рулонна ламінація …" },
+          { kind: "rounding", label: "Скругление углов", count: 4, text: "скругление углов : 4" },
+          { kind: "drilling", label: "Сверление", count: 2, diameter_mm: 5, text: "Сверление : 2, ∅ - 5 мм" },
+          { kind: "mounting", label: "Кашировка", count: 2, text: "кашировка : 2" },
+        ],
+      },
+    });
+    await nextTick();
+    const line = host.querySelector(".customer-line");
+    expect(line.querySelector(".fold-indicator")?.textContent).toContain("Биг: 1");
+    const ops = [...line.querySelectorAll(".postpress-indicator")];
+    expect(ops.map((el) => el.querySelector("b").textContent)).toEqual([
+      "Ламинация: мат, 2 стороны, 25 мкм", "Скругление углов", "Сверление", "Кашировка",
+    ]);
+    expect(ops[1].querySelector(".postpress-count").textContent).toBe("4 угла");
+    expect(ops[2].querySelector(".postpress-count").textContent).toBe("2 отв.");
+    expect(ops[2].querySelector(".postpress-diameter").textContent).toBe("Ø 5 мм");
+    expect(ops[2].title).toContain("Sborka: Сверление");
+    expect(ops[3].querySelector(".postpress-count").textContent).toBe("× 2");
+  });
+
+  it("shows nothing extra when Sborka sent no operations", async () => {
+    const host = mount({ order_id: "2", status: "passed", files: [], postpress: { raw: "Комплект : 2" } });
+    await nextTick();
+    expect(host.querySelector(".postpress-indicator")).toBeNull();
+  });
+});

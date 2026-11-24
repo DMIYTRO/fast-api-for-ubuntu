@@ -147,6 +147,33 @@ const foldSupported = computed(() => {
   return ["half-fold", "c-fold", "z-fold"].includes(fold.value.type);
 });
 const foldTitle = computed(() => foldSupported.value ? foldLabel.value : `${foldLabel.value}. Схема фальцовки требует настройки`);
+const postpressIcons = {
+  lamination: "M3 6h14v9H3zM5 4h14v9",
+  rounding: "M3 17V8a5 5 0 0 1 5-5h9M7 17v-6a4 4 0 0 1 4-4h6",
+  drilling: "M10 3v4m0 6v4M3 10h4m6 0h4M10 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z",
+  cutting: "M6 4a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm0 8a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm1.6-6.6L17 15M7.6 14.6 17 5",
+  perforation: "M3 10h2m3 0h2m3 0h2m3 0h1M4 4h12v12H4z",
+  grommet: "M10 15a5 5 0 1 0 0-10 5 5 0 0 0 0 10Zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z",
+  default: "M4 4h12v12H4zM7 10h6M10 7v6",
+};
+const postpressOps = computed(() => (props.order?.postpress?.operations || []).map((op, index) => {
+  const count = Number.isInteger(op.count) && op.count > 0 ? op.count : null;
+  const countText = count == null ? "" : op.kind === "rounding"
+    ? `${count} ${count === 1 ? "угол" : count < 5 ? "угла" : "углов"}`
+    : op.kind === "drilling" ? `${count} отв.` : `× ${count}`;
+  const diameterText = op.diameter_mm > 0 ? `Ø ${String(Number(op.diameter_mm)).replace(".", ",")} мм` : "";
+  const detail = op.kind === "lamination" ? op.detail || "" : "";
+  const title = [op.label, op.detail, countText, diameterText].filter(Boolean).join(" · ") + (op.text ? `\nSborka: ${op.text}` : "");
+  return {
+    key: `${index}-${op.kind}`,
+    kind: op.kind || "other",
+    label: detail ? `${op.label}: ${detail}` : op.label,
+    countText,
+    diameterText,
+    title,
+    icon: postpressIcons[op.kind] || postpressIcons.default,
+  };
+}));
 
 async function decide(value) {
   busy.value = true;
@@ -245,6 +272,12 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3v14m14-14v14M3 5h14M3 15h14M10 3v14M7.5 8.5 10 11l2.5-2.5" /></svg>
             <b>{{ foldLabel }}</b>
             <i v-if="!foldSupported" aria-hidden="true">!</i>
+          </span>
+          <span v-for="op in postpressOps" :key="op.key" class="postpress-indicator" :class="`postpress-${op.kind}`" :title="op.title" :aria-label="op.title">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path :d="op.icon" /></svg>
+            <b>{{ op.label }}</b>
+            <em v-if="op.countText" class="postpress-count">{{ op.countText }}</em>
+            <em v-if="op.diameterText" class="postpress-diameter">{{ op.diameterText }}</em>
           </span>
         </small>
       </div>

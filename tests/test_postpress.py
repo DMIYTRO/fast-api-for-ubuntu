@@ -103,3 +103,41 @@ def test_orderinfo_fetcher_calls_sborka_api_with_scanned_order_ids(tmp_path: Pat
 
     fetch_order_info.assert_called_once_with(["100", "101"], timeout=13)
     assert response == [{"id": "100", "post_text": "Биг: 2 гармошка"}]
+
+
+def test_postpress_operations_parse_sborka_text():
+    from services.postpress import postpress_operations
+
+    ops = postpress_operations(
+        "Комплект : 50;Рулонна ламінація Глянцева ламінація з двох сторін 25 мікрон; "
+        "скругление углов : 4; Сверление : 1, &empty; - 5 мм; доработка макета: 100.00; "
+        "биговка : 1; Сгиб : 1; кашировка : 2; Вертикально;Скоба : 2; Склейка : 45 x 100шт., сверху"
+    )
+    assert [op["kind"] for op in ops] == [
+        "lamination", "rounding", "drilling", "mounting", "staple", "gluing",
+    ]
+    assert ops[0]["detail"] == "глянец, 2 стороны, 25 мкм"
+    assert ops[1]["count"] == 4
+    assert ops[2]["count"] == 1 and ops[2]["diameter_mm"] == 5.0
+    assert ops[3]["count"] == 2
+    assert ops[4] == {"kind": "staple", "label": "Скоба", "text": "Скоба : 2", "count": 2, "detail": "вертикально"}
+    assert "count" not in ops[5] and ops[5]["detail"] == "45 x 100шт., сверху"
+
+
+def test_postpress_operations_merge_pouch_lamination_and_grommets():
+    from services.postpress import postpress_operations
+
+    ops = postpress_operations("Матова ламінація з двох боків 75 мікрон A3; Ламінація в конверт")
+    assert len(ops) == 1 and ops[0]["detail"] == "мат, 2 стороны, 75 мкм, в конверт"
+    grommets = postpress_operations("Люверсовка: По периметру , Диаметр люверсов : 10 мм, Шаг люверсов : 300 мм")
+    assert grommets[0]["kind"] == "grommet" and grommets[0]["diameter_mm"] == 10.0
+    assert postpress_operations("Комплект : 16; Сгиб : 2 намотка") == []
+
+
+def test_dto_backfills_operations_for_stored_postpress():
+    order = OrderCheck("100", "42", postpress={"raw": "скругление углов : 4"})
+    dto = order_check_to_dto(order)
+    assert dto["postpress"]["operations"][0] == {
+        "kind": "rounding", "label": "Скругление углов", "text": "скругление углов : 4", "count": 4,
+    }
+    assert normalize_postpress("скругление углов : 4")["operations"] == dto["postpress"]["operations"]

@@ -13,6 +13,7 @@ from typing import Any
 from processing.models import FileCheck, OrderCheck, ParsedFilename
 
 from .issue_groups import attach_issue_groups
+from .postpress import with_postpress_operations
 
 
 def parsed_filename_to_dto(value: ParsedFilename | None) -> dict[str, Any] | None:
@@ -174,7 +175,7 @@ def order_check_to_dto(
         "processing_errors": list(processing_errors or []),
     }
     if value.postpress is not None:
-        result["postpress"] = value.postpress
+        result["postpress"] = with_postpress_operations(value.postpress)
     if value.customer_comment:
         result["customer_comment"] = value.customer_comment
     if value.kit is not None:
