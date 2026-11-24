@@ -1255,6 +1255,9 @@ class BatchProcessor:
             )
 
         if back_colors > 0 and not duplex_files and not sides["face"]:
+            # Без лица заказ не напечатать: жёсткая ошибка, как нарушение правила страниц
+            # (заказ 26262655 с диагностическим PDF был жёлтым).
+            order.page_rule_violation = True
             order.errors.append("не найден обязательный файл face")
         if len(sides["face"]) > 1:
             order.errors.append("найдено несколько файлов face")
@@ -1293,6 +1296,8 @@ class BatchProcessor:
             )
 
         if back_colors > 0 and not sides["back"] and not duplex_files:
+            # Двусторонний заказ без оборота тоже не напечатать: жёсткая ошибка.
+            order.page_rule_violation = True
             order.errors.append("для двусторонней печати не найден файл back")
         if back_colors == 0 and sides["back"]:
             order.errors.append("для односторонней печати найден лишний файл back")

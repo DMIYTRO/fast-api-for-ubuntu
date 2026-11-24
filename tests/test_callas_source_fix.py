@@ -399,7 +399,8 @@ def test_callas_fix_folder_is_never_discovered_as_order_input(tmp_path):
 
 
 def test_reinspection_reads_content_but_keeps_the_source_identity(tmp_path):
-    source = make_pdf(tmp_path / FACE, 97, 97)
+    # Односторонний заказ: двусторонний без оборота — жёсткая ошибка без коррекции размера.
+    source = make_pdf(tmp_path / "T_(97x97)_4-0_(5-1)_face.pdf", 97, 97)
     fixed = make_pdf(tmp_path / "fixed.pdf", 101, 101)
     processor = BatchProcessor(
         tmp_path, tmp_path / "PDF", correction_policy="ask", pdf_resizer=_fake_resizer([])
