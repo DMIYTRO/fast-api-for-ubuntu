@@ -43,3 +43,36 @@ describe("PreviewViewer", () => {
     expect(calls).toContain("/api/files/file-1/preview?size=full&page=1");
   });
 });
+
+describe("PreviewViewer missing side", () => {
+  const backOnly = { id: "b", filename: "x_back.pdf", side: "back", parsed: { side: "back", back_colors: 4 }, width_mm: 301, height_mm: 214, thumbnail_url: "/b.png" };
+  const faceOnly = { id: "f", filename: "x_face.pdf", side: "face", parsed: { side: "face", back_colors: 4 }, thumbnail_url: "/f.png" };
+
+  it("shows a blank face sheet instead of putting the back file into the face slot", async () => {
+    vi.stubGlobal("fetch", vi.fn(ok));
+    const host = mount([backOnly]);
+    await nextTick();
+    const cells = [...host.querySelectorAll(".preview-cell")];
+    expect(cells.map((cell) => cell.querySelector(".preview-label b").textContent)).toEqual(["Face", "Back"]);
+    expect(cells[0].querySelector(".preview-missing-sheet")?.textContent).toBe("Нет файла face");
+    expect(cells[0].querySelector(".preview-missing-sheet").style.aspectRatio).toBe("301 / 214");
+    expect(cells[1].querySelector(".preview-filename").textContent).toBe("x_back.pdf");
+  });
+
+  it("shows a blank back sheet for a duplex order without its back file", async () => {
+    vi.stubGlobal("fetch", vi.fn(ok));
+    const host = mount([faceOnly]);
+    await nextTick();
+    const cells = [...host.querySelectorAll(".preview-cell")];
+    expect(cells).toHaveLength(2);
+    expect(cells[1].querySelector(".preview-missing-sheet")?.textContent).toBe("Нет файла back");
+  });
+
+  it("keeps a single slot for a one-sided order", async () => {
+    vi.stubGlobal("fetch", vi.fn(ok));
+    const host = mount([{ ...faceOnly, parsed: { side: "face", back_colors: 0 } }]);
+    await nextTick();
+    expect(host.querySelectorAll(".preview-cell")).toHaveLength(1);
+    expect(host.querySelector(".preview-missing-sheet")).toBeNull();
+  });
+});

@@ -30,13 +30,32 @@ const bySide = computed(() => {
       { side: "back", file: page(2, "back") },
     ];
   }
-  const face = files.find((file) => sideOf(file) === "face") || files[0] || null;
+  const face = files.find((file) => sideOf(file) === "face") || null;
   const back = files.find((file) => sideOf(file) === "back") || null;
+  const duplex = files.some((file) => Number(file.parsed?.back_colors) > 0);
+  if (!face && !back) {
+    // Файл без стороны в имени (одностраничный PDF односторонней печати).
+    return [{ side: "face", file: files[0] || null }];
+  }
+  // Двусторонний заказ без одной из сторон: на её месте пустой лист, а не другая сторона
+  // (заказ 26262655 — один back, он показывался как Face).
+  const present = face || back;
+  const missing = (side) => ({ side, file: null, missing: true, aspect: sheetAspect(present) });
   return [
-    { side: "face", file: face },
-    ...(back ? [{ side: "back", file: back }] : []),
+    face ? { side: "face", file: face } : missing("face"),
+    ...(back ? [{ side: "back", file: back }] : duplex ? [missing("back")] : []),
   ];
 });
+
+const sheetAspect = (file) => {
+  const width = Number(file?.width_mm ?? file?.actual_width_mm);
+  const height = Number(file?.height_mm ?? file?.actual_height_mm);
+  const [w, h] = width > 0 && height > 0 ? [width, height] : [210, 297];
+  // Альбомный лист ограничен шириной ячейки, книжный — высотой.
+  return w > h
+    ? { aspectRatio: `${w} / ${h}`, width: "100%", height: "auto" }
+    : { aspectRatio: `${w} / ${h}`, height: "100%", width: "auto" };
+};
 
 const previewUrl = (file) => file?.thumbnail_url || file?.preview_url || (file?.id ? `/api/files/${encodeURIComponent(file.id)}/preview?size=thumbnail` : "");
 const withQuery = (url, key, value) => {
@@ -59,7 +78,7 @@ function imageTransform(file) {
 
 <template>
   <div class="preview-pair" :class="{ single: bySide.length === 1 }">
-    <div v-for="{ side, file } in bySide" :key="`${side}:${file?.id || 'none'}`" class="preview-cell">
+    <div v-for="{ side, file, missing, aspect } in bySide" :key="`${side}:${file?.id || 'none'}`" class="preview-cell" :class="{ 'preview-cell-missing': missing }">
       <div class="preview-label">
         <b>{{ side === "face" ? "Face" : "Back" }}</b>
         <button v-if="file" title="Повернуть" @click="rotate(file)">↻</button>
@@ -78,7 +97,10 @@ function imageTransform(file) {
       </div>
       <small v-if="file?.layered_tiff_export_error" class="preview-export-error" role="alert">{{ file.layered_tiff_export_error }}</small>
       <a v-if="file?.layered_tiff_export_pdf_url" class="preview-export-pdf-link" :href="file.layered_tiff_export_pdf_url" target="_blank">Открыть сгенерированный PDF ↗</a>
-      <div v-if="!file && !props.hasProductionPdf" class="preview-empty">Нет файла</div>
+      <div v-if="missing" class="preview-image preview-missing" role="img" :aria-label="`Нет файла ${side}`">
+        <div class="preview-missing-sheet" :style="aspect"><span>Нет файла {{ side }}</span></div>
+      </div>
+      <div v-else-if="!file && !props.hasProductionPdf" class="preview-empty">Нет файла</div>
       <div v-else-if="file && !previewUrl(file) && !props.hasProductionPdf" class="preview-empty">Превью создается...</div>
       <div v-if="file" class="preview-filename" :title="file.filename">{{ file.filename }}</div>
     </div>

@@ -351,6 +351,27 @@ def prepare_return_preview_name(
             ):
                 _add_candidate(candidates, locked, item)
 
+    missing_side = _missing_duplex_side(normalized_files, sides)
+    if missing_side is not None:
+        present_side = "back" if missing_side == "face" else "face"
+        present_path = _find_candidate(candidates, sides[present_side])
+        if present_path is not None:
+            # Двусторонний заказ без одной стороны (заказ 26262655): в Сборку уходит
+            # пара с пустым листом на месте недостающей стороны, а не одна сторона,
+            # которую легко принять за лицо.
+            blank = create_missing_side_preview(
+                order_id, input_path=input_path, like=present_path, side=missing_side
+            )
+            face_path, back_path = (
+                (blank, present_path) if missing_side == "face" else (present_path, blank)
+            )
+            return create_return_preview_collage(
+                order_id,
+                input_path=input_path,
+                face_preview_path=face_path,
+                back_preview_path=back_path,
+            ).name
+
     if {"face", "back"}.issubset(sides):
         face_path = _find_candidate(candidates, sides["face"])
         back_path = _find_candidate(candidates, sides["back"])
@@ -395,6 +416,59 @@ def prepare_return_preview_name(
         input_path=input_path,
         preview_paths=ordered,
     ).name
+
+
+def _missing_duplex_side(files: list[dict], sides: dict[str, str]) -> str | None:
+    """Недостающая сторона двустороннего заказа (``face``/``back``) или ``None``."""
+    if len(sides) != 1:
+        return None
+    duplex = False
+    for item in files:
+        parsed = item.get("parsed") or {}
+        try:
+            duplex = duplex or int(parsed.get("back_colors") or 0) > 0
+        except (TypeError, ValueError):
+            continue
+    if not duplex:
+        return None
+    return "back" if "face" in sides else "face"
+
+
+def create_missing_side_preview(
+    order_id: str, *, input_path: Path, like: Path, side: str
+) -> Path:
+    """Пустой лист размером с превью ``like``: серая рамка и диагональный крест.
+
+    Без надписи: шрифт в ImageMagick есть не везде; сторону задаёт место в коллаже.
+    """
+    normalized_order_id = str(order_id).strip()
+    if not normalized_order_id or Path(normalized_order_id).name != normalized_order_id:
+        raise ValueError("Номер заказа не должен быть пустым или содержать путь.")
+    magick = shutil.which("magick")
+    if not magick:
+        raise ReturnPreviewCollageError("Не найдена утилита ImageMagick (`magick`).")
+    output_dir = Path(input_path) / RETURN_PREVIEWS_RELATIVE_PATH
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{normalized_order_id}_missing-{side}.png"
+    command = [
+        magick, str(like), "-auto-orient", "-alpha", "off",
+        "-fill", "white", "-colorize", "100",
+        "-fill", "none", "-stroke", "#9ca3af",
+        "-strokewidth", "8",
+        "-draw", "rectangle 0,0 %[fx:w-1],%[fx:h-1]",
+        "-draw", "line 0,0 %[fx:w],%[fx:h]",
+        "-draw", "line %[fx:w],0 0,%[fx:h]",
+        str(output_path),
+    ]
+    try:
+        run_command(command, check=True, capture_output=True)
+    except (ExternalToolError, OSError, subprocess.CalledProcessError) as exc:
+        raise ReturnPreviewCollageError(
+            f"Не удалось нарисовать пустую сторону {side} для заказа №{normalized_order_id}."
+        ) from exc
+    if not output_path.is_file() or output_path.stat().st_size == 0:
+        raise ReturnPreviewCollageError(f"ImageMagick не создал пустую сторону: {output_path}")
+    return output_path
 
 
 def _add_candidate(candidates: dict[str, Path], locked: set[str], path: Path) -> None:

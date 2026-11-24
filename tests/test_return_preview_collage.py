@@ -371,3 +371,57 @@ class JpegReturnPreviewTests(unittest.TestCase):
             ],
         )
         self.assertTrue((self.input_path / RETURN_PREVIEWS_RELATIVE_PATH / result).is_file())
+
+
+@unittest.skipUnless(shutil.which("magick"), "ImageMagick is required")
+class MissingSideReturnPreviewTests(unittest.TestCase):
+    """Двусторонний заказ без одной стороны: пустой лист на её месте (заказ 26262655)."""
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.input_path = Path(self.temporary_directory.name)
+        self.processed = self.input_path / "Previews" / "Processed"
+        self.processed.mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    def _pixels(self, path: Path, *points: tuple[int, int]) -> list[str]:
+        magick = shutil.which("magick")
+        fmt = "\n".join(f"%[fx:int(255*p{{{x},{y}}}.r)],%[fx:int(255*p{{{x},{y}}}.b)]" for x, y in points)
+        return subprocess.run(
+            [magick, str(path), "-format", fmt, "info:"], check=True, capture_output=True, text=True,
+        ).stdout.split()
+
+    def test_back_only_duplex_order_gets_blank_face_on_the_left(self) -> None:
+        _make_image(self.processed / "order-back_preview.png", "600x400", "blue")
+        result = prepare_return_preview_name(
+            "26262655",
+            input_path=self.input_path,
+            files=[{"path": "/input/order-back.pdf", "parsed": {"side": "back", "back_colors": 4}}],
+        )
+        self.assertEqual(result, "26262655_return-preview.png")
+        collage = self.input_path / RETURN_PREVIEWS_RELATIVE_PATH / result
+        # Слева белый лист (вдали от креста), справа синий оборот.
+        left, right = self._pixels(collage, (750, 150), (2500, 500))
+        self.assertEqual(left, "255,255")
+        self.assertEqual(right, "0,255")
+
+    def test_face_only_duplex_order_gets_blank_back_on_the_right(self) -> None:
+        _make_image(self.processed / "order-face_preview.png", "600x400", "red")
+        result = prepare_return_preview_name(
+            "9", input_path=self.input_path,
+            files=[{"path": "/input/order-face.pdf", "parsed": {"side": "face", "back_colors": 4}}],
+        )
+        collage = self.input_path / RETURN_PREVIEWS_RELATIVE_PATH / result
+        left, right = self._pixels(collage, (300, 200), (2200, 200))
+        self.assertEqual(left, "255,0")
+        self.assertEqual(right, "255,255")
+
+    def test_one_sided_order_keeps_its_single_preview(self) -> None:
+        _make_image(self.processed / "order-face_preview.png", "600x400", "red")
+        result = prepare_return_preview_name(
+            "10", input_path=self.input_path,
+            files=[{"path": "/input/order-face.pdf", "parsed": {"side": "face", "back_colors": 0}}],
+        )
+        self.assertEqual(result, "order-face_preview.png")
