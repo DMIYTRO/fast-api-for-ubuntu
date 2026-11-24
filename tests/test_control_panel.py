@@ -486,7 +486,7 @@ class ControlPanelTests(unittest.TestCase):
                 self.assertEqual(pdf.content, b"%PDF-test")
                 self.assertEqual(pdf.headers["content-type"], "application/pdf")
                 self.assertEqual(
-                    pdf.headers["content-disposition"], 'inline; filename="1001.pdf"'
+                    pdf.headers["content-disposition"], 'inline; filename="sample-face.pdf"'
                 )
 
         prepared = self.client.post(

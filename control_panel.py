@@ -346,6 +346,24 @@ def _safe_result_path(run: dict[str, Any], raw_path: str | None) -> Path:
     return target
 
 
+def _order_pdf_filename(order: dict[str, Any], target: Path) -> str:
+    sources = []
+    for item in order.get("files") or order.get("file_results") or []:
+        name = item.get("name") or item.get("path")
+        if name:
+            side = item.get("side") or (item.get("parsed") or {}).get("side") or "face"
+            sources.append((Path(name), side))
+
+    # The PDF builder normally uses the chosen source's stem. For a renamed
+    # PDF, use the face source, or the first available source if there is no face.
+    source, _ = min(
+        sources,
+        key=lambda item: (item[0].stem != target.stem, item[1] != "face"),
+        default=(target, ""),
+    )
+    return source.with_suffix(".pdf").name
+
+
 def _layered_tiff_export_path(source: Path) -> Path:
     return source_output_root(source) / "PDF" / f"{source.stem}_layered-composite.pdf"
 
@@ -1854,10 +1872,9 @@ def create_app(
     ) -> FileResponse:
         run, order = _find_order(_get_coordinator(request), order_id, run_id)
         target = _safe_result_path(run, order.get("pdf_path"))
-        order_number = order.get("order_id") or order.get("id")
         return FileResponse(
             target,
-            filename=f"{order_number}.pdf" if order_number else target.name,
+            filename=_order_pdf_filename(order, target),
             content_disposition_type="inline",
         )
 
