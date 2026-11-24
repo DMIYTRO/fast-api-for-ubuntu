@@ -6,7 +6,7 @@ const props = defineProps({ open: Boolean, config: Object, busy: Boolean });
 const emit = defineEmits(["close", "start"]);
 const form = reactive({
   input_path: "", direction: "digital", create_pdfs: true, generate_previews: true,
-  copy_failures: true, correction_policy: "ask",
+  copy_failures: true, correction_policy: "auto",
 });
 // «Полная проверка для всех файлов» → check_policy: "full"; иначе "auto" (по папке: Input — облегчённая, CorelDRAW — полная).
 const fullCheck = ref(false);

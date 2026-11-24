@@ -24,11 +24,11 @@ const labelOf = (radio) => radio.closest("label").textContent.trim();
 afterEach(() => mounted.splice(0).forEach((unmount) => unmount()));
 
 describe("StartCheckPanel correction policy", () => {
-  it("shows three policy radios, ask selected by default", () => {
+  it("shows three policy radios, auto selected by default", () => {
     mount();
     const items = radios();
     expect(items.map((r) => r.value)).toEqual(["ask", "auto", "reject"]);
-    expect(items.find((r) => r.checked).value).toBe("ask");
+    expect(items.find((r) => r.checked).value).toBe("auto");
   });
 
   it("mentions the configured limit in the auto label", () => {
@@ -64,6 +64,10 @@ describe("StartCheckPanel correction policy", () => {
 
   it("ask keeps approve_corrections off", async () => {
     const { started } = mount();
+    const ask = radios().find((r) => r.value === "ask");
+    ask.checked = true;
+    ask.dispatchEvent(new Event("change"));
+    await nextTick();
     document.body.querySelector("form").dispatchEvent(new Event("submit"));
     await nextTick();
     expect(started[0]).toMatchObject({ correction_policy: "ask", approve_corrections: false });
@@ -90,6 +94,6 @@ describe("StartCheckPanel check policy", () => {
     await nextTick();
     document.body.querySelector("form").dispatchEvent(new Event("submit"));
     await nextTick();
-    expect(started[0]).toMatchObject({ check_policy: "full", correction_policy: "ask" });
+    expect(started[0]).toMatchObject({ check_policy: "full", correction_policy: "auto" });
   });
 });
