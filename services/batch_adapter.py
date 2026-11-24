@@ -26,6 +26,7 @@ from services.pitstop.baseline import (
     merge_source_checks,
 )
 from services.check_policy import PolicySettings, apply_check_policy, resolve_order_policy
+from services.domain import OrderStatus
 from services.callas_fix import source_signature_matches
 from services.callas_source_fix import STALE_SOURCE_WARNING, mark_applied
 from services.forced_print import (
@@ -96,6 +97,25 @@ class OrderArtifacts:
     def __post_init__(self) -> None:
         self.preview_paths = list(self.preview_paths or [])
         self.errors = list(self.errors or [])
+
+
+def completed_order_status(order: OrderCheck, artifacts: OrderArtifacts) -> str:
+    """Единый итог для карточки заказа и папки собранного PDF."""
+    if order.sborka_cancelled is not None:
+        return OrderStatus.CANCELLED.value
+    return completed_status(
+        local_errors=(
+            bool(artifacts.errors)
+            or (not order.passed and artifacts.pdf_kind != "diagnostic")
+            or has_page_rule_violation(order)
+            or any(item.pdf_size_mismatch for item in order.files)
+        ),
+        local_warnings=bool(
+            not order.passed or order.warnings or any(item.warnings for item in order.files)
+        ),
+        pitstop=artifacts.pitstop,
+        prepress=order.prepress,
+    )
 
 
 class BatchProcessorAdapter:
@@ -520,18 +540,7 @@ class BatchProcessorAdapter:
             if not order.passed or result.errors:
                 self._quarantine_previous_print(order)
             return
-        status = completed_status(
-            local_errors=(
-                bool(result.errors)
-                or (not order.passed and result.pdf_kind != "diagnostic")
-                or has_page_rule_violation(order)
-            ),
-            local_warnings=bool(
-                not order.passed or order.warnings or any(item.warnings for item in order.files)
-            ),
-            pitstop=result.pitstop,
-            prepress=order.prepress,
-        )
+        status = completed_order_status(order, result)
         try:
             result.pdf_path = route_pdf(result.pdf_path, status, pdf_dir=self.pdf_dir)
         except OSError as exc:

@@ -10,6 +10,7 @@ passed   ``PDF/Checked`` passed every mandatory check, waits for the operator
 warning  ``PDF/Rework``  readable result requiring correction (local findings
                          or PitStop errors/warnings)
 error    ``PDF/Failed``  unreadable result or technical processing/check failure,
+                         rejected PDF size, invalid page count or side layout,
                          or overprint not only on technical spots
                          (``services/overprint.py``)
 ======== =============== ====================================================
@@ -85,8 +86,7 @@ def completed_status(
 ) -> str:
     """Final order status from local inspection and an optional PitStop DTO.
 
-    ``local_errors`` means a technical processing/readability failure;
-    readable artwork findings belong in ``local_warnings``.
+    ``local_errors`` includes technical failures and blocking local artwork findings.
 
     ``prepress`` — допечатные проверки callas этого же PDF (``order["prepress"]``). На статус
     влияет только overprint (``services.overprint.overprint_status_effect``): overprint не

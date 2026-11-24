@@ -3,6 +3,8 @@ from datetime import UTC, datetime
 import threading
 import time
 
+import pytest
+
 from processing.models import FileCheck, OrderCheck
 from services.batch_adapter import BatchProcessorAdapter, ProcessingOptions
 from processing.batch_processor import BatchProcessor
@@ -326,13 +328,24 @@ def test_without_fetcher_orders_pass_through_without_background_work(tmp_path: P
     assert processor.seen_postpress == {"100": None, "101": None}
 
 
-def test_first_stage_findings_still_reach_pitstop_and_rework(tmp_path):
+@pytest.mark.parametrize("with_resizer", [False, True])
+def test_wrong_pdf_size_stays_red_after_pitstop(tmp_path, with_resizer):
     import pymupdf
-    source = tmp_path / "job_(90x50)_4-0_(1-987)_input.pdf"
+    source = tmp_path / "25_KS(SRA3)_Bezlam_230_SYNAPS_(434x314)_4-4_L1_T1_(1-987).pdf"
     with pymupdf.open() as document:
-        page = document.new_page(width=100, height=100)  # Wrong physical size.
-        page.insert_text((10, 30), "diagnostic")
+        for _ in range(2):
+            page = document.new_page(width=319 * 72 / 25.4, height=108 * 72 / 25.4)
+            page.insert_text((10, 30), "diagnostic")
         document.save(source)
+
+    def unexpected_resize(*args, **kwargs):
+        pytest.fail("A size correction beyond the limit must not run")
+
+    def processor_factory(*args, **kwargs):
+        return _fake_callas_processor(
+            *args, pdf_resizer=unexpected_resize if with_resizer else None, **kwargs
+        )
+
     class Checker:
         calls = []
         def check_pdf(self, path, *, profile_id):
@@ -340,25 +353,28 @@ def test_first_stage_findings_still_reach_pitstop_and_rework(tmp_path):
             return PitStopCheckResult(
                 status=PitStopExecutionStatus.COMPLETED, profile_id=profile_id,
                 input_pdf=path, input_sha256="a" * 64, checked_at=datetime.now(UTC),
-                report=PitStopReport(counts=PitStopCounts(errors=1), pages=1),
+                report=PitStopReport(counts=PitStopCounts(errors=1), pages=2),
             )
     checker = Checker()
     adapter = BatchProcessorAdapter(
         ProcessingOptions(str(tmp_path), "digital", generate_previews=False, copy_failures=False),
         pitstop_service=checker,
-        processor_factory=_fake_callas_processor,
+        processor_factory=processor_factory,
     )
     order = adapter.scan_and_inspect()[0]
     assert not order.passed
     findings = list(order.files[0].errors)
+    assert any("319.0x108.0 мм" in error for error in findings)
+    if with_resizer:
+        assert order.files[0].resample_decision == "reject"
     result = adapter.process_order(order)
     assert checker.calls
     assert result.pitstop["counts"]["errors"] == 1
     assert order.files[0].errors == findings
-    assert result.pdf_path.parent.name == "Rework"
+    assert result.pdf_path.parent.name == "Failed"
     assert not list((tmp_path / "PDF" / "Print").glob("*.pdf"))
     from services.coordinator import _completed_order_status
-    assert _completed_order_status(order, result) == "warning"
+    assert _completed_order_status(order, result) == "error"
 
 
 def test_corrupt_first_stage_pdf_explains_why_pitstop_skipped(tmp_path):

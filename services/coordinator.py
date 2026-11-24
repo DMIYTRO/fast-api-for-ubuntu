@@ -16,11 +16,15 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 from uuid import uuid4
 
-from processing.models import OrderCheck, has_page_rule_violation
+from processing.models import OrderCheck
 
-from .batch_adapter import BatchProcessorAdapter, OrderArtifacts, ProcessingOptions
+from .batch_adapter import (
+    BatchProcessorAdapter,
+    OrderArtifacts,
+    ProcessingOptions,
+    completed_order_status as _completed_order_status,
+)
 from .callas_source_fix import ORDER_CHANGED_MESSAGE, mark_applied
-from .pdf_routing import completed_status
 from .domain import OrderStatus, RunStatus, validate_operator_transition
 from .dto import order_check_to_dto
 from .issue_groups import attach_issue_groups
@@ -1986,26 +1990,6 @@ def _inspection_status(order: OrderCheck) -> str:
     if order.warnings or any(item.warnings for item in order.files):
         return "warning"
     return "passed"
-
-
-def _completed_order_status(
-    order: OrderCheck, artifacts: OrderArtifacts
-) -> str:
-    """Final status: a local (first-stage) error is never lifted by PitStop."""
-    if order.sborka_cancelled is not None:
-        return OrderStatus.CANCELLED.value
-    return completed_status(
-        local_errors=(
-            bool(artifacts.errors)
-            or (not order.passed and artifacts.pdf_kind != "diagnostic")
-            or has_page_rule_violation(order)
-        ),
-        local_warnings=bool(
-            not order.passed or order.warnings or any(item.warnings for item in order.files)
-        ),
-        pitstop=artifacts.pitstop,
-        prepress=order.prepress,
-    )
 
 
 def _now() -> str:

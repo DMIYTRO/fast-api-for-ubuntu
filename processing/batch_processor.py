@@ -727,6 +727,8 @@ class BatchProcessor:
             ):
                 # PDF не масштабируется и не обрезается автоматически (в отличие от
                 # растровых файлов): подсказываем оператору, что делать.
+                if CHECK_SCOPES["pdf_page_size"] in scopes:
+                    check.pdf_size_mismatch = True
                 _report(
                     check, "pdf_page_size", "error",
                     f"PDF страница {page.page_number} имеет размер "
@@ -854,6 +856,7 @@ class BatchProcessor:
         actual = (page.width_mm, page.height_mm)
         target = plan.target_mm
         if decision == ResampleDecision.REJECT:
+            check.pdf_size_mismatch = True
             check.errors.append(
                 f"PDF: размер {actual[0]:.1f}x{actual[1]:.1f} мм; ожидается "
                 f"{target[0]:.1f}x{target[1]:.1f} мм: {plan.reason}"

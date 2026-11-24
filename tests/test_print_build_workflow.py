@@ -215,20 +215,21 @@ class PrintBuildWorkflowTests(forced.ForcedPrintWorkflowTests):
         self.assertEqual((order["status"], order["current_pdf_revision"]), ("accepted_for_print", 2))
         self.assertEqual(len(self.converter.calls), 1)  # повторной сборки не было
 
-    def test_yellow_diagnostic_order_with_other_errors_is_blocked(self):
+    def test_diagnostic_order_with_wrong_pdf_size_is_red_and_blocked(self):
         make_pdf(self.root / SIZE, dpi=None, size_mm=120.0)
         run_id = self.make_run()
         order = self.orders(run_id)["26252243"]
-        self.assertEqual((order["status"], order["pdf_kind"]), ("warning", "diagnostic"), order)
+        self.assertEqual((order["status"], order["pdf_kind"]), ("error", "diagnostic"), order)
+        self.assertEqual(order["pitstop"]["verdict"], "passed")
+        self.assertEqual(Path(order["pdf_path"]).parent.name, "Failed")
         self.assertEqual(order["print_mode"], "blocked")
         self.assertEqual([blocker["code"] for blocker in order["print_blockers"]], ["no_final_pdf"])
         self.assertFalse(order["print_build"])
 
         item = self.print_orders(run_id, "26252243", confirm=True)["26252243"]
 
-        self.assertEqual((item["status"], item["code"]), ("rejected", "no_final_pdf"), item)
-        self.assertIn("диагностический PDF", item["message"])
-        self.assertEqual(self.orders(run_id)["26252243"]["status"], "warning")
+        self.assertEqual(item["status"], "rejected", item)
+        self.assertEqual(self.orders(run_id)["26252243"]["status"], "error")
         self.assertFalse((self.root / "PDF" / "Print").exists() and any((self.root / "PDF" / "Print").iterdir()))
         self.assertEqual(self.sent, [])
 
