@@ -1853,7 +1853,13 @@ def create_app(
         request: Request, order_id: str, run_id: str | None = None
     ) -> FileResponse:
         run, order = _find_order(_get_coordinator(request), order_id, run_id)
-        return FileResponse(_safe_result_path(run, order.get("pdf_path")))
+        target = _safe_result_path(run, order.get("pdf_path"))
+        order_number = order.get("order_id") or order.get("id")
+        return FileResponse(
+            target,
+            filename=f"{order_number}.pdf" if order_number else target.name,
+            content_disposition_type="inline",
+        )
 
     @application.get(
         "/api/pitstop-checks/{check_id}/reports/{report_format}",

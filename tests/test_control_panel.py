@@ -477,7 +477,17 @@ class ControlPanelTests(unittest.TestCase):
         self.assertEqual(
             self.client.get(file_result["preview_url"]).content, b"preview-image"
         )
-        self.assertEqual(self.client.get(order["pdf_url"]).content, b"%PDF-test")
+        for pdf_url in (
+            order["pdf_url"],
+            f"/api/orders/42:1001/pdf?run_id={run_id}",
+        ):
+            with self.subTest(pdf_url=pdf_url):
+                pdf = self.client.get(pdf_url)
+                self.assertEqual(pdf.content, b"%PDF-test")
+                self.assertEqual(pdf.headers["content-type"], "application/pdf")
+                self.assertEqual(
+                    pdf.headers["content-disposition"], 'inline; filename="1001.pdf"'
+                )
 
         prepared = self.client.post(
             "/api/orders/prepare-print",
