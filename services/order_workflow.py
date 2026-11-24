@@ -479,6 +479,54 @@ class OrderWorkflowService:
                 current[0].release()
 
     @staticmethod
+    def _store_action_failure(
+        session: Any,
+        action_record: OrderAction,
+        item: Mapping[str, Any],
+        *,
+        run_id: str,
+        action: str,
+        extra: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Сохранить в ``order_actions`` неудачу действия с тем, что видел оператор.
+
+        ``cms_response_json["result"]`` — статус ответа (``review_required``, ``error``,
+        ``rejected``, ``conflict``), код и сообщение: по ним карточка заказа после
+        перезагрузки показывает то же, что сразу после нажатия. Уже сохранённые там
+        сведения (PitStop, сборка PDF) и ``extra`` сохраняются рядом.
+        """
+        result: dict[str, Any] = {
+            "status": item.get("status") or "error",
+            "message": str(item.get("message") or ""),
+        }
+        if item.get("code"):
+            result["code"] = item["code"]
+        if item.get("generated_layered_file_ids"):
+            result["generated_layered_file_ids"] = list(item["generated_layered_file_ids"])
+        response: dict[str, Any] = {}
+        if action_record.cms_response_json:
+            try:
+                stored = json.loads(action_record.cms_response_json)
+            except (TypeError, ValueError):
+                stored = None
+            if isinstance(stored, dict):
+                response.update(stored)
+        response.update(extra or {})
+        response["result"] = result
+        action_record.status = "failed"
+        action_record.cms_response_json = json.dumps(response, ensure_ascii=False)
+        session.commit()
+        logger.warning(
+            "order.action_failed run_id=%s order_id=%s action=%s status=%s code=%s message=%s",
+            run_id,
+            item.get("order_id"),
+            action,
+            result["status"],
+            result.get("code") or "-",
+            result["message"],
+        )
+
+    @staticmethod
     def _busy_result(
         order_id: str, requested_action: str, active_action: str
     ) -> dict[str, Any]:
@@ -1343,25 +1391,27 @@ class OrderWorkflowService:
                             ),
                         )
                     except ReviewedLayeredPdfError as exc:
-                        action_record.status = "failed"
-                        session.commit()
-                        add_result(
-                            {
-                                "order_id": order_id,
-                                "status": "review_required"
+                        item = {
+                            "order_id": order_id,
+                            "status": "review_required"
+                            if exc.generated_file_ids
+                            else "error",
+                            "code": "layered_review_required"
+                            if exc.generated_file_ids
+                            else "layered_print_failed",
+                            "message": str(exc),
+                            **(
+                                {"generated_layered_file_ids": exc.generated_file_ids}
                                 if exc.generated_file_ids
-                                else "error",
-                                "message": str(exc),
-                                **(
-                                    {"generated_layered_file_ids": exc.generated_file_ids}
-                                    if exc.generated_file_ids
-                                    else {}
-                                ),
-                            }
+                                else {}
+                            ),
+                        }
+                        self._store_action_failure(
+                            session, action_record, item, run_id=run["id"], action=action
                         )
+                        add_result(item)
                         continue
                     except FileLifecycleError as exc:
-                        action_record.status = "failed"
                         failure_response: dict[str, Any] = {}
                         if reviewed_pitstop is not None:
                             failure_response["pitstop"] = reviewed_pitstop
@@ -1375,11 +1425,6 @@ class OrderWorkflowService:
                                 ),
                                 "message": str(exc),
                             }
-                        if failure_response:
-                            action_record.cms_response_json = json.dumps(
-                                failure_response, ensure_ascii=False
-                            )
-                        session.commit()
                         conflict = None
                         if isinstance(exc, FileConflictError):
                             conflict = {
@@ -1394,7 +1439,7 @@ class OrderWorkflowService:
                             if action == "print" and conflict is None
                             else []
                         )
-                        add_result(
+                        item = (
                             {
                                 "order_id": order_id,
                                 "status": "conflict"
@@ -1430,22 +1475,34 @@ class OrderWorkflowService:
                                 ),
                             }
                         )
+                        if conflict is not None:
+                            item.setdefault("code", "file_conflict")
+                        self._store_action_failure(
+                            session,
+                            action_record,
+                            item,
+                            run_id=run["id"],
+                            action=action,
+                            extra=failure_response,
+                        )
+                        add_result(item)
                         continue
                     except Exception as exc:
-                        action_record.status = "failed"
-                        session.commit()
                         logger.exception(
                             "order.transition_preparation_failed run_id=%s order_id=%s",
                             run["id"],
                             order_id,
                         )
-                        add_result(
-                            {
-                                "order_id": order_id,
-                                "status": "error",
-                                "message": str(exc),
-                            }
+                        item = {
+                            "order_id": order_id,
+                            "status": "error",
+                            "code": "preparation_failed",
+                            "message": str(exc) or type(exc).__name__,
+                        }
+                        self._store_action_failure(
+                            session, action_record, item, run_id=run["id"], action=action
                         )
+                        add_result(item)
                         continue
                     try:
                         upload_paths: list[Path] = []
@@ -1558,22 +1615,23 @@ class OrderWorkflowService:
                                 run["id"],
                                 order_id,
                             )
-                        action_record = session.get(OrderAction, action_record.id)
-                        if action_record is not None:
-                            action_record.status = "failed"
-                            session.commit()
                         logger.exception(
                             "order.transition_persistence_failed run_id=%s order_id=%s",
                             run["id"],
                             order_id,
                         )
-                        add_result(
-                            {
-                                "order_id": order_id,
-                                "status": "error",
-                                "message": str(exc),
-                            }
-                        )
+                        item = {
+                            "order_id": order_id,
+                            "status": "error",
+                            "code": "transition_failed",
+                            "message": str(exc) or type(exc).__name__,
+                        }
+                        action_record = session.get(OrderAction, action_record.id)
+                        if action_record is not None:
+                            self._store_action_failure(
+                                session, action_record, item, run_id=run["id"], action=action
+                            )
+                        add_result(item)
                 finally:
                     self._release_action(stored.id)
         return {"items": results}

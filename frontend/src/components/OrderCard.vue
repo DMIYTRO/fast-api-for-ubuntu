@@ -10,6 +10,7 @@ import OrderActions from "./OrderActions.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import LowResPreview from "./LowResPreview.vue";
 import { orderIssueGroups } from "./issueGroups.js";
+import { actionResultView } from "./actionResult.js";
 
 // Колонка «Норма» в таблице параметров пока скрыта; вернуть — поставить true.
 const SHOW_NORM = false;
@@ -28,6 +29,7 @@ const layeredTiffExports = ref({});
 const layeredTiffPolls = new Map();
 const id = computed(() => props.order.order_id ?? props.order.id);
 const actionId = computed(() => props.order.aggregate_id ?? id.value);
+const actionResult = computed(() => actionResultView(props.order.action_result));
 // Полный комментарий заказчика из АК: текст как есть (переносы строк сохраняются стилем).
 const customerComment = computed(() => {
   const text = props.order.customer_comment;
@@ -368,7 +370,7 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
           @applied="emit('fix-applied')"
         />
         <CorrectionDecision :order="order" :busy="busy" @decide="decide" />
-        <p v-if="order.action_result" class="action-result" :class="`status-${order.action_result.status}`">Действие: {{ order.action_result.status === "prepared" ? "подготовлено" : (order.action_result.message || order.action_result.status) }}</p>
+        <p v-if="actionResult" class="action-result" :class="`status-${actionResult.tone}`" :data-status="actionResult.status">{{ actionResult.text }}</p>
       </section>
     </div>
 

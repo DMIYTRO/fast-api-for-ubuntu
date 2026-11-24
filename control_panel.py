@@ -65,6 +65,7 @@ from services.pitstop import (
 )
 from services.order_kits import KitResolver
 from services.order_journal_loader import OrderJournalLoader, OrderJournalNotFound
+from services.order_action_result import stored_action_result
 from services.sborka_integration import (
     build_order_info_fetcher,
     build_rework_sender,
@@ -235,13 +236,7 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
         order["html_url"] = f"/runs/{run_id}/report"
         order["json_url"] = f"/api/checks/{run_id}/export.json"
         if order.get("actions"):
-            latest = order["actions"][-1]
-            order["action_result"] = {
-                "order_id": order_id,
-                "status": latest.get("status"),
-                "action": latest.get("action"),
-                **({"pitstop": latest["pitstop"]} if latest.get("pitstop") else {}),
-            }
+            order["action_result"] = stored_action_result(order_id, order["actions"][-1])
         fix_base = f"/api/checks/{run_id}/orders/{order_ref}/callas/fix"
         if order.get("pdf_path"):
             order["pdf_url"] = f"/api/orders/{order_ref}/pdf?run_id={run_id}"

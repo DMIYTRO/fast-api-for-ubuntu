@@ -1436,6 +1436,12 @@ class SqlRunRepository:
                             response_data.get("pitstop"), dict
                         ):
                             action_value["pitstop"] = response_data["pitstop"]
+                        if isinstance(response_data, dict):
+                            # Итог действия для карточки (services/order_action_result.py).
+                            if isinstance(response_data.get("result"), dict):
+                                action_value["result"] = response_data["result"]
+                            if isinstance(response_data.get("reason"), str):
+                                action_value["reason"] = response_data["reason"]
                     action_values.append(action_value)
                 order["actions"] = action_values
             order.setdefault("preview_paths", preview_paths)

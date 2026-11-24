@@ -13,6 +13,7 @@ import RunHistory from "../components/RunHistory.vue";
 import OrderFilters from "../components/OrderFilters.vue";
 import OrderCard from "../components/OrderCard.vue";
 import ActionBar from "../components/ActionBar.vue";
+import { actionToast } from "../components/actionResult.js";
 
 const auth = useAuthStore(); const checks = useChecksStore(); const orderFetch = useOrderFetchStore(); const router = useRouter();
 const actionBusy = ref(false); const toast = ref("");
@@ -24,17 +25,7 @@ async function act(action, comment, confirmFailed = false) {
   if (action === "print" && confirmFailed && checks.printNeedsBuild) toast.value = "Собираем итоговый PDF и проверяем его в PitStop…";
   try {
     const result = await checks.act(action, comment, "replace", confirmFailed);
-    const failed = result.filter((item) => !["prepared", "pending", "conflict"].includes(item.status));
-    if (failed.length) {
-      const first = failed[0];
-      toast.value = `Не удалось обработать ${failed.length} заказ(а): ${first.message || first.status}`;
-    } else if (result.some((item) => item.status === "conflict")) {
-      toast.value = "Нужно решить конфликт файлов перед отправкой.";
-    } else if (result.some((item) => item.status === "pending")) {
-      toast.value = "Загрузка превью запущена в фоне.";
-    } else {
-      toast.value = action === "print" ? "Задание на печать подготовлено" : "Возврат подготовлен";
-    }
+    toast.value = actionToast(result, action);
   }
   catch (error) { toast.value = error.message; }
   finally { actionBusy.value = false; window.setTimeout(() => toast.value = "", 5000); }

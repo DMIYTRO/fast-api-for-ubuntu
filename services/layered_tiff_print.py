@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import re
 import shutil
@@ -13,6 +14,8 @@ import pymupdf
 from core.tool_runner import run_command
 from services.callas.renderer import dpi_for_longest_side, render_pdf_to_pngs
 from services.check_policy import source_output_root
+
+logger = logging.getLogger("image_magic.layered_print")
 
 
 class ReviewedLayeredPdfError(ValueError):
@@ -83,8 +86,8 @@ def build_reviewed_layered_print_pdf(
     """Prepare one print part per order file and assemble the checked pages.
 
     Ordinary file pages are taken from the production PDF. Layered TIFF pages
-    use their saved-composite exports. If an export is missing, it is generated
-    as a draft and this call stops so an operator can review it before printing.
+    use their saved-composite exports. A missing export is generated and used
+    right away: printing needs one click, no separate review step.
     """
     files = list(order.get("files") or [])
     layered_files = [
@@ -231,12 +234,13 @@ def build_reviewed_layered_print_pdf(
             temporary_part.unlink(missing_ok=True)
         part_paths[page_index] = part
 
+    # Созданные сейчас печатные версии слоёв не требуют отдельного просмотра перед
+    # печатью (решение оператора): сборка продолжается в том же нажатии «В печать».
+    # Итоговый PDF всё равно проходит проверку PDF и PitStop в recheck_pdf_revision.
     if generated_file_ids:
-        if base is not None:
-            base.close()
-        raise ReviewedLayeredPdfError(
-            "Созданы PDF для недостающих сторон. Проверьте их в карточке заказа и повторите отправку в печать.",
-            generated_file_ids=generated_file_ids,
+        logger.info(
+            "layered_print.exports_generated order_id=%s files=%s",
+            order.get("order_id"), ",".join(generated_file_ids),
         )
 
     production_name = production_pdf.stem if production_pdf.is_file() else str(order.get("order_id") or "order")

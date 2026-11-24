@@ -157,3 +157,41 @@ def test_wrong_page_count_from_merger_is_rejected(tmp_path):
             _order(tmp_path), tmp_path, pdf_merger=bad_merger, pdf_page_extractor=_fake_extractor()
         )
     assert not list((tmp_path / "PDF").glob("*_reviewed-layered.pdf"))
+
+
+def test_generated_export_does_not_stop_print(tmp_path, monkeypatch):
+    """Missing layered export is created and used in the same print click."""
+    import services.layered_tiff_print as module
+
+    created = []
+
+    def fake_export(source, artifact, preview):
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        doc = module.pymupdf.open()
+        doc.new_page(width=100, height=100)
+        doc.save(artifact)
+        doc.close()
+        created.append(artifact)
+
+    monkeypatch.setattr(module, "_create_layered_export", fake_export)
+    source = tmp_path / "1_(1-2)-face.tif"
+    source.write_bytes(b"tiff")
+    order = {"order_id": "2", "files": [{"id": "f1", "path": str(source), "side": "face", "has_unflattened_layers": True}]}
+
+    def extract(source_pdf, page, output, label):
+        doc = module.pymupdf.open()
+        doc.new_page(width=100, height=100)
+        doc.save(output)
+        doc.close()
+
+    def merger(parts, output, label):
+        doc = module.pymupdf.open()
+        doc.new_page(width=100, height=100)
+        doc.save(output)
+        doc.close()
+
+    result = module.build_reviewed_layered_print_pdf(
+        order, tmp_path, pdf_merger=merger, pdf_page_extractor=extract
+    )
+    assert created, "export must be generated"
+    assert result is not None and result.is_file()

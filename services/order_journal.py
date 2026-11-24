@@ -999,6 +999,8 @@ def _decisions(actions: Sequence[Mapping[str, Any]], events: list[dict[str, Any]
         kind = str(action.get("action") or "")
         failed = action.get("status") == "failed"
         response = _mapping(action.get("cms_response"))
+        # Итог неудачного действия (OrderWorkflowService._store_action_failure).
+        outcome = _mapping(response.get("result"))
         title = {"print": "Передано в печать", "reject": "Возвращено на доработку"}.get(kind, kind or "Действие")
         if failed:
             title = f"{title}: операция не выполнена"
@@ -1012,7 +1014,13 @@ def _decisions(actions: Sequence[Mapping[str, Any]], events: list[dict[str, Any]
                 "comment": action.get("comment") or None,
                 "kit_main_id": response.get("kit_main_id"),
                 "returned_with_kit": response.get("returned_with_kit"),
-                "message": response.get("message") if isinstance(response.get("message"), str) else None,
+                "message": (
+                    response.get("message") if isinstance(response.get("message"), str)
+                    else outcome.get("message") if isinstance(outcome.get("message"), str) and outcome.get("message")
+                    else None
+                ),
+                "result_status": outcome.get("status") or None,
+                "result_code": outcome.get("code") or None,
                 "forced_print_build": _forced_build_summary(response.get("forced_print_build")),
                 "print_build": _forced_build_summary(response.get("print_build")),
             },

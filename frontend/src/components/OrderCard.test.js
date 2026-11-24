@@ -373,3 +373,44 @@ describe("OrderCard return comment summary", () => {
     expect(actions.querySelector(".return-summary-text")?.textContent).toBe("Низкое разрешение изображений");
   });
 });
+
+describe("OrderCard action result", () => {
+  const base = { order_id: "26257189", customer_id: "1", status: "warning", errors: [], files: [] };
+
+  it.each([
+    [{ status: "prepared", action: "print" }, "status-ok", "Подготовлено"],
+    [{ status: "review_required", action: "print", message: "Созданы PDF для недостающих сторон." }, "status-attention", "Созданы PDF из слоёв TIFF"],
+    [{ status: "conflict", action: "print", message: "Файл с таким именем уже есть." }, "status-attention", "Файл с таким именем уже есть."],
+    [{ status: "error", action: "print", message: "Не найден один или несколько исходных файлов заказа." }, "status-error", "Не найден один"],
+    [{ status: "rejected", action: "print", message: "Заказ не прошёл проверку." }, "status-error", "Заказ не прошёл проверку."],
+    [{ status: "failed", action: "print" }, "status-error", "причина не сохранена"],
+  ])("renders %o with the right tone and no raw status", async (actionResult, tone, text) => {
+    const host = mount({ ...base, action_result: actionResult });
+    await nextTick();
+    const line = host.querySelector(".action-result");
+    expect(line.classList.contains(tone)).toBe(true);
+    expect(line.textContent).toContain(text);
+    expect(line.textContent).not.toMatch(/failed|rejected|review_required|Действие:/);
+  });
+});
+
+describe("OrderCard layered TIFF review after reload", () => {
+  it("loads the generated export from the stored action result", async () => {
+    const { api } = await import("../services/api.js");
+    const calls = [];
+    const original = api.layeredTiffPreview;
+    api.layeredTiffPreview = async (url) => { calls.push(url); return { status: "completed", pdf_url: "/export.pdf" }; };
+    try {
+      mount({
+        order_id: "26257189", status: "warning", errors: [],
+        files: [{ id: "f-1", name: "face.tif", side: "face", has_unflattened_layers: true, layered_tiff_export_url: "/api/layered/f-1" }],
+        // Так карточку отдаёт сервер после перечитывания заказов (stored_action_result).
+        action_result: { status: "review_required", action: "print", generated_layered_file_ids: ["f-1"] },
+      });
+      await nextTick();
+      expect(calls).toEqual(["/api/layered/f-1"]);
+    } finally {
+      api.layeredTiffPreview = original;
+    }
+  });
+});
