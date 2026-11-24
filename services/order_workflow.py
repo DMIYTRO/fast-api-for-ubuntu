@@ -1341,11 +1341,18 @@ class OrderWorkflowService:
                                     raise FileLifecycleError("PDF изменился и не прошёл повторную проверку.")
                             accepted_callas_fix = False
                             accepted_bleed_only = False
-                            reviewed_pdf = build_reviewed_layered_print_pdf(
-                                order,
-                                input_root,
-                                pdf_merger=self.pdf_merger,
-                                pdf_page_extractor=self.pdf_page_extractor,
+                            # Готовый производственный PDF уже собран из сведённого TIFF и
+                            # проверен PitStop: повторная сборка из слоёв при печати не нужна
+                            # (решение оператора, заказ 26261792: +15 с на то же изображение).
+                            reviewed_pdf = (
+                                None
+                                if _has_production_pdf(order)
+                                else build_reviewed_layered_print_pdf(
+                                    order,
+                                    input_root,
+                                    pdf_merger=self.pdf_merger,
+                                    pdf_page_extractor=self.pdf_page_extractor,
+                                )
                             )
                             if (
                                 reviewed_pdf is None
@@ -1766,6 +1773,16 @@ class OrderWorkflowService:
         if suffix:
             return f"{stem} (новый){suffix}"
         return f"{stem} (новый)"
+
+
+def _has_production_pdf(order: dict[str, Any]) -> bool:
+    """У заказа есть готовый итоговый PDF (не диагностический «как есть»)."""
+    pdf_path = order.get("pdf_path")
+    return bool(
+        pdf_path
+        and order.get("pdf_kind") != "diagnostic"
+        and Path(str(pdf_path)).is_file()
+    )
 
 
 def _fix_is_bleed_only(state: dict[str, Any] | None) -> bool:
