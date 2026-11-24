@@ -37,10 +37,15 @@ from services.forced_print import (
 from services.pdf_routing import CHECKED_FOLDER, FAILED_FOLDER, PRINT_FOLDER, completed_status, route_pdf
 from services.order_kits import kits_from_order_info
 from services.postpress import normalize_customer_comment, normalize_postpress
+from services.sborka_cancel import cancelled_orders, move_cancelled_order
 
 
 logger = logging.getLogger("image_magic.processing")
 
+
+
+#: Пауза перед повторным запросом orderinfo после сбоя.
+ORDER_INFO_RETRY_PAUSE_SECONDS = 2.0
 
 @dataclass(frozen=True)
 class ProcessingOptions:
@@ -177,6 +182,8 @@ class BatchProcessorAdapter:
         # Sborka is queried once, in the background, as soon as the processor
         # knows all order ids (before the slow artwork inspection).
         self.processor.on_orders_grouped = self._start_order_info_fetch
+        # Отменённые в Sborka заказы отбрасываются до осмотра (services/sborka_cancel.py).
+        self.processor.cancelled_orders = self._cancelled_orders
 
     # Автоматический режим применяет малые коррекции ещё при проверке, поэтому
     # ожидающие подтверждения коррекции (выше предела) не одобряются сами.
@@ -263,12 +270,22 @@ class BatchProcessorAdapter:
             return
         future: Future[list[dict[str, Any]]] = Future()
         self._order_info_future = future
-        self._order_info_deadline = time.monotonic() + self.order_info_timeout_seconds
+        # Одна повторная попытка после паузы: ожидание рассчитано на обе.
+        retry_pause = min(ORDER_INFO_RETRY_PAUSE_SECONDS, self.order_info_timeout_seconds)
+        self._order_info_deadline = (
+            time.monotonic() + 2 * self.order_info_timeout_seconds + retry_pause
+        )
         fetcher = self.order_info_fetcher
 
         def run() -> None:
             try:
-                future.set_result(fetcher(list(order_ids)))
+                try:
+                    records = fetcher(list(order_ids))
+                except Exception as exc:  # noqa: BLE001 — повтор, затем без данных Sborka
+                    logger.warning("sborka.orderinfo_retry error=%s", exc or type(exc).__name__)
+                    time.sleep(retry_pause)
+                    records = fetcher(list(order_ids))
+                future.set_result(records)
             except BaseException as exc:
                 future.set_exception(exc)
                 return
@@ -280,6 +297,29 @@ class BatchProcessorAdapter:
                     logger.exception("sborka.orderinfo_listener_failed")
 
         threading.Thread(target=run, name="sborka-orderinfo", daemon=True).start()
+
+    def _cancelled_orders(self, order_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Заказы, отменённые в Sborka; ждёт ответ orderinfo не дольше общего срока.
+
+        Без ответа (Sborka не настроена, сбой после повтора, срок вышел) — пусто:
+        заказы проверяются как обычно.
+        """
+        future = self._order_info_future
+        if future is None or self._order_info_failed:
+            return {}
+        try:
+            records = future.result(
+                timeout=max(0.0, self._order_info_deadline - time.monotonic())
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "sborka.cancelled_check_skipped error=%s", exc or type(exc).__name__
+            )
+            return {}
+        found = cancelled_orders(self._order_info_index(records), order_ids)
+        if found:
+            logger.info("sborka.cancelled_orders ids=%s", ",".join(sorted(found)))
+        return found
 
     def _apply_postpress(self, order: OrderCheck, *, wait: bool) -> None:
         """Apply Sborka metadata to *order*; failures are logged, never raised."""
@@ -466,6 +506,10 @@ class BatchProcessorAdapter:
         )
 
     def process_order(self, order: OrderCheck) -> OrderArtifacts:
+        if order.sborka_cancelled is not None:
+            # Отменён в Sborka: ни PDF, ни PitStop, ни превью — только перенос исходников.
+            move_cancelled_order(order, self.input_dir)
+            return OrderArtifacts()
         result = self._process_order_unrouted(order)
         self._route_production_pdf(order, result)
         return result

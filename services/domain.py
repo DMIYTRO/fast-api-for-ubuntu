@@ -87,6 +87,8 @@ def validate_operator_transition(
         and target_status is OrderStatus.ACCEPTED_FOR_PRINT
     ):
         return
+    if current_status is OrderStatus.CANCELLED:
+        raise ValueError("заказ отменён: ни печать, ни возврат на доработку для него не выполняются")
     if target_status not in _OPERATOR_TRANSITIONS.get(current_status, set()):
         raise ValueError(
             f"недопустимый переход заказа: {current_status.value} → "

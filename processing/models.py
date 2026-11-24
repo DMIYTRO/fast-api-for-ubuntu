@@ -136,6 +136,10 @@ class OrderCheck:
     customer_comment: str | None = None
     # Комплект Sborka (``services/order_kits.py``): main_id, member_ids, position, size.
     kit: dict[str, object] | None = None
+    # Заказ отменён в Sborka (orderinfo ``status`` 14): не проверяется, исходники
+    # переносятся в ``Cancelled/<заказ>/`` (services/sborka_cancel.py).
+    # {"sborka_status": "14", "moved_to": "...", "move_error": "..."}.
+    sborka_cancelled: dict[str, object] | None = None
     # Нарушено правило числа страниц на уровне заказа (лишний двухстраничный PDF и т. п.).
     page_rule_violation: bool = False
     # Итог автоматического перевода RGB → CMYK итогового PDF (None — не требовался).

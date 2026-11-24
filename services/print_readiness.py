@@ -58,6 +58,12 @@ def print_blockers(order: dict[str, Any], fix_state: dict[str, Any] | None = Non
     if status in TERMINAL_STATUSES:
         return []
     blockers: list[dict[str, str]] = []
+    if order.get("sborka_cancelled") is not None:
+        return [{
+            "kind": CHECK,
+            "code": "sborka_cancelled",
+            "message": "Заказ отменён клиентом в Сборке: печатать его не нужно.",
+        }]
 
     def add(kind: str, code: str, message: str) -> None:
         blockers.append({"kind": kind, "code": code, "message": message})

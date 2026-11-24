@@ -450,3 +450,23 @@ describe("OrderCard postpress operations", () => {
     expect(host.querySelector(".postpress-indicator")).toBeNull();
   });
 });
+
+describe("OrderCard cancelled in Sborka", () => {
+  it("shows a grey cancelled note instead of the order body and hides return controls", async () => {
+    const host = mount({
+      order_id: "26255491", status: "cancelled", files: [], errors: ["заказ отменён клиентом в Сборке: проверка не выполнялась"],
+      sborka_cancelled: { sborka_status: "14", moved_to: "/in/Cancelled/26255491", moved_files: ["a.pdf"] },
+    });
+    await nextTick();
+    expect(host.querySelector(".order-status").textContent).toBe("Отменён клиентом");
+    expect(host.querySelector(".sborka-cancelled").textContent).toContain("/in/Cancelled/26255491");
+    expect(host.querySelector(".order-body")).toBeNull();
+    expect(host.querySelector(".paid-design")).toBeNull();
+  });
+
+  it("shows the move error when the files stayed in place", async () => {
+    const host = mount({ order_id: "1", status: "cancelled", files: [], sborka_cancelled: { moved_to: "/x", move_error: "a.pdf: Permission denied" } });
+    await nextTick();
+    expect(host.querySelector(".sborka-cancelled-error").textContent).toContain("Permission denied");
+  });
+});

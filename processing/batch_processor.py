@@ -55,8 +55,10 @@ AUTO_BLEED_ORDER_WINDOW = 4
 
 #: Папки результатов под входной папкой: не могут быть папкой исходников (``strict_source_dirs``).
 RESERVED_FOLDER_NAMES = frozenset(
-    name.casefold() for name in ("PDF", "Previews", "Troubles", "Processed", "output_report")
+    name.casefold() for name in ("PDF", "Previews", "Troubles", "Processed", "output_report", "Cancelled")
 )
+#: Ошибка заказа, отменённого в Sborka (orderinfo ``status`` 14): он не проверяется.
+CANCELLED_ORDER_MESSAGE = "заказ отменён клиентом в Сборке: проверка не выполнялась"
 DUPLICATE_NAME_ERROR_PREFIX = "файл с таким же именем"
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".pdf"}
 REJECTED_EXTENSIONS = {".psd", ".bmp", ".heic", ".heif"}
@@ -388,6 +390,9 @@ class BatchProcessor:
         # Optional hook called with the sorted order ids once filenames are
         # parsed and grouped, before the slow per-order inspection starts.
         self.on_orders_grouped: Callable[[list[str]], None] | None = None
+        # Optional hook: order ids -> {order_id: info} of orders cancelled in Sborka.
+        # Called once after grouping; such orders are yielded first, uninspected.
+        self.cancelled_orders: Callable[[list[str]], Mapping[str, Mapping[str, object]]] | None = None
 
     @staticmethod
     def _preview_worker_count(item_count: int) -> int:
@@ -513,6 +518,24 @@ class BatchProcessor:
             except Exception:
                 logger.exception("orders_grouped hook failed")
 
+        cancelled = self._cancelled_orders([oid for (_c, oid), _f in sorted_groups])
+        if cancelled:
+            # Отменённый в Sborka заказ не осматривается: выдаётся сразу, без проверки.
+            remaining = []
+            for (customer_id, order_id), files in sorted_groups:
+                info = cancelled.get(order_id)
+                if info is None:
+                    remaining.append(((customer_id, order_id), files))
+                    continue
+                yield OrderCheck(
+                    order_id=order_id,
+                    customer_id=customer_id,
+                    files=files,
+                    errors=[CANCELLED_ORDER_MESSAGE],
+                    sborka_cancelled=dict(info),
+                )
+            sorted_groups = remaining
+
         def finish(order_id: str, files: list[FileCheck]) -> OrderCheck:
             order = OrderCheck(
                 order_id=order_id,
@@ -565,6 +588,16 @@ class BatchProcessor:
                     yield finish(ready_id, [correction.result() for correction in corrections])
             for ready_id, corrections in window:
                 yield finish(ready_id, [correction.result() for correction in corrections])
+
+    def _cancelled_orders(self, order_ids: list[str]) -> Mapping[str, Mapping[str, object]]:
+        hook = self.cancelled_orders
+        if hook is None or not order_ids:
+            return {}
+        try:
+            return dict(hook(order_ids) or {})
+        except Exception:  # noqa: BLE001 — без ответа Sborka заказы проверяются как обычно
+            logger.exception("cancelled_orders hook failed")
+            return {}
 
     def inspect_order_files(self, paths: "Sequence[Path]") -> OrderCheck:
         """Осмотреть заново файлы одного заказа (без просмотра всей входной папки).

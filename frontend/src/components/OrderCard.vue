@@ -104,7 +104,7 @@ const localIssueGroups = computed(() => orderIssueGroups({ ...props.order, files
 const groupedErrors = computed(() => localIssueGroups.value.filter((group) => group.severity === "error"));
 const groupedWarnings = computed(() => localIssueGroups.value.filter((group) => group.severity === "warning"));
 const issueGroupHasDetails = (group) => group.count > 1 || (group.files || []).length > 0 || (group.pages || []).length > 0;
-const statusLabel = { detected: "Обнаружен", passed: "Прошёл", completed: "Прошёл", warning: "Требует доработки", error: "Ошибка PDF", failed: "Ошибка", technical_error: "Сбой проверки", pitstop_checking: "PitStop проверяет", waiting_confirmation: "Нужно решение", processing: "Проверяется" };
+const statusLabel = { cancelled: "Отменён", detected: "Обнаружен", passed: "Прошёл", completed: "Прошёл", warning: "Требует доработки", error: "Ошибка PDF", failed: "Ошибка", technical_error: "Сбой проверки", pitstop_checking: "PitStop проверяет", waiting_confirmation: "Нужно решение", processing: "Проверяется" };
 const successful = computed(() => {
   if (!["passed", "completed"].includes(props.order.status)) return false;
   if (!props.order.pitstop) return true;
@@ -126,6 +126,8 @@ const dpi = (file) => {
 const color = (file) => file?.colorspace || file?.color_space || "—";
 const format = (file) => file?.format || file?.actual_format || "—";
 const rotation = (file) => file ? `${file.rotation_degrees || 0}°` : "—";
+// Заказ отменён клиентом в Сборке: не проверялся, исходники перенесены в Cancelled.
+const sborkaCancelled = computed(() => props.order?.sborka_cancelled || null);
 const fold = computed(() => props.order?.postpress?.fold || null);
 const foldCount = computed(() => {
   const count = Number(fold.value?.count);
@@ -297,19 +299,26 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
         <span>Файлов <b>{{ files.length }}</b></span>
       </div>
       <div class="order-head-actions">
-        <ReturnReasons :order="order" :reasons="reasons" @change="$emit('return-comment', $event)" />
-        <button type="button" class="paid-design" :class="{ active: paidDesign }" :aria-pressed="paidDesign" title="Предложить клиенту платную доработку" @click.stop="$emit('return-design', !paidDesign)">
+        <ReturnReasons v-if="!sborkaCancelled" :order="order" :reasons="reasons" @change="$emit('return-comment', $event)" />
+        <button v-if="!sborkaCancelled" type="button" class="paid-design" :class="{ active: paidDesign }" :aria-pressed="paidDesign" title="Предложить клиенту платную доработку" @click.stop="$emit('return-design', !paidDesign)">
           Платная доработка
         </button>
         <label v-if="paidDesign" class="design-cost">
           <span>Стоимость</span>
           <input :value="designCost" type="number" min="0" step="0.01" inputmode="decimal" aria-label="Стоимость платной доработки" @input="$emit('return-cost', $event.target.value)">
         </label>
-        <span class="order-status" :class="`status-${order.status}`">{{ statusLabel[order.status] || order.status }}</span>
+        <span class="order-status" :class="`status-${order.status}`">{{ sborkaCancelled ? "Отменён клиентом" : statusLabel[order.status] || order.status }}</span>
       </div>
     </header>
 
-    <div class="order-body">
+    <div v-if="sborkaCancelled" class="sborka-cancelled" role="note">
+      <b>Заказ отменён клиентом в Сборке.</b>
+      <span>Проверка не выполнялась, в Сборку ничего не отправлено.</span>
+      <span v-if="sborkaCancelled.move_error" class="sborka-cancelled-error">Исходники перенести не удалось: {{ sborkaCancelled.move_error }}</span>
+      <span v-else-if="sborkaCancelled.moved_to">Исходники перенесены в <code>{{ sborkaCancelled.moved_to }}</code>.</span>
+      <span v-else>Исходники переносятся в папку Cancelled…</span>
+    </div>
+    <div v-else class="order-body">
       <section class="preview-column">
         <p class="section-title">Превью макетов</p>
         <div v-if="customerComment" class="customer-comment" data-testid="customer-comment">

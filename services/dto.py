@@ -180,6 +180,8 @@ def order_check_to_dto(
         result["customer_comment"] = value.customer_comment
     if value.kit is not None:
         result["kit"] = value.kit
+    if value.sborka_cancelled is not None:
+        result["sborka_cancelled"] = dict(value.sborka_cancelled)
     if value.color_conversion is not None:
         result["color_conversion"] = value.color_conversion
     if value.prepress is not None:

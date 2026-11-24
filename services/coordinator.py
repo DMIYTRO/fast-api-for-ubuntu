@@ -1977,6 +1977,8 @@ def _pitstop_status_from_dto(pitstop: dict[str, Any] | None) -> str:
 
 
 def _inspection_status(order: OrderCheck) -> str:
+    if order.sborka_cancelled is not None:
+        return OrderStatus.CANCELLED.value
     if any(item.resample_decision == "ask_confirmation" for item in order.files):
         return "waiting_confirmation"
     if not order.passed:
@@ -1990,6 +1992,8 @@ def _completed_order_status(
     order: OrderCheck, artifacts: OrderArtifacts
 ) -> str:
     """Final status: a local (first-stage) error is never lifted by PitStop."""
+    if order.sborka_cancelled is not None:
+        return OrderStatus.CANCELLED.value
     return completed_status(
         local_errors=(
             bool(artifacts.errors)
