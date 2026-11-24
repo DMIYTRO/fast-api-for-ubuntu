@@ -58,3 +58,32 @@ def flatten_visible_tiff(source: Path, target: Path) -> TiffFlattenResult:
         target.unlink(missing_ok=True)
         raise
     return TiffFlattenResult(structure.layer_count, len(scenes) - hidden, hidden)
+
+
+def flatten_tiff_transparency(source: Path, target: Path, colorspace: str | None = None) -> None:
+    """Свести несведённую прозрачность TIFF на белый фон в новый файл (ImageMagick).
+
+    Прозрачность TIFF хранится лишним каналом (ExtraSamples, ``cmyka``/``srgba``).
+    Пиксели смешиваются с белым по этому каналу (``-alpha remove``): для CMYK белый —
+    ``cmyk(0,0,0,0)``, без перевода цвета; разрешение и размер не меняются.
+    Исходный файл не трогается; результат проверяется на отсутствие прозрачности.
+    """
+    if Path(source).resolve() == Path(target).resolve():
+        raise ValueError("Сведение прозрачности не должно заменять исходный файл")
+    magick = shutil.which("magick")
+    if not magick:
+        raise FileNotFoundError("ImageMagick (`magick`) не найден")
+    background = "cmyk(0,0,0,0)" if (colorspace or "").upper() == "CMYK" else "white"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        run_command([
+            magick, "-quiet", "-define", "tiff:ignore-layers=true", f"{source}[0]",
+            "-background", background, "-alpha", "remove", "-alpha", "off",
+            "-define", "tiff:write-layers=false", "-compress", "zip", str(target),
+        ], check=True)
+        flattened = inspect_tiff_structure(str(target))
+        if flattened.page_count != 1 or flattened.has_alpha:
+            raise ValueError("ImageMagick не свёл прозрачность TIFF")
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise

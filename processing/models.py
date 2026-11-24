@@ -64,6 +64,8 @@ class FileCheck:
     tiff_visible_layer_count: Optional[int] = None
     tiff_hidden_layer_count: Optional[int] = None
     tiff_flatten_strategy: Optional[str] = None
+    # Несведённая прозрачность TIFF сведена на белый фон при сборке (ImageMagick).
+    transparency_flattened: bool = False
     size_mb: float = 0.0
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)

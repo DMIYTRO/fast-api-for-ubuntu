@@ -52,6 +52,9 @@ const face = computed(() => files.value.find((file) => String(file.side || file.
 const back = computed(() => files.value.find((file) => String(file.side || file.parsed?.side).toLowerCase() === "back"));
 const parsed = computed(() => face.value?.parsed || {});
 const flattenedTiffs = computed(() => files.value.filter((file) => file.tiff_flattened));
+// Несведённая прозрачность TIFF сведена на белый фон при сборке PDF.
+const transparencyFlattened = computed(() => files.value.filter((file) => file.transparency_flattened));
+const transparencyTitle = computed(() => `Прозрачность сведена на белый фон (ImageMagick): ${transparencyFlattened.value.map((file) => file.name || file.filename).join(", ")}. Проверьте превью.`);
 const tiffFlattenTitle = computed(() => flattenedTiffs.value.map((file) => `${file.name || file.filename || "TIFF"}: сведён сохранённый видимый композит; видимых слоёв ${file.tiff_visible_layer_count ?? "—"}, скрытых ${file.tiff_hidden_layer_count ?? "—"}`).join("; "));
 const colorMode = computed(() => parsed.value.front_colors != null ? `${parsed.value.front_colors}-${parsed.value.back_colors ?? 0}` : "—");
 const declaredSize = computed(() => parsed.value.width_mm && parsed.value.height_mm ? `${parsed.value.width_mm} × ${parsed.value.height_mm} мм` : "Размер не указан");
@@ -293,6 +296,10 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
         <span v-if="flattenedTiffs.length" class="tiff-flatten-indicator" :title="tiffFlattenTitle" :aria-label="tiffFlattenTitle">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" aria-hidden="true"><path d="m3 7 9-4 9 4-9 4-9-4Zm0 5 9 4 9-4M3 17l9 4 9-4" /></svg>
           TIFF сведён
+        </span>
+        <span v-if="transparencyFlattened.length" class="tiff-flatten-indicator transparency-flatten-indicator" :title="transparencyTitle" :aria-label="transparencyTitle">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" aria-hidden="true"><path d="M4 4h16v16H4zM4 12h16M12 4v16" /></svg>
+          Прозрачность сведена
         </span>
         <span>Красочность <b>{{ colorMode }}</b><span v-if="inkCoverageMainFlag(order.ink_coverage)" class="ink-indicator" :class="inkCoverageMainFlag(order.ink_coverage).kind" :title="inkCoverageTitle(order.ink_coverage)" :aria-label="inkCoverageTitle(order.ink_coverage)"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5c-3 4-5.5 7-5.5 10a5.5 5.5 0 0 0 11 0c0-3-2.5-6-5.5-10Z" /><path v-if="inkCoverageMainFlag(order.ink_coverage).kind === 'overflow'" d="M6 13.5c1.5 1 2.5 1.5 4 1.5s2.5-.5 4-1.5" /><path v-else d="M7 12.5h6" /></svg><b>{{ inkCoverageFlagLabel(inkCoverageMainFlag(order.ink_coverage)) }}</b></span></span>
         <span>Макет <b>{{ declaredSize }}</b></span>

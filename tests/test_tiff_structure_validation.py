@@ -156,13 +156,13 @@ def test_single_layer_tiff_can_be_flattened_during_pdf_creation(tmp_path: Path) 
 @pytest.mark.parametrize(
     ("structure", "expected_fragments", "unexpected_fragment"),
     [
-        (TiffStructure(1, False, True, "cmyka  5.0"), ("альфа-канал",), "страниц"),
+        (TiffStructure(1, False, True, "cmyka  5.0"), (), "альфа-канал"),
         (TiffStructure(1, True, False, "cmyk  4.0", layer_count=2), (), "страниц"),
         (TiffStructure(2, False, False, "cmyk  4.0"), ("2 страниц",), "несведённые слои"),
         (
             TiffStructure(1, True, True, "cmyka  5.0", layer_count=2),
-            ("альфа-канал",),
-            "страниц",
+            (),
+            "альфа-канал",
         ),
     ],
 )
@@ -177,3 +177,12 @@ def test_batch_processor_reports_tiff_structure_without_false_multipage_error(
     for fragment in expected_fragments:
         assert any(fragment in error for error in item.errors)
     assert not any(unexpected_fragment in error for error in item.errors)
+
+
+def test_tiff_transparency_is_a_warning_not_an_error(tmp_path: Path) -> None:
+    """Несведённая прозрачность сводится при сборке: предупреждение (заказ 26264275)."""
+    item = _inspect_batch(tmp_path, TiffStructure(1, False, True, "cmyka  5.0"))
+
+    assert item.errors == []
+    assert any(w.startswith("TIFF с несведённой прозрачностью") for w in item.warnings)
+    assert item.has_alpha and not item.transparency_flattened

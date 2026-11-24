@@ -69,6 +69,7 @@ def file_check_to_dto(
         "tiff_visible_layer_count": value.tiff_visible_layer_count,
         "tiff_hidden_layer_count": value.tiff_hidden_layer_count,
         "tiff_flatten_strategy": value.tiff_flatten_strategy,
+        "transparency_flattened": value.transparency_flattened,
         "page_count": value.page_count,
         "pdf_colorspaces": list(value.pdf_colorspaces),
         "pdf_min_dpi": value.pdf_min_dpi,

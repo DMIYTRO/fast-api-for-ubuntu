@@ -54,7 +54,8 @@ def test_inspect_orders_uses_one_launch_per_plain_file_and_still_flags_alpha(tmp
     assert by_name[jpg.name].colorspace == "sRGB"
     assert not by_name[rgb.name].has_alpha
     assert by_name[rgba.name].has_alpha
-    assert any("альфа-канал" in error for error in by_name[rgba.name].errors)
+    assert by_name[rgba.name].errors == []
+    assert any("несведённой прозрачностью" in warning for warning in by_name[rgba.name].warnings)
     assert by_name[rgba.name].channels == "srgba 4.0"
     # rgb.tif: 1, jpg: 1, rgba.tif: 2 (alpha needs a full decode) instead of 3 + 2 + 3.
     assert len(commands) == 4

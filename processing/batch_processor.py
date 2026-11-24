@@ -57,6 +57,11 @@ AUTO_BLEED_ORDER_WINDOW = 4
 RESERVED_FOLDER_NAMES = frozenset(
     name.casefold() for name in ("PDF", "Previews", "Troubles", "Processed", "output_report", "Cancelled")
 )
+#: Предупреждение: несведённая прозрачность TIFF сведена на белый фон (заказ 26264275).
+TRANSPARENCY_FLATTENED_MESSAGE = (
+    "TIFF с несведённой прозрачностью: прозрачность сведена на белый фон (ImageMagick); "
+    "проверьте превью"
+)
 #: Ошибка заказа, отменённого в Sborka (orderinfo ``status`` 14): он не проверяется.
 CANCELLED_ORDER_MESSAGE = "заказ отменён клиентом в Сборке: проверка не выполнялась"
 DUPLICATE_NAME_ERROR_PREFIX = "файл с таким же именем"
@@ -164,8 +169,9 @@ def _read_raster_facts(check: FileCheck, scopes: Collection[str] = ALL_SCOPES) -
         check.has_alpha = structure.has_alpha
         check.channels = structure.channels
         if structure.has_alpha:
-            _report(check, "raster_alpha", "error",
-                    "TIFF содержит альфа-канал; перед отправкой удалите прозрачность", scopes)
+            # Несведённая прозрачность (лишний канал TIFF) сводится на белый фон при
+            # сборке PDF (_flatten_for_pdf): заказ не красный, оператор предупреждён.
+            _report(check, "raster_alpha", "warning", TRANSPARENCY_FLATTENED_MESSAGE, scopes)
         if structure.has_unflattened_layers and not structure.layer_count:
             _report(check, "raster_layers", "error",
                     "TIFF содержит несведённые слои, но ImageMagick не смог "
@@ -194,13 +200,25 @@ def _read_raster_facts(check: FileCheck, scopes: Collection[str] = ALL_SCOPES) -
 
 
 def _flatten_for_pdf(item: FileCheck, source_image_path: str, flat_path: Path):
-    """Видимые слои TIFF, сведённые во временный файл, как при сборке заказа."""
-    if not (item.has_unflattened_layers and item.tiff_layer_count):
-        return source_image_path, None
-    from core.tiff_flatten import flatten_visible_tiff
+    """Видимые слои и прозрачность TIFF, сведённые во временный файл, как при сборке заказа.
 
-    flattened = flatten_visible_tiff(item.path, flat_path)
-    return str(flat_path), flattened
+    Сначала слои (сохранённый композит Photoshop), затем несведённая прозрачность —
+    на белый фон (``transparency_flattened``). Исходник не меняется.
+    """
+    flattened = None
+    if item.has_unflattened_layers and item.tiff_layer_count:
+        from core.tiff_flatten import flatten_visible_tiff
+
+        flattened = flatten_visible_tiff(item.path, flat_path)
+        source_image_path = str(flat_path)
+    if item.has_alpha and item.path.suffix.lower() in {".tif", ".tiff"}:
+        from core.tiff_flatten import flatten_tiff_transparency
+
+        opaque_path = flat_path.with_name(f"{flat_path.stem}-opaque{flat_path.suffix}")
+        flatten_tiff_transparency(Path(source_image_path), opaque_path, item.colorspace)
+        item.transparency_flattened = True
+        source_image_path = str(opaque_path)
+    return source_image_path, flattened
 
 
 def _record_flatten(item: FileCheck, flattened) -> None:
@@ -1494,12 +1512,9 @@ class BatchProcessor:
                     else:
                         dpi_arg = item.dpi or 300.0
                     page_path = Path(temporary_dir) / f"{page_number}.pdf"
-                    source_path = item.path
-                    flattened = None
-                    if item.has_unflattened_layers and item.tiff_layer_count:
-                        from core.tiff_flatten import flatten_visible_tiff
-                        source_path = Path(temporary_dir) / f"flat-{page_number}.tif"
-                        flattened = flatten_visible_tiff(item.path, source_path)
+                    source_path, flattened = _flatten_for_pdf(
+                        item, str(item.path), Path(temporary_dir) / f"flat-{page_number}.tif"
+                    )
                     convert_image_to_pdf(
                         str(source_path),
                         str(page_path),
