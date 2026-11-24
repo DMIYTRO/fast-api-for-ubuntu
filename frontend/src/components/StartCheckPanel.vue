@@ -33,7 +33,16 @@ function choose() {
   form.input_path = folderData.value?.path || folderData.value?.current_path || form.input_path;
   browsing.value = false;
 }
-function submit() { emit("start", { ...form, check_policy: fullCheck.value ? "full" : "auto", approve_corrections: form.correction_policy === "auto" }); }
+function checkOptions(inputPath = form.input_path) {
+  return {
+    ...form,
+    input_path: inputPath,
+    check_policy: fullCheck.value ? "full" : "auto",
+    approve_corrections: form.correction_policy === "auto",
+  };
+}
+function submit() { emit("start", checkOptions()); }
+defineExpose({ checkOptions });
 </script>
 
 <template>

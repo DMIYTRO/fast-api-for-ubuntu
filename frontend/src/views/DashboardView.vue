@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useAuthStore } from "../stores/auth.js";
 import { useChecksStore } from "../stores/checks.js";
@@ -14,10 +14,35 @@ import OrderFilters from "../components/OrderFilters.vue";
 import OrderCard from "../components/OrderCard.vue";
 import ActionBar from "../components/ActionBar.vue";
 import { actionToast } from "../components/actionResult.js";
+import { isFetchRunning, summarizeFetch } from "../services/orderFetch.js";
 
 const auth = useAuthStore(); const checks = useChecksStore(); const orderFetch = useOrderFetchStore(); const router = useRouter();
 const actionBusy = ref(false); const toast = ref("");
 const showBackToTop = ref(false);
+const checkPanel = ref(null);
+const fetchJobToCheck = ref(null);
+async function fetchOrders() {
+  const job = await orderFetch.start();
+  fetchJobToCheck.value = job?.job_id ?? null;
+}
+watch([fetchJobToCheck, () => orderFetch.snapshot, () => checks.loading], async ([jobId, snapshot, loading]) => {
+  if (!jobId || isFetchRunning(snapshot) || loading) return;
+  fetchJobToCheck.value = null;
+  if (snapshot?.job_id !== jobId || snapshot.state !== "done") return;
+  const summary = summarizeFetch(snapshot);
+  if (!summary.ok || !(summary.moved || summary.copied)) return;
+
+  const inputPath = checks.config?.default_input_path;
+  if (!inputPath) {
+    orderFetch.notice = "Не удалось определить рабочую папку. Запустите проверку вручную.";
+    return;
+  }
+  try {
+    await checks.start(checkPanel.value.checkOptions(inputPath));
+  } catch (error) {
+    orderFetch.notice = `Не удалось автоматически запустить проверку: ${error.message}`;
+  }
+});
 async function logout() { await auth.logout(); router.replace("/login"); }
 async function act(action, comment, confirmFailed = false) {
   actionBusy.value = true;
@@ -64,7 +89,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <AppHeader :path="checks.activeRun?.input_path || checks.config?.default_input_path" :status="checks.activeRun?.status" :connection="checks.connection" show-fetch :fetch-busy="orderFetch.busy" @new-check="checks.drawerOpen = true" @fetch-orders="orderFetch.start()" @logout="logout" />
+  <AppHeader :path="checks.activeRun?.input_path || checks.config?.default_input_path" :status="checks.activeRun?.status" :connection="checks.connection" show-fetch :fetch-busy="orderFetch.busy || !!fetchJobToCheck || checks.loading" @new-check="checks.drawerOpen = true" @fetch-orders="fetchOrders" @logout="logout" />
   <main class="dashboard">
     <div v-if="checks.error" class="page-error" role="alert">{{ checks.error }} <button @click="checks.initialize()">Повторить</button></div>
     <OrderFetch />
@@ -93,7 +118,7 @@ onBeforeUnmount(() => {
     <section v-else-if="!checks.loading" class="first-run surface"><div class="first-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="square" stroke-linejoin="miter"><path d="M6 9V3h12v6" /><path d="M6 18H4V10h16v8h-2" /><path d="M6 14h12v7H6z" /><path d="M17 12h.01" /></svg></div><p class="eyebrow">Можно начинать</p><h1>Проверьте первую папку с макетами</h1><p>Выберите папку и профиль печати. Имя файла должно содержать клиента и заказ, например <code>(12690-25506185)_offset-face.jpg</code>.</p><button class="button primary" @click="checks.drawerOpen = true">Начать первую проверку</button></section>
     <div v-else class="loading-page"><span class="spinner"></span> Загружаем рабочий пульт…</div>
   </main>
-  <StartCheckPanel :open="checks.drawerOpen" :config="checks.config" :busy="checks.loading" @close="checks.drawerOpen = false" @start="checks.start" />
+  <StartCheckPanel ref="checkPanel" :open="checks.drawerOpen" :config="checks.config" :busy="checks.loading" @close="checks.drawerOpen = false" @start="checks.start" />
   <ActionBar :kits="checks.selectedKits" :count="checks.selected.length" :selected-ids="checks.selected" :comments="checks.selectedReturnComments" :can-print="checks.canPrint" :needs-print-confirmation="checks.printNeedsConfirmation" :print-needs-build="checks.printNeedsBuild" :confirm-messages="checks.printConfirmMessages" :block-reason="checks.printBlockReason" :busy="actionBusy" :reasons="checks.config?.return_reasons || []" @clear="checks.clearSelection" @action="act" />
   <div v-if="checks.conflictPrompt" class="confirm-backdrop">
     <section class="confirm-card">

@@ -22,8 +22,10 @@ export const useOrderFetchStore = defineStore("orderFetch", {
   },
   actions: {
     async initialize() {
+      const previous = this.snapshot;
       try {
         const snapshot = await orderFetchApi.status();
+        if (this.starting || this.snapshot !== previous) return;
         this.snapshot = snapshot;
         // Итог давней задачи при открытии страницы не показываем — только идущую.
         if (isFetchRunning(snapshot)) {
@@ -40,9 +42,11 @@ export const useOrderFetchStore = defineStore("orderFetch", {
       this.error = "";
       this.notice = "";
       try {
-        this.snapshot = await orderFetchApi.start();
+        const snapshot = await orderFetchApi.start();
+        this.snapshot = snapshot;
         this.visible = true;
-        this.schedule();
+        if (isFetchRunning(snapshot)) this.schedule();
+        return snapshot;
       } catch (error) {
         this.visible = true;
         if (error?.status === 409) {

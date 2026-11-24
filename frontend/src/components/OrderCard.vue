@@ -428,11 +428,37 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
     <OrderActions v-if="runId" :run-id="runId" :order-id="String(actionId)" />
     <footer class="order-footer">
       <span class="muted">Причины возврата настраиваются кнопкой 💬 в заголовке</span>
-      <nav class="export-links">
-        <a v-if="order.pdf_url || order.pdf_path" :href="order.pdf_url || `/api/orders/${id}/pdf`" target="_blank">PDF ↗</a>
-        <a v-if="order.html_url" :href="order.html_url" target="_blank">HTML ↗</a>
-        <a v-if="order.json_url" :href="order.json_url" target="_blank">JSON ↗</a>
+      <nav v-if="order.pdf_url || order.pdf_path" class="export-links">
+        <a
+          class="order-pdf-link"
+          :href="order.pdf_url || `/api/orders/${id}/pdf`"
+          target="_blank"
+          rel="noopener"
+          aria-label="Открыть PDF заказа"
+          title="Открыть PDF заказа"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 2h10l6 6v14H4zM14 2v6h6" />
+            <path d="M7 17v-5h1.5a1.25 1.25 0 0 1 0 2.5H7M11 17v-5h.5a2.5 2.5 0 0 1 0 5H11M15.5 17v-5H18m-2.5 2.5h2" />
+          </svg>
+        </a>
       </nav>
     </footer>
   </article>
 </template>
+
+<style scoped>
+.order-pdf-link {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 5px;
+}
+
+.order-pdf-link:hover,
+.order-pdf-link:focus-visible {
+  background: var(--surface-2);
+}
+</style>

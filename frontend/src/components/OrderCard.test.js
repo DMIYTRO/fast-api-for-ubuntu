@@ -22,6 +22,25 @@ function mount(order) {
 beforeEach(() => { prepressDisplay.showInfoNotes = true; });
 afterEach(() => { mounted.splice(0).forEach((unmount) => unmount()); prepressDisplay.showInfoNotes = false; });
 
+describe("OrderCard export", () => {
+  it("shows only the PDF icon link when the order has export URLs", () => {
+    const host = mount({
+      order_id: "2", status: "passed", files: [],
+      pdf_url: "/api/orders/2/pdf?run_id=run-1",
+      html_url: "/runs/run-1/report",
+      json_url: "/api/checks/run-1/export.json",
+    });
+
+    const links = host.querySelectorAll(".export-links a");
+    expect(links).toHaveLength(1);
+    const [link] = links;
+    expect(link.getAttribute("href")).toBe("/api/orders/2/pdf?run_id=run-1");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("aria-label")).toBe("Открыть PDF заказа");
+    expect(link.querySelector("svg")).not.toBeNull();
+  });
+});
+
 describe("OrderCard processing failures", () => {
   it("shows PDF processing errors and explains why PitStop has no report", async () => {
     const host = mount({
