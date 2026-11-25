@@ -48,6 +48,16 @@ TERMINAL_ORDER_STATUSES = {
     OrderStatus.ERROR,
     OrderStatus.CANCELLED,
 }
+# Заказ, уже отправленный оператором в печать или на доработку, для проверки
+# тоже обработан: иначе проверка, где часть заказов ушла в печать, пока другие
+# ждали подтверждения коррекции, не завершается никогда (run b6cd1d94…,
+# 2026-11-25: processed=5 total=14, «running» до перезапуска), а отмена
+# такой проверки перезаписала бы их статус на «cancelled».
+HANDED_OFF_ORDER_STATUSES = {
+    OrderStatus.ACCEPTED_FOR_PRINT,
+    OrderStatus.RETURNED_FOR_REWORK,
+}
+FINISHED_ORDER_STATUSES = TERMINAL_ORDER_STATUSES | HANDED_OFF_ORDER_STATUSES
 # Orders mostly wait on external services (PitStop, callas, SMB), so the
 # configured worker count may exceed the CPU count, up to this bound.
 MAX_ORDER_WORKERS = 32
@@ -1670,7 +1680,7 @@ class RunCoordinator:
 
     def _mark_cancelled_locked(self, run: dict[str, Any]) -> None:
         for item in (run.get("orders") or {}).values():
-            if item["status"] not in TERMINAL_ORDER_STATUSES:
+            if item["status"] not in FINISHED_ORDER_STATUSES:
                 item["status"] = "cancelled"
         context = self._contexts.get(str(run["id"]))
         if context is not None and context.run is run:
@@ -1729,7 +1739,7 @@ class RunCoordinator:
         else:
             counts = Counter(item["status"] for item in run["orders"].values())
         run["processed_orders"] = sum(
-            counts.get(status, 0) for status in TERMINAL_ORDER_STATUSES
+            counts.get(status, 0) for status in FINISHED_ORDER_STATUSES
         )
         run["passed_orders"] = counts.get("passed", 0)
         run["warning_orders"] = counts.get("warning", 0)

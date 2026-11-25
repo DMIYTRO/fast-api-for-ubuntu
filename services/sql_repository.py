@@ -49,6 +49,9 @@ _INTERRUPTED_STATUSES = {
 }
 # Mirrors services.coordinator.TERMINAL_ORDER_STATUSES for restart recovery.
 _TERMINAL_ORDER_STATUSES = {"passed", "warning", "error", "cancelled"}
+# Отправленные в печать / на доработку заказы проверкой обработаны (см.
+# HANDED_OFF_ORDER_STATUSES в services/coordinator.py).
+_FINISHED_ORDER_STATUSES = _TERMINAL_ORDER_STATUSES | {"accepted_for_print", "returned_for_rework"}
 _RUN_STANDARD_KEYS = {
     "id",
     "status",
@@ -822,7 +825,7 @@ class SqlRunRepository:
                 "processed_orders": sum(
                     count
                     for status, count in statuses.items()
-                    if status in _TERMINAL_ORDER_STATUSES
+                    if status in _FINISHED_ORDER_STATUSES
                 ),
                 "passed_orders": statuses.get("passed", 0),
                 "warning_orders": statuses.get("warning", 0),

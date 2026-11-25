@@ -236,6 +236,45 @@ class RunCoordinatorTests(unittest.TestCase):
         self.assertIn("order.correction_confirmed", event_types)
         self.assertEqual(event_types[-1], "run.completed")
 
+    def test_run_completes_when_other_orders_were_handed_off_while_waiting(self):
+        # Run b6cd1d94… (2026-11-25): orders were sent to print / returned while
+        # one waited for a correction; after the confirmation the run stayed
+        # «running» forever (processed=5 total=14, scheduler.run_unsettled).
+        self.adapters["handoff"] = FakeAdapter(
+            [make_order("waits", waiting=True), make_order("printed"), make_order("returned")]
+        )
+        run_id = self.submit("handoff")["id"]
+        self.coordinator.wait_for(run_id, {"waiting_confirmation"}, timeout=2)
+        for order_id, status in (("printed", "accepted_for_print"), ("returned", "returned_for_rework")):
+            self.coordinator.apply_file_transition(
+                run_id, order_id, status=status, source_paths={}, pdf_path=None, preview_paths=[]
+            )
+
+        self.coordinator.confirm_correction(run_id, "waits")
+        completed = self.coordinator.wait_for(run_id, {"completed"}, timeout=2)
+
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["processed_orders"], 3)
+        self.assertEqual(completed["orders"]["printed"]["status"], "accepted_for_print")
+        self.assertEqual(completed["orders"]["returned"]["status"], "returned_for_rework")
+
+    def test_cancel_keeps_handed_off_orders(self):
+        self.adapters["cancel-handoff"] = FakeAdapter(
+            [make_order("waits", waiting=True), make_order("printed")]
+        )
+        run_id = self.submit("cancel-handoff")["id"]
+        self.coordinator.wait_for(run_id, {"waiting_confirmation"}, timeout=2)
+        self.coordinator.apply_file_transition(
+            run_id, "printed", status="accepted_for_print", source_paths={}, pdf_path=None,
+            preview_paths=[],
+        )
+
+        self.coordinator.cancel(run_id)
+        run = self.coordinator.wait_for(run_id, {"cancelled"}, timeout=2)
+
+        self.assertEqual(run["orders"]["printed"]["status"], "accepted_for_print")
+        self.assertEqual(run["orders"]["waits"]["status"], "cancelled")
+
     def test_late_postpress_reaches_order_completed_event_and_run_state(self):
         self.adapters["postpress"] = LatePostpressAdapter([make_order("100")])
         run_id = self.submit("postpress")["id"]
