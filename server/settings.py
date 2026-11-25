@@ -255,6 +255,10 @@ class Settings:
     sborka_api_dir: Path = _default_sborka_api_dir()
     sborka_timeout_seconds: int = 20
     sborka_enabled: bool = False
+    # Схема послепечатной обработки, загруженная заказчиком
+    # (https://sborka.ua/preview/<filename>-preview.png, services/customer_preview.py).
+    sborka_customer_preview_enabled: bool = True
+    sborka_customer_preview_max_concurrent: int = 3
     pitstop_enabled: bool = False
     pitstop_host: str = ""
     pitstop_port: int = 22
@@ -475,6 +479,12 @@ class Settings:
                     ).expanduser()
                     / "sborka_api_key.txt"
                 ).is_file(),
+            ),
+            sborka_customer_preview_enabled=_env_bool(
+                "IMAGE_MAGIC_SBORKA_CUSTOMER_PREVIEW_ENABLED", True
+            ),
+            sborka_customer_preview_max_concurrent=_env_int(
+                "IMAGE_MAGIC_SBORKA_CUSTOMER_PREVIEW_MAX_CONCURRENT", 3, minimum=1, maximum=16
             ),
             pitstop_enabled=_env_bool("IMAGE_MAGIC_PITSTOP_ENABLED", False),
             pitstop_host=os.environ.get("IMAGE_MAGIC_PITSTOP_HOST", "").strip(),

@@ -33,6 +33,7 @@ from core.inspector import inspect_tiff_structure
 from core.tool_runner import run_command
 from server.auth import AuthService, create_auth_router, require_session
 from server.callas_fix_routes import create_callas_fix_router
+from server.customer_preview_routes import create_customer_preview_router
 from server.lowres_preview_routes import create_lowres_preview_router
 from server.order_fetch_routes import create_order_fetch_router
 from server.database import Database, configure_database, get_db, upgrade_database
@@ -81,6 +82,7 @@ from services.callas_source_fix import fixable_source_path, source_comparison as
 from services.print_readiness import needs_print_build, print_blockers, print_mode
 from services.return_suggestions import attach_return_suggestions
 from services.ftp_preview_uploader import build_ftp_preview_uploader
+from services.customer_preview import CustomerPreviewFetcher, public_customer_preview
 from services.return_preview import (
     custom_return_preview_path, publish_custom_return_preview, selected_custom_return_preview,
 )
@@ -271,6 +273,12 @@ def _orders_from_run(run: dict[str, Any]) -> list[dict[str, Any]]:
                         entry,
                     )
                 }
+        customer_preview = order.get("customer_preview")
+        if isinstance(customer_preview, dict) and not customer_preview.get("url"):
+            # Сохранено без адреса (например, CLI): адрес ручки схемы заказчика.
+            order["customer_preview"] = public_customer_preview(
+                customer_preview, run_id, str(order.get("aggregate_id") or order_ref)
+            )
         preview_storage_id = order_ref
         if input_path and custom_return_preview_path(preview_storage_id, input_path=input_path):
             order["custom_preview_url"] = (
@@ -984,6 +992,7 @@ def _pitstop_adapter_factory(settings: Settings, callas_fix_service=None):
     processor_factory = _callas_processor_factory(settings)
     ink_checker = _ink_coverage_checker(settings)
     auto_bleed = _callas_auto_bleed(settings, callas_fix_service)
+    customer_preview_fetcher = _customer_preview_fetcher(settings)
 
     def factory(options: ProcessingOptions) -> BatchProcessorAdapter:
         service = service_for(Path(options.input_path), options.direction)
@@ -1001,6 +1010,7 @@ def _pitstop_adapter_factory(settings: Settings, callas_fix_service=None):
             max_dpi=settings.max_dpi,
             downsample_high_dpi=settings.downsample_high_dpi_enabled,
             no_scale_name_markers=settings.no_scale_name_markers,
+            customer_preview_fetcher=customer_preview_fetcher,
             order_info_fetcher=(
                 build_order_info_fetcher(
                     settings.sborka_api_dir,
@@ -1042,6 +1052,16 @@ def _forced_print_builder(adapter_factory):
     return build
 
 
+def _customer_preview_fetcher(settings: Settings):
+    """Фоновое скачивание схем постпечатки заказчика (services/customer_preview.py)."""
+    if not (settings.sborka_enabled and settings.sborka_customer_preview_enabled):
+        return None
+    return CustomerPreviewFetcher(
+        timeout_seconds=settings.sborka_timeout_seconds,
+        max_concurrent=settings.sborka_customer_preview_max_concurrent,
+    )
+
+
 def _default_adapter_factory(settings: Settings, callas_fix_service=None):
     """Construct the regular adapter with optional Sborka metadata enrichment."""
     fetcher = (
@@ -1054,10 +1074,12 @@ def _default_adapter_factory(settings: Settings, callas_fix_service=None):
     processor_factory = _callas_processor_factory(settings)
     ink_checker = _ink_coverage_checker(settings)
     auto_bleed = _callas_auto_bleed(settings, callas_fix_service)
+    customer_preview_fetcher = _customer_preview_fetcher(settings) if fetcher else None
     return lambda options: BatchProcessorAdapter(
         options,
         processor_factory=processor_factory,
         order_info_fetcher=fetcher,
+        customer_preview_fetcher=customer_preview_fetcher,
         ink_coverage_checker=ink_checker,
         auto_bleed=auto_bleed,
         input_check_policy=settings.input_check_policy,
@@ -1313,6 +1335,11 @@ def create_app(
             protected=protected,
             resolve_order=_lowres_preview_order,
             storage_id=_custom_preview_storage_id,
+        )
+    )
+    application.include_router(
+        create_customer_preview_router(
+            protected=protected, resolve_order=_lowres_preview_order
         )
     )
     application.include_router(create_order_fetch_router(protected=protected))

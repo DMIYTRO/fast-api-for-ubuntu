@@ -138,6 +138,11 @@ class OrderCheck:
     # Полный комментарий заказчика (``comment_client`` записи orderinfo Sborka), строки
     # сохранены; None — комментария нет или Sborka не ответила.
     customer_comment: str | None = None
+    # Поле ``filename`` записи orderinfo Sborka (имя без расширения, проверенное).
+    sborka_filename: str | None = None
+    # Схема постпечатки, загруженная заказчиком (services/customer_preview.py):
+    # {"file", "source_url", "last_modified", "size"}; None — схемы нет.
+    customer_preview: dict[str, object] | None = None
     # Комплект Sborka (``services/order_kits.py``): main_id, member_ids, position, size.
     kit: dict[str, object] | None = None
     # Заказ отменён в Sborka (orderinfo ``status`` 14): не проверяется, исходники

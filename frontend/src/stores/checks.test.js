@@ -776,6 +776,22 @@ describe("run kits", () => {
     expect(store.orders[0].pending_confirmations).toBe(1);
   });
 
+  it("adds a late customer scheme to an already shown card", () => {
+    const store = useChecksStore();
+    store.activeRun = { id: "run-1", progress: 0 };
+    store.orders = [{ aggregate_id: "42:200", customer_id: "42", order_id: "200", status: "warning", customer_comment: "текст", files: [] }];
+    const scheme = { url: "/api/checks/run-1/orders/200/customer-preview", last_modified: null, source_url: "https://sborka.ua/preview/x.jpg" };
+
+    store.applyEvent({
+      type: "order.customer_preview", run_id: "run-1", aggregate_id: "42:200", customer_id: "42", order_id: "200", status: "warning",
+      order: { aggregate_id: "42:200", customer_id: "42", order_id: "200", status: "warning", customer_comment: "текст", customer_preview: scheme, files: [] },
+    });
+
+    expect(store.orders).toHaveLength(1);
+    expect(store.orders[0].customer_preview).toEqual(scheme);
+    expect(store.orders[0].customer_comment).toBe("текст");
+  });
+
   it("does not lose the comment when a later status-only event arrives", () => {
     const store = useChecksStore();
     store.activeRun = { id: "run-1", progress: 0 };

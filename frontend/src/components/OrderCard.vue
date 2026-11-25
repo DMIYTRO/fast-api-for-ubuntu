@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { api } from "../services/api.js";
 import PreviewViewer from "./PreviewViewer.vue";
+import PreviewImage from "./PreviewImage.vue";
 import FileParameters from "./FileParameters.vue";
 import CorrectionDecision from "./CorrectionDecision.vue";
 import ReturnReasons from "./ReturnReasons.vue";
@@ -180,6 +181,38 @@ const postpressOps = computed(() => (props.order?.postpress?.operations || []).m
   };
 }));
 
+// Схема постпечати, которую заказчик приложил в Сборке (сверление, скругление…).
+const customerPreview = computed(() => {
+  const value = props.order?.customer_preview;
+  return value && typeof value.url === "string" && value.url ? value : null;
+});
+const customerPreviewDate = computed(() => {
+  const raw = customerPreview.value?.last_modified;
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+});
+const customerPreviewSource = computed(() => {
+  const url = customerPreview.value?.source_url;
+  return typeof url === "string" && /^https?:\/\//i.test(url) ? url : "";
+});
+const customerPreviewOps = computed(() => [
+  ...(fold.value ? [foldLabel.value] : []),
+  ...postpressOps.value.map((op) => [op.label, op.countText, op.diameterText].filter(Boolean).join(", ")),
+].filter(Boolean).join(" · "));
+const customerPreviewOpen = ref(false);
+function onCustomerPreviewKey(event) {
+  if (event.key === "Escape") customerPreviewOpen.value = false;
+}
+watch(customerPreviewOpen, (open) => {
+  if (typeof window === "undefined") return;
+  if (open) window.addEventListener("keydown", onCustomerPreviewKey);
+  else window.removeEventListener("keydown", onCustomerPreviewKey);
+});
+watch(customerPreview, (value) => { if (!value) customerPreviewOpen.value = false; });
+onBeforeUnmount(() => { if (typeof window !== "undefined") window.removeEventListener("keydown", onCustomerPreviewKey); });
+
 async function decide(value) {
   busy.value = true;
   try { await emit("decide", value); } finally { busy.value = false; }
@@ -284,6 +317,7 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
             <em v-if="op.countText" class="postpress-count">{{ op.countText }}</em>
             <em v-if="op.diameterText" class="postpress-diameter">{{ op.diameterText }}</em>
           </span>
+          <button v-if="customerPreview" type="button" class="customer-preview-mark" data-testid="customer-preview-mark" title="Заказчик приложил схему постпечати — сверьте с макетом" aria-label="Заказчик приложил схему постпечати — сверьте с макетом" @click.stop="customerPreviewOpen = true">схема</button>
         </small>
       </div>
       <div class="order-meta">
@@ -332,6 +366,24 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
           <span class="customer-comment-label">Комментарий заказчика</span>
           <span class="customer-comment-text">{{ customerComment }}</span>
         </div>
+        <div v-if="customerPreview" class="customer-preview" data-testid="customer-preview">
+          <div class="customer-preview-thumb" role="button" tabindex="0" aria-label="Открыть схему заказчика крупно" @click="customerPreviewOpen = true" @keydown.enter.prevent="customerPreviewOpen = true" @keydown.space.prevent="customerPreviewOpen = true">
+            <PreviewImage :src="customerPreview.url" alt="Схема заказчика" />
+          </div>
+          <div class="customer-preview-caption">
+            <span class="customer-comment-label">Схема заказчика</span>
+            <span v-if="customerPreviewOps" class="customer-preview-ops">{{ customerPreviewOps }}</span>
+            <span v-if="customerPreviewDate" class="customer-preview-date">загружена {{ customerPreviewDate }}</span>
+            <span class="customer-preview-hint">клик — открыть крупно</span>
+            <a v-if="customerPreviewSource" class="customer-preview-source" :href="customerPreviewSource" target="_blank" rel="noopener noreferrer">на sborka.ua ↗</a>
+          </div>
+        </div>
+        <Teleport to="body">
+          <div v-if="customerPreview && customerPreviewOpen" class="lightbox customer-preview-lightbox" data-testid="customer-preview-lightbox" @click.self="customerPreviewOpen = false">
+            <button type="button" class="icon-button" aria-label="Закрыть схему" @click="customerPreviewOpen = false">✕</button>
+            <PreviewImage :src="customerPreview.url" alt="Схема заказчика" :eager="true" />
+          </div>
+        </Teleport>
         <PreviewViewer :files="files" :has-production-pdf="Boolean(order.pdf_path || order.pdf_url)" @retry-layered-tiff="retryLayeredTiffPreview" />
         <div class="custom-preview" @dragover.prevent @drop.prevent="onDrop">
           <input ref="uploadInput" type="file" accept="image/jpeg,image/png" hidden @change="uploadPreview($event.target.files?.[0])">

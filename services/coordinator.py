@@ -25,6 +25,7 @@ from .batch_adapter import (
     completed_order_status as _completed_order_status,
 )
 from .callas_source_fix import ORDER_CHANGED_MESSAGE, mark_applied
+from .customer_preview import public_customer_preview
 from .domain import OrderStatus, RunStatus, validate_operator_transition
 from .dto import order_check_to_dto
 from .issue_groups import attach_issue_groups
@@ -36,6 +37,10 @@ from .repository import (
     RunRepository,
 )
 
+
+#: Сколько в конце проверки ждать ещё идущие запросы схем заказчика
+#: (services/customer_preview.py), прежде чем завершить запуск.
+CUSTOMER_PREVIEW_FINAL_WAIT_SECONDS = 10.0
 
 TERMINAL_RUN_STATUSES = {
     RunStatus.COMPLETED,
@@ -1156,7 +1161,11 @@ class RunCoordinator:
         # в том числе у заказов, ждущих подтверждения: адаптер сообщит об этом.
         set_listener = getattr(context.adapter, "set_order_info_listener", None)
         if callable(set_listener):
-            set_listener(lambda: self._apply_late_customer_comments(run_id, context))
+            set_listener(lambda: self._apply_late_sborka_data(run_id, context))
+        # Схема постпечатки заказчика скачивается в фоне и может прийти в любой момент.
+        set_preview_listener = getattr(context.adapter, "set_customer_preview_listener", None)
+        if callable(set_preview_listener):
+            set_preview_listener(lambda: self._apply_late_customer_previews(run_id, context))
 
         iterator_method = getattr(context.adapter, "iter_inspect_orders", None)
         known_total: int | None = None
@@ -1201,6 +1210,7 @@ class RunCoordinator:
                     # Если ответ Sborka пришёл между проверкой заказа и этим местом,
                     # слушатель его карточку ещё не видел: берём комментарий здесь.
                     self._take_customer_comment(context, order)
+                    self._take_customer_preview(context, order)
                     self._commit_order_locked(
                         run,
                         aggregate_id,
@@ -1296,6 +1306,15 @@ class RunCoordinator:
         finally:
             pool.shutdown()
 
+        # Схемы заказчика, которые ещё скачиваются: ждём недолго, чтобы они попали
+        # в карточки до завершения запуска (позже завершённый запуск не меняется).
+        wait_previews = getattr(context.adapter, "wait_customer_previews", None)
+        if callable(wait_previews):
+            try:
+                wait_previews(CUSTOMER_PREVIEW_FINAL_WAIT_SECONDS)
+            except Exception:  # noqa: BLE001 — схема не должна ломать запуск
+                logger.exception("order.customer_preview_wait_failed run_id=%s", run_id)
+
         with self._lock:
             run["total_orders"] = inspected
             if not inspected:
@@ -1324,6 +1343,84 @@ class RunCoordinator:
         if text:
             order.customer_comment = text
         return text or None
+
+    def _apply_late_sborka_data(self, run_id: str, context: _RunContext) -> None:
+        """The orderinfo answer arrived: comments now, scheme fetches start in the background."""
+        self._apply_late_customer_comments(run_id, context)
+        self._apply_late_customer_previews(run_id, context)
+
+    @staticmethod
+    def _take_customer_preview(context: _RunContext, order: OrderCheck) -> dict[str, Any] | None:
+        """Customer postpress scheme of *order* if already fetched (never waits)."""
+        getter = getattr(context.adapter, "customer_preview_for", None)
+        if not callable(getter):
+            return None
+        try:
+            preview = getter(order)
+        except Exception:  # noqa: BLE001 — Sborka must never break the check
+            logger.exception(
+                "order.customer_preview_failed order_id=%s", order.order_id
+            )
+            return None
+        if preview:
+            order.customer_preview = dict(preview)
+        return preview or None
+
+    def _apply_late_customer_previews(
+        self, run_id: str, context: _RunContext
+    ) -> None:
+        """Add a fetched customer scheme to cards already shown (like the comment).
+
+        Under the coordinator lock the scheme is set on the live ``OrderCheck`` and
+        on the stored order, persisted and pushed as ``order.customer_preview``.
+        """
+        with self._lock:
+            run = context.run
+            if (
+                self._contexts.get(run_id) is not context
+                or run["status"] in TERMINAL_RUN_STATUSES
+            ):
+                return
+            for key, order in list(context.orders.items()):
+                preview = self._take_customer_preview(context, order)
+                stored = run["orders"].get(key)
+                if not preview or stored is None:
+                    continue
+                current = stored.get("customer_preview") or {}
+                if (
+                    current.get("file") == preview.get("file")
+                    and current.get("last_modified") == preview.get("last_modified")
+                ):
+                    continue
+                updated = deepcopy(stored)
+                updated["customer_preview"] = dict(preview)
+                try:
+                    self._commit_order_locked(
+                        run,
+                        key,
+                        updated,
+                        "order.customer_preview",
+                        lambda dto, order=order: {
+                            "aggregate_id": order.aggregate_id,
+                            "order_id": order.order_id,
+                            "customer_id": order.customer_id,
+                            "status": dto.get("status"),
+                            "customer_preview": {
+                                name: dto["customer_preview"].get(name)
+                                for name in ("url", "source_url", "last_modified", "size")
+                            }
+                            | {"file": Path(str(dto["customer_preview"].get("file") or "")).name},
+                            "order": dto,
+                        },
+                        update_counts=False,
+                    )
+                except Exception:  # noqa: BLE001 — a lost scheme must not break the run
+                    logger.exception(
+                        "order.customer_preview_save_failed run_id=%s order_id=%s",
+                        run_id,
+                        order.order_id,
+                    )
+            self._changed.notify_all()
 
     def _apply_late_customer_comments(
         self, run_id: str, context: _RunContext
@@ -1774,6 +1871,12 @@ class RunCoordinator:
             )
         }
         context = self._live_context(run)
+        preview = dto.get("customer_preview")
+        if isinstance(preview, dict) and not preview.get("url"):
+            # Адрес ручки схемы заказчика нужен карточке и в событиях SSE.
+            dto["customer_preview"] = public_customer_preview(
+                preview, run["id"], str(dto.get("aggregate_id") or key)
+            )
         orders[key] = dto
         if context is not None:
             if had_previous:

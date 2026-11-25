@@ -83,6 +83,7 @@
 | `prepress:overprint` | callas | overprint итогового PDF (профиль `Image Magic/Overprint - any object`). `severity: "error"` — overprint не только на технических красках, заказ красный в любой политике (`count`/`pages` — блокирующие объекты); `severity: "info"` — только технические краски (белила, лак, контур реза…), статус не меняется (`count`/`pages` — технические). `data`: `by_kind` (`process`, `white`, `spot`, `technical_spot`, `unknown`), `blocking_count`, `technical_count`, `technical_pages`, `colorants`, `technical_colorants`, `samples`, `technical_samples`, `profile` |
 | `prepress:<check>:failed` | callas | проверка callas не выполнена (`detail` — ошибка); `prepress:overprint:failed` — с `severity: "warning"` (заказ не зелёный), остальные — `info` |
 | `ink:overflow` / `ink:light_areas` / `ink:underflow` | callas | флаги красочности (перелив, светлые участки) |
+| `customer_preview_found` | system | заказчик приложил в Sborka схему постпечатной обработки (`https://sborka.ua/preview/<filename>-preview.png`, событие `order.customer_preview`; `severity: "info"`, статус не меняет): `file` — имя сохранённой картинки, `data.source_url`, `last_modified`, `size`. Запрашивается только у заказов с постпечаткой |
 
 Флаги находок PitStop в `data`: `policy_demoted` + `original_severity` — понижено
 облегчённой политикой до инфо (статус не меняет); `added_by_fix` — находку целиком

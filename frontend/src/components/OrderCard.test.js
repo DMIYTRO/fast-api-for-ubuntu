@@ -380,6 +380,131 @@ describe("OrderCard customer comment", () => {
   });
 });
 
+describe("OrderCard customer preview (scheme)", () => {
+  const scheme = {
+    url: "/api/checks/run-1/orders/26255491/customer-preview",
+    last_modified: "Sat, 21 Nov 2026 09:55:27 GMT",
+    source_url: "https://sborka.ua/preview/abc.jpg",
+  };
+  const postpress = { operations: [{ kind: "drilling", label: "Сверление", count: 1, diameter_mm: 5 }] };
+
+  it.each([undefined, null, {}, { url: "" }])("is absent without a scheme (%j)", async (value) => {
+    const host = mount({ order_id: "1", status: "passed", files: [], customer_preview: value, postpress });
+    await nextTick();
+    expect(host.querySelector("[data-testid='customer-preview']")).toBeNull();
+    expect(host.querySelector("[data-testid='customer-preview-mark']")).toBeNull();
+    expect(host.textContent).not.toContain("Схема заказчика");
+  });
+
+  it("shows the thumbnail and caption right after the comment, before the previews", async () => {
+    const host = mount({ order_id: "26255491", status: "passed", files: [], customer_comment: "отвір по центру", customer_preview: scheme, postpress });
+    await nextTick();
+
+    const block = host.querySelector("[data-testid='customer-preview']");
+    expect(block).not.toBeNull();
+    expect(block.previousElementSibling).toBe(host.querySelector("[data-testid='customer-comment']"));
+    expect(block.compareDocumentPosition(host.querySelector(".custom-preview")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(block.querySelector(".customer-preview-thumb img")).not.toBeNull();
+    expect(block.textContent).toContain("Схема заказчика");
+    expect(block.querySelector(".customer-preview-ops").textContent).toBe("Сверление, 1 отв., Ø 5 мм");
+    const expected = new Date(scheme.last_modified).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+    expect(block.querySelector(".customer-preview-date").textContent).toBe(`загружена ${expected}`);
+    expect(block.textContent).toContain("клик — открыть крупно");
+    const link = block.querySelector(".customer-preview-source");
+    expect(link.getAttribute("href")).toBe(scheme.source_url);
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
+  });
+
+  it.each([null, "not a date"])("omits the date when last_modified is %j", async (value) => {
+    const host = mount({ order_id: "1", status: "passed", files: [], customer_preview: { ...scheme, last_modified: value } });
+    await nextTick();
+    expect(host.querySelector(".customer-preview-date")).toBeNull();
+    expect(host.querySelector("[data-testid='customer-preview']").textContent).not.toContain("загружена");
+  });
+
+  it("opens a lightbox on click and Enter, closes on ✕, outside click and Esc", async () => {
+    const host = mount({ order_id: "1", status: "passed", files: [], customer_preview: scheme });
+    await nextTick();
+    const lightbox = () => document.body.querySelector("[data-testid='customer-preview-lightbox']");
+    expect(lightbox()).toBeNull();
+
+    host.querySelector(".customer-preview-thumb").click();
+    await nextTick();
+    expect(lightbox()).not.toBeNull();
+    expect(lightbox().classList.contains("lightbox")).toBe(true);
+    expect(lightbox().querySelector("img")).not.toBeNull();
+    lightbox().querySelector(".icon-button").click();
+    await nextTick();
+    expect(lightbox()).toBeNull();
+
+    host.querySelector(".customer-preview-thumb").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await nextTick();
+    expect(lightbox()).not.toBeNull();
+    lightbox().click();
+    await nextTick();
+    expect(lightbox()).toBeNull();
+
+    host.querySelector(".customer-preview-thumb").click();
+    await nextTick();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await nextTick();
+    expect(lightbox()).toBeNull();
+  });
+
+  it("marks the header and opens the scheme from the mark", async () => {
+    const host = mount({ order_id: "1", status: "passed", files: [], customer_preview: scheme, postpress });
+    await nextTick();
+    const mark = host.querySelector(".customer-line [data-testid='customer-preview-mark']");
+    expect(mark).not.toBeNull();
+    expect(mark.textContent.trim()).toBe("схема");
+    expect(mark.getAttribute("title")).toBe("Заказчик приложил схему постпечати — сверьте с макетом");
+    expect(mark.previousElementSibling.classList.contains("postpress-indicator")).toBe(true);
+    mark.click();
+    await nextTick();
+    expect(document.body.querySelector("[data-testid='customer-preview-lightbox']")).not.toBeNull();
+  });
+
+  it("appears on an already shown card when a late scheme arrives", async () => {
+    const order = { order_id: "1", status: "waiting_confirmation", files: [] };
+    const host = document.createElement("div");
+    document.body.append(host);
+    const { reactive } = await import("vue");
+    const state = reactive({ order });
+    const app = createApp({ render: () => h(OrderCard, { order: state.order, runId: "run-1", selected: false, reasons: [] }) });
+    app.mount(host);
+    mounted.push(() => { app.unmount(); host.remove(); });
+    await nextTick();
+    expect(host.querySelector("[data-testid='customer-preview']")).toBeNull();
+
+    state.order = { ...order, customer_preview: scheme };
+    await nextTick();
+    expect(host.querySelector("[data-testid='customer-preview']")).not.toBeNull();
+    expect(host.querySelector("[data-testid='customer-preview-mark']")).not.toBeNull();
+  });
+
+  it("never renders HTML from the date and drops a non-http source link", async () => {
+    const host = mount({
+      order_id: "1", status: "passed", files: [],
+      customer_preview: { url: scheme.url, last_modified: "<img src=x onerror=alert(1)>", source_url: "javascript:alert(1)" },
+    });
+    await nextTick();
+    const block = host.querySelector("[data-testid='customer-preview']");
+    expect(block.querySelectorAll("img")).toHaveLength(1); // only the thumbnail
+    expect(block.querySelector("a")).toBeNull();
+    expect(block.innerHTML).not.toContain("onerror");
+  });
+
+  it("keeps an HTML-looking source URL as an attribute only", async () => {
+    const source = "https://sborka.ua/p/\"><script>alert(1)</script>";
+    const host = mount({ order_id: "1", status: "passed", files: [], customer_preview: { ...scheme, source_url: source } });
+    await nextTick();
+    const block = host.querySelector("[data-testid='customer-preview']");
+    expect(block.querySelector("script")).toBeNull();
+    expect(block.querySelector(".customer-preview-source").getAttribute("href")).toBe(source);
+  });
+});
+
 describe("OrderCard return comment summary", () => {
   it("shows the pre-selected return reason next to the comment button", async () => {
     const host = mount({

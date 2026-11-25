@@ -179,6 +179,9 @@ def order_check_to_dto(
         result["postpress"] = with_postpress_operations(value.postpress)
     if value.customer_comment:
         result["customer_comment"] = value.customer_comment
+    if value.customer_preview:
+        # ``url`` добавляет координатор (нужен run_id): public_customer_preview.
+        result["customer_preview"] = dict(value.customer_preview)
     if value.kit is not None:
         result["kit"] = value.kit
     if value.sborka_cancelled is not None:

@@ -66,6 +66,7 @@ JOURNAL_EVENT_TYPES: tuple[str, ...] = (
     "order.forced_print",
     "order.print_build",
     "order.file_transition_rolled_back",
+    "order.customer_preview",
 )
 
 #: Локальные коды нарушения правила страниц (жёсткая ошибка, см. CLAUDE.md).
@@ -110,6 +111,7 @@ _TRAILING_COUNT_RE = re.compile(r"\((\d+)(\s*[x×])(?=[\s)])([^()]*)\)([.\s]*)$"
 _CYRILLIC_START_RE = re.compile(r"^[А-Яа-яЁё]")
 # An absolute path inside free text (error messages): keep only the last segment.
 _EMBEDDED_PATH_RE = re.compile(r"(?<![\w.~])/(?:[^/\s'\"]+/)+([^/\s'\"]*)")
+_URL_KEYS = frozenset({"source_url"})
 _PATH_KEYS = frozenset({"path", "pdf_path", "baseline_pdf", "content_path", "source_path", "preview_path"})
 
 
@@ -179,6 +181,8 @@ def _clean(value: Any, key: str | None = None) -> Any:
     if isinstance(value, PurePath):
         return value.name
     if isinstance(value, str):
+        if key in _URL_KEYS and value.startswith(("https://", "http://")):
+            return value  # публичный адрес (схема заказчика в Sborka), не путь
         return _name(value) if key in _PATH_KEYS else _scrub(value)
     if value is None or isinstance(value, (bool, int, float)):
         return value
@@ -517,6 +521,27 @@ def _issues(
         resolved.append(entry)
     ordered = sorted(current, key=lambda item: (_SEVERITY_RANK.get(item["severity"], 3), item["source"] != "local"))
     return ordered + sorted(resolved, key=lambda item: _SEVERITY_RANK.get(item["severity"], 3))
+
+
+def _customer_preview_entries(events: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Схема постпечатки от заказчика найдена в Sborka (последнее событие)."""
+    found = [item for item in events if item["type"] == "order.customer_preview"]
+    if not found:
+        return []
+    event = found[-1]
+    data = _mapping(event["data"])
+    preview = _mapping(data.get("customer_preview")) or _mapping(
+        _mapping(data.get("order")).get("customer_preview")
+    )
+    return [_entry(
+        KIND_ISSUE, "customer_preview_found", "system",
+        "Заказчик приложил схему постпечатной обработки",
+        severity="info", file=_name(preview.get("file")), at=event["at"],
+        data={
+            "event_id": event["id"], "source_url": preview.get("source_url"),
+            "last_modified": preview.get("last_modified"), "size": preview.get("size"),
+        },
+    )]
 
 
 # --------------------------------------------------------------------- auto changes
@@ -1073,6 +1098,7 @@ def build_order_journal(
     revised_at = revision_snapshots[-1][1] if revision_snapshots else None
 
     issues = _issues(order, initial, checked_at, revised_at)
+    issues.extend(_guard("customer_preview", lambda: _customer_preview_entries(normalized)))
     auto = _auto_changes([
         *([(initial, checked_at)] if initial else []),
         *revision_snapshots,

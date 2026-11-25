@@ -37,6 +37,12 @@ from services.forced_print import (
 )
 from services.pdf_routing import CHECKED_FOLDER, FAILED_FOLDER, PRINT_FOLDER, completed_status, route_pdf
 from services.order_kits import kits_from_order_info
+from services.customer_preview import (
+    CustomerPreviewFetcher,
+    derive_filename,
+    has_postpress,
+    valid_filename,
+)
 from services.postpress import normalize_customer_comment, normalize_postpress
 from services.sborka_cancel import cancelled_orders, move_cancelled_order
 
@@ -139,6 +145,7 @@ class BatchProcessorAdapter:
         auto_bleed: Callable[[FileCheck, BatchProcessor], FileCheck | None] | None = None,
         input_check_policy: str = POLICY_FULL,
         strict_source_dirs: Sequence[str] = (),
+        customer_preview_fetcher: CustomerPreviewFetcher | None = None,
     ) -> None:
         self.options = options
         # Политика проверки заказов (services/check_policy.py). По умолчанию — полная,
@@ -168,6 +175,14 @@ class BatchProcessorAdapter:
         # Вызывается (из потока Sborka), когда ответ orderinfo получен: проверка
         # дополняет уже показанные карточки комментарием заказчика.
         self._order_info_listener: Callable[[], None] | None = None
+        # Схема постпечатки от заказчика (services/customer_preview.py): скачивается в
+        # фоне для заказов с постпечаткой; None — функция выключена.
+        self.customer_preview_fetcher = customer_preview_fetcher
+        self._customer_preview_lock = threading.Lock()
+        # order_id -> событие «запрос завершён» (None — запрашивать не нужно).
+        self._customer_preview_jobs: dict[str, threading.Event | None] = {}
+        self._customer_previews: dict[str, dict[str, Any]] = {}
+        self._customer_preview_listener: Callable[[], None] | None = None
         profile = get_profile(options.direction)
         if correction_limit_mm is not None or correction_confirm_max_mm is not None:
             profile = profile.with_correction_limit(
@@ -274,6 +289,73 @@ class BatchProcessorAdapter:
             return None
         return normalize_customer_comment(record.get("comment_client"))
 
+    def set_customer_preview_listener(self, listener: Callable[[], None] | None) -> None:
+        """Register a callback for the moment a customer postpress scheme was saved."""
+        self._customer_preview_listener = listener
+
+    def customer_preview_for(self, order: OrderCheck) -> dict[str, Any] | None:
+        """Saved customer scheme of *order*, if already fetched (never waits).
+
+        Once the orderinfo answer is here, also starts the background fetch for an
+        eligible order that has none yet, so a waiting order is not left out.
+        """
+        future = self._order_info_future
+        if (
+            self.customer_preview_fetcher is not None
+            and future is not None
+            and future.done()
+            and future.exception() is None
+        ):
+            record = self._order_info_index(future.result()).get(order.order_id)
+            if record is not None:
+                self._ensure_customer_preview(order, record)
+        with self._customer_preview_lock:
+            preview = self._customer_previews.get(order.order_id)
+        return dict(preview) if preview else None
+
+    def wait_customer_previews(self, timeout: float) -> None:
+        """Wait (bounded) for running scheme fetches, e.g. before a run is completed."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._customer_preview_lock:
+            pending = [event for event in self._customer_preview_jobs.values() if event is not None]
+        for event in pending:
+            if not event.wait(max(0.0, deadline - time.monotonic())):
+                return
+
+    def _ensure_customer_preview(self, order: OrderCheck, record: dict[str, Any]) -> None:
+        """Start the background fetch of the customer scheme once per order."""
+        fetcher = self.customer_preview_fetcher
+        if fetcher is None:
+            return
+        with self._customer_preview_lock:
+            if order.order_id in self._customer_preview_jobs:
+                return
+            filename = None
+            if has_postpress(normalize_postpress(record.get("post_text"))):
+                filename = (
+                    valid_filename(record.get("filename"))
+                    or order.sborka_filename
+                    or derive_filename(item.path for item in order.files)
+                )
+            if filename is None:
+                self._customer_preview_jobs[order.order_id] = None
+                return
+            done = threading.Event()
+            self._customer_preview_jobs[order.order_id] = done
+
+        def finished(result: dict[str, Any] | None) -> None:
+            try:
+                if result:
+                    with self._customer_preview_lock:
+                        self._customer_previews[order.order_id] = result
+                    listener = self._customer_preview_listener
+                    if listener is not None:
+                        listener()
+            finally:
+                done.set()
+
+        fetcher.submit(order.order_id, filename, self.input_dir, finished)
+
     def _order_info_index(self, records: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         with self._order_info_lock:
             if self._order_info_by_id is None:
@@ -360,6 +442,10 @@ class BatchProcessorAdapter:
                 comment = normalize_customer_comment(record.get("comment_client"))
                 if comment:
                     order.customer_comment = comment
+                filename = valid_filename(record.get("filename"))
+                if filename:
+                    order.sborka_filename = filename
+                self._ensure_customer_preview(order, record)
             if kit is not None:
                 order.kit = dict(kit)
         except Exception as exc:

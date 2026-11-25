@@ -64,6 +64,14 @@ describe("connectRunEvents", () => {
     }));
   });
 
+  it("delivers the late customer preview (scheme) update to the store", () => {
+    const onEvent = vi.fn();
+    connectRunEvents("run-1", { onEvent });
+    const order = { order_id: "1", customer_preview: { url: "/api/checks/run-1/orders/1/customer-preview", last_modified: null } };
+    FakeEventSource.instances[0].emit("order.customer_preview", { order_id: "1", order }, 10);
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "order.customer_preview", event_id: "10", order }));
+  });
+
   it("tracks ids of default (unnamed) messages and never moves the cursor backwards", () => {
     connectRunEvents("run-1", { onEvent: vi.fn() });
     const first = FakeEventSource.instances[0];
