@@ -8,6 +8,8 @@ import subprocess
 from collections.abc import Sequence
 from typing import Any
 
+from core.tiff_repair import substitute_magick_inputs
+
 
 DEFAULT_TOOL_TIMEOUT_SECONDS = 300.0
 
@@ -40,6 +42,9 @@ def run_command(
     """Run an argv-only command with a deadline and POSIX process isolation."""
     if not command or not all(isinstance(value, str) for value in command):
         raise ValueError("Команда внешнего инструмента должна быть списком строк.")
+    # TIFF с пустым каталогом после изображения ImageMagick не читает: подставляем
+    # копию без него (исходник не меняется), см. core/tiff_repair.py.
+    command = substitute_magick_inputs(list(command))
     resolved_timeout = tool_timeout_seconds() if timeout is None else timeout
     try:
         if os.name != "posix":
