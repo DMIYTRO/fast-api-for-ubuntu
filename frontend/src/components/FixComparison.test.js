@@ -269,3 +269,21 @@ describe("FixComparison", () => {
     });
   });
 });
+
+describe("FixComparison when the Callas profile changed nothing", () => {
+  it("shows a calm note instead of an error and offers no retry", async () => {
+    const host = mount({ comparison: { status: "failed", plan: { key: "downsample_images", title: "Уменьшить разрешение до 300 ppi" }, error: "Изображений выше 300 ppi в PDF не найдено: профиль ничего не изменил.", error_code: "callas_no_change" } });
+    await nextTick();
+    expect(host.querySelector(".fix-error")).toBeNull();
+    expect(host.querySelector("[role=alert]")).toBeNull();
+    expect(host.querySelector(".fix-no-change").textContent).toContain("Менять нечего.");
+    expect(host.querySelector(".fix-status").textContent).toContain("Без изменений");
+    expect(byText(host, "Повторить")).toBeUndefined();
+  });
+  it("keeps a real failure as an error", async () => {
+    const host = mount({ comparison: { status: "failed", plan: { key: "x", title: "X" }, error: "Callas недоступен" } });
+    await nextTick();
+    expect(host.querySelector(".fix-error").textContent).toContain("Callas недоступен");
+    expect(host.querySelector(".fix-no-change")).toBeNull();
+  });
+});

@@ -21,12 +21,19 @@ const props = defineProps({
   fixes: { type: Array, default: () => [] },
   // Подмножество fixes, где проверка нашла что исправлять: такие кнопки подсвечены.
   recommended: { type: Array, default: () => [] },
+  // Кнопки, запускать которые бессмысленно: { key: причина } — кнопка неактивна, причина в подсказке.
+  disabledFixes: { type: Object, default: () => ({}) },
 });
 const extraButtons = computed(() => props.fixes.filter((key) => FIX_BUTTONS[key]).map((key) => {
-  const recommended = props.recommended.includes(key);
   const base = FIX_BUTTONS[key];
-  return { key, ...base, recommended, title: recommended ? base.title : `${NOT_DETECTED_NOTE}. ${base.title}` };
+  const disabledReason = props.disabledFixes?.[key] || "";
+  if (disabledReason) return { key, ...base, recommended: false, disabledReason, title: `${disabledReason}. ${base.title}` };
+  const recommended = props.recommended.includes(key);
+  return { key, ...base, recommended, disabledReason: "", title: recommended ? base.title : `${NOT_DETECTED_NOTE}. ${base.title}` };
 }));
+
+// Отключённые кнопки не показывают подсказку при наведении во всех браузерах — причина видна текстом.
+const disabledNotes = computed(() => (canPickPlan.value ? extraButtons.value.filter((item) => item.disabledReason) : []));
 
 // «applied» — принятое исправление стало новой ревизией PDF (или исходный файл заказа теперь
 // собирается из исправленного PDF, либо снова из исходника): карточка заказа (статус, замечания,
@@ -205,7 +212,8 @@ onBeforeUnmount(() => {
         :class="[`callas-fix-${item.key}`, { recommended: item.recommended }]"
         :title="item.title"
         :aria-label="item.label"
-        :disabled="busy"
+        :disabled="busy || Boolean(item.disabledReason)"
+        :data-disabled-reason="item.disabledReason || null"
         @click="start(item.key)"
       >
         <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
@@ -227,6 +235,7 @@ onBeforeUnmount(() => {
         <i v-if="item.recommended" class="fix-recommended-dot" aria-label="рекомендовано проверкой" title="Проверка нашла, что исправлять"></i>
       </button>
     </div>
+    <p v-for="item in disabledNotes" :key="`off-${item.key}`" class="callas-fix-disabled-note muted" :data-fix="item.key">{{ item.label }}: {{ item.disabledReason }}.</p>
     <p v-if="error" class="form-error" role="alert">{{ error }}</p>
   </div>
 </template>

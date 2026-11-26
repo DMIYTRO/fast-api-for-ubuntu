@@ -4,7 +4,7 @@ import OrderCard from "./OrderCard.vue";
 import CallasFixControl from "./CallasFixControl.vue";
 import FixComparison from "./FixComparison.vue";
 import { api } from "../services/api.js";
-import { ALL_FIXES, NOT_DETECTED_NOTE, availableFixes, isOverprintGroup, overprintNotices, visiblePrepressNotices, blackFixAvailable, callasSourceFixTitle, fontLabel, iccOff, inkCoverageGroup, prepressDisplay, prepressNotices, recommendedFixes, sizeFixBadge } from "./prepress.js";
+import { ALL_FIXES, DOWNSAMPLED_AT_BUILD_NOTE, NOT_DETECTED_NOTE, RASTER_AT_MOST_300_NOTE, availableFixes, disabledFixes, isOverprintGroup, overprintNotices, visiblePrepressNotices, blackFixAvailable, callasSourceFixTitle, fontLabel, iccOff, inkCoverageGroup, prepressDisplay, prepressNotices, recommendedFixes, sizeFixBadge } from "./prepress.js";
 
 const mounted = [];
 function mountComponent(component, props) {
@@ -461,5 +461,22 @@ describe("sizeFixBadge for other Callas plans", () => {
     const badge = sizeFixBadge({ files: [{ name: "face.pdf", callas_source_fix: { status: "accepted", plan: "fonts_to_outlines", plan_title: "Перевод шрифтов в кривые" } }] });
     expect(badge.label).toBe("Исправлено Callas");
     expect(badge.title).toContain("Перевод шрифтов в кривые");
+  });
+});
+
+describe("disabledFixes", () => {
+  const ppi = (count) => ({ high_ppi: { status: "ok", limit: 500, count } });
+  it("disables downsampling when every raster was already reduced to 300 dpi at build", () => {
+    const order = { prepress: ppi(0), files: [{ filename: "a-face.tif", dpi_x: 762, dpi_y: 762, downsampled_from_dpi: 762 }] };
+    expect(disabledFixes(order).downsample_images).toBe(DOWNSAMPLED_AT_BUILD_NOTE);
+  });
+  it("disables it for rasters that are not above 300 dpi", () => {
+    expect(disabledFixes({ prepress: ppi(0), files: [{ filename: "a.jpg", dpi_x: 300, dpi_y: 300 }] }).downsample_images).toBe(RASTER_AT_MOST_300_NOTE);
+  });
+  it("keeps it for a client PDF, a 400 dpi raster, images above the limit or no check", () => {
+    expect(disabledFixes({ prepress: ppi(0), files: [{ filename: "a.pdf" }] })).toEqual({});
+    expect(disabledFixes({ prepress: ppi(0), files: [{ filename: "a.tif", dpi_x: 400, dpi_y: 400 }] })).toEqual({});
+    expect(disabledFixes({ prepress: ppi(2), files: [{ filename: "a.tif", downsampled_from_dpi: 900 }] })).toEqual({});
+    expect(disabledFixes({ files: [{ filename: "a.tif", downsampled_from_dpi: 900 }] })).toEqual({});
   });
 });

@@ -112,14 +112,17 @@ const bleedOnly = computed(() => {
   return typeof value === "boolean" ? value : null;
 });
 const bleedReasons = computed(() => (Array.isArray(summary.value.bleed_only_reasons) ? summary.value.bleed_only_reasons.filter(Boolean) : []));
-const statusText = computed(() => ({
+// Профиль callas ничего не изменил (например, растр уже уменьшен до 300 ppi при сборке):
+// исправлять было нечего — это не сбой, повторять незачем.
+const noChange = computed(() => status.value === "failed" && props.comparison.error_code === "callas_no_change");
+const statusText = computed(() => noChange.value ? "Без изменений" : ({
   processing: "Обрабатывается",
   ready: "Ждёт решения",
   failed: "Ошибка",
   accepted: "Принято",
   rejected: "Отклонено",
 }[status.value] || status.value));
-const statusMark = computed(() => ({ processing: "…", ready: "?", failed: "✕", accepted: "✓", rejected: "—" }[status.value] || ""));
+const statusMark = computed(() => noChange.value ? "—" : ({ processing: "…", ready: "?", failed: "✕", accepted: "✓", rejected: "—" }[status.value] || ""));
 
 function open(tile, event) {
   if (!tile.url) return;
@@ -134,7 +137,7 @@ function close() {
 </script>
 
 <template>
-  <section class="fix-comparison" :class="`fix-${status}`" :aria-label="`Исправление Callas: ${planTitle}`" :aria-busy="status === 'processing' || busy">
+  <section class="fix-comparison" :class="noChange ? 'fix-no-change-state' : `fix-${status}`" :aria-label="`Исправление Callas: ${planTitle}`" :aria-busy="status === 'processing' || busy">
     <header class="fix-head">
       <div>
         <p class="section-title">Исправление Callas · до и после</p>
@@ -145,7 +148,8 @@ function close() {
 
     <p v-if="status === 'processing'" class="fix-note" role="status"><span class="spinner" aria-hidden="true"></span> Callas обрабатывает макет, это может занять несколько минут…</p>
 
-    <div v-if="status === 'failed'" class="fix-error" role="alert">
+    <p v-if="noChange" class="fix-no-change" role="status"><b>Менять нечего.</b> {{ comparison.error }}</p>
+    <div v-else-if="status === 'failed'" class="fix-error" role="alert">
       <p><b>Исправление не удалось.</b> {{ comparison.error || "Callas вернул ошибку без описания." }}</p>
       <button type="button" class="button secondary small" :disabled="busy" aria-label="Повторить исправление Callas" @click="emit('retry')">Повторить</button>
     </div>

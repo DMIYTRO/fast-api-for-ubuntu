@@ -247,3 +247,15 @@ describe("CallasFixControl", () => {
     expect(host.querySelector(".callas-fix")).toBeNull();
   });
 });
+
+describe("CallasFixControl with a pointless fix", () => {
+  it("disables the button and shows why", async () => {
+    const { host } = mount({ fixes: ["downsample_images", "reduce_tac"], disabledFixes: { downsample_images: "Уже уменьшено до 300 dpi при сборке PDF: менять нечего" } });
+    await flush();
+    const down = host.querySelector(".callas-fix-downsample_images");
+    expect(down.disabled).toBe(true);
+    expect(down.title).toContain("Уже уменьшено до 300 dpi");
+    expect(host.querySelector(".callas-fix-reduce_tac").disabled).toBe(false);
+    expect(host.querySelector(".callas-fix-disabled-note").textContent).toContain("Уже уменьшено до 300 dpi при сборке PDF");
+  });
+});

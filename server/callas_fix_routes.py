@@ -128,7 +128,8 @@ def create_callas_fix_router(*, protected: Callable[..., Any], resolve_order: Re
         finally:
             state = service.read_state(pdf) or {}
             record(request, run_id, order, "order.callas_fix.finished",
-                   plan=plan, file_id=file_id, status=state.get("status", "failed"))
+                   plan=plan, file_id=file_id, status=state.get("status", "failed"),
+                   **({"error_code": state["error_code"]} if state.get("error_code") else {}))
 
     @router.get("/api/callas/plans", dependencies=[Depends(protected)])
     def callas_plans(request: Request, direction: str | None = None) -> dict[str, Any]:

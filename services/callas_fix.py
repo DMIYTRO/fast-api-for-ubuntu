@@ -65,6 +65,10 @@ STATUS_ACCEPTED = "accepted"
 STATUS_REJECTED = "rejected"
 
 
+#: Код результата «профиль ничего не изменил»: исправлять было нечего, это не сбой.
+NO_CHANGE_CODE = "callas_no_change"
+
+
 class CallasFixError(Exception):
     """Ошибка, текст которой можно показать оператору."""
 
@@ -236,6 +240,8 @@ def comparison_payload(
         "applied": applied,
         "plan": state.get("plan") or None,
         "error": state.get("error"),
+        # ``callas_no_change`` — профиль ничего не изменил: интерфейс показывает это не как ошибку.
+        "error_code": state.get("error_code"),
         "decision": state.get("decision"),
         "started_at": state.get("started_at"),
         "finished_at": state.get("finished_at"),
@@ -510,7 +516,7 @@ class CallasFixService:
             if plan.unfixable_message and errors_left and applied == 0:
                 raise CallasFixError(plan.unfixable_message, code="callas_unfixable")
             if plan.no_change_message and not changed and not errors_left:
-                raise CallasFixError(plan.no_change_message, code="callas_no_change")
+                raise CallasFixError(plan.no_change_message, code=NO_CHANGE_CODE)
             fixed = directory / FIXED_PDF_NAME
             shutil.copyfile(result.output_pdf, fixed)
             compare_dir = directory / COMPARE_DIR
@@ -573,17 +579,23 @@ class CallasFixService:
                 status=STATUS_READY,
                 finished_at=_now(),
                 error=None,
+                error_code=None,
                 images=images,
                 summary=summary,
                 fixed_pdf=FIXED_PDF_NAME,
             )
             _write_state(directory, state)
         except Exception as exc:  # noqa: BLE001 — любое сбой должен дойти до оператора
-            logger.exception("callas_fix.failed pdf=%s plan=%s", pdf.name, plan_key)
+            error_code = getattr(exc, "code", None) if isinstance(exc, CallasFixError) else None
+            if error_code == NO_CHANGE_CODE:
+                # Не сбой: исправлять нечего (например, растр уже уменьшен до 300 ppi при сборке).
+                logger.info("callas_fix.no_change pdf=%s plan=%s", pdf.name, plan_key)
+            else:
+                logger.exception("callas_fix.failed pdf=%s plan=%s", pdf.name, plan_key)
             message = str(exc).strip() or exc.__class__.__name__
             if not isinstance(exc, (CallasError, FixCompareError, CallasFixError)):
                 message = f"Исправление не выполнено: {message}"
-            state.update(status=STATUS_FAILED, finished_at=_now(), error=message)
+            state.update(status=STATUS_FAILED, finished_at=_now(), error=message, error_code=error_code)
             _write_state(directory, state)
         finally:
             with self._lock:

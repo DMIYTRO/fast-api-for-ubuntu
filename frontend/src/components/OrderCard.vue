@@ -16,7 +16,7 @@ import { actionResultView } from "./actionResult.js";
 // Колонка «Норма» в таблице параметров пока скрыта; вернуть — поставить true.
 const SHOW_NORM = false;
 import InkCoverage from "./InkCoverage.vue";
-import { availableFixes, checkPolicyBadge, fontLabel, fontsInfo, iccOff, isOverprintGroup, recommendedFixes, sizeFixBadge, visiblePrepressNotices } from "./prepress.js";
+import { availableFixes, checkPolicyBadge, disabledFixes, fontLabel, fontsInfo, iccOff, isOverprintGroup, recommendedFixes, sizeFixBadge, visiblePrepressNotices } from "./prepress.js";
 import { inkCoverageFlagLabel, inkCoverageMainFlag, inkCoverageTitle } from "./inkCoverage.js";
 
 const props = defineProps({ order: Object, runId: String, selected: Boolean, reasons: Array, paidDesign: { type: Boolean, default: true }, designCost: { type: String, default: "0" } });
@@ -103,6 +103,7 @@ const prepressHasWarning = computed(() => prepressNotes.value.some((note) => not
 const prepressNotesClass = computed(() => prepressHasError.value ? "errors" : prepressHasWarning.value ? "warnings" : "info-notes");
 const fixButtons = computed(() => availableFixes(props.order));
 const recommendedButtons = computed(() => recommendedFixes(props.order));
+const disabledButtons = computed(() => disabledFixes(props.order));
 // Overprint показывается строкой допечатного блока (prepressNotes), здесь не дублируется.
 const localIssueGroups = computed(() => orderIssueGroups({ ...props.order, files: files.value }).filter((group) => group.source !== "pitstop" && !isOverprintGroup(group)));
 const groupedErrors = computed(() => localIssueGroups.value.filter((group) => group.severity === "error"));
@@ -458,7 +459,7 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
         <div v-if="successful && !groupedErrors.length && !groupedWarnings.length" class="issue-list success-note"><strong>Заказ соответствует требованиям допечатной подготовки.</strong></div>
         <PitStopReport v-if="order.pitstop" :pitstop="order.pitstop" section-title="Проверка PDF из первоначальной обработки" />
         <PitStopReport v-if="order.action_result?.pitstop" :pitstop="order.action_result.pitstop" section-title="Повторная проверка печатного PDF из просмотренных TIFF" />
-        <CallasFixControl v-if="order.pdf_path || order.pdf_url || order.callas_fix?.comparison" :run-id="runId" :order-id="actionId" :initial="order.callas_fix" :can-start="Boolean(order.pdf_path || order.pdf_url)" :fixes="fixButtons" :recommended="recommendedButtons" @applied="emit('fix-applied')" />
+        <CallasFixControl v-if="order.pdf_path || order.pdf_url || order.callas_fix?.comparison" :run-id="runId" :order-id="actionId" :initial="order.callas_fix" :can-start="Boolean(order.pdf_path || order.pdf_url)" :fixes="fixButtons" :recommended="recommendedButtons" :disabled-fixes="disabledButtons" @applied="emit('fix-applied')" />
         <LowResPreview v-if="runId && (order.pdf_path || order.pdf_url)" :run-id="runId" :order-id="String(actionId)" :order="order" @attached="onLowResAttached" />
         <CallasFixControl
           v-for="file in sourceFixFiles"

@@ -495,3 +495,16 @@ def test_cmyk_plan_on_cmyk_pdf_skips_conversion(tmp_path):
     state = env.run("reduce_tac")
     assert state["status"] == "ready"
     assert not converter.sources and "rgb_converted" not in state["summary"]
+
+
+def test_no_change_is_marked_with_its_code_and_not_logged_as_failure(env, caplog):
+    """«Профиль ничего не изменил» — не сбой: состояние несёт код, журнал — без traceback."""
+    from services.callas_fix import NO_CHANGE_CODE, comparison_payload
+
+    env.profiles[TAC] = lambda pdf, mode: {"exit_code": 0, "xml": "<r/>"}
+    with caplog.at_level("INFO", logger="services.callas_fix"):
+        state = env.run("reduce_tac")
+    assert state["status"] == "failed" and state["error_code"] == NO_CHANGE_CODE
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]
+    assert any("callas_fix.no_change" in r.getMessage() for r in caplog.records)
+    assert comparison_payload(state, "/base")["error_code"] == NO_CHANGE_CODE

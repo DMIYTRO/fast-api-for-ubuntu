@@ -271,8 +271,8 @@ export function prepressNotices(order) {
   return notices;
 }
 
-// Кнопки исправлений Callas показываются всегда (при наличии PDF) и всегда активны.
-// Проверка только подсвечивает «рекомендованные» — те, где она нашла что исправлять.
+// Кнопки исправлений Callas показываются всегда (при наличии PDF). Проверка подсвечивает
+// «рекомендованные» — те, где она нашла что исправлять; заведомо бесполезные отключает (disabledFixes).
 // Если исправлять нечего, профиль сам сообщит об этом (fixups_applied == 0) и ничего не изменит.
 export const ALL_FIXES = ["fonts_to_outlines", "black_to_rich", "remove_clipping", "downsample_images", "reduce_tac"];
 export const NOT_DETECTED_NOTE = "Проверка не нашла, что исправлять: профиль можно запустить, лишнего он не изменит";
@@ -293,6 +293,32 @@ export function recommendedFixes(order) {
   if (ok(ppi) && ppi.count > 0) fixes.push("downsample_images");
   if (inkCoverageGroup(order)) fixes.push("reduce_tac");
   return fixes;
+}
+
+const RASTER_EXT = /\.(tiff?|jpe?g|png)$/i;
+const rasterFileName = (file) => String(file?.filename || file?.name || file?.path || "");
+const fileMaxDpi = (file) => Math.max(Number(file?.dpi_x ?? file?.dpi) || 0, Number(file?.dpi_y ?? file?.dpi) || 0);
+// Растр, который в собранном PDF не выше 300 dpi: уменьшен при сборке (выше IMAGE_MAGIC_MAX_DPI)
+// или изначально не выше 300 dpi без коррекции размера.
+const rasterAtMost300 = (file) => RASTER_EXT.test(rasterFileName(file))
+  && (Number(file?.downsampled_from_dpi) > 0 || (fileMaxDpi(file) > 0 && fileMaxDpi(file) <= 300 && !file?.needs_resample));
+
+export const DOWNSAMPLED_AT_BUILD_NOTE = "Уже уменьшено до 300 dpi при сборке PDF: менять нечего";
+export const RASTER_AT_MOST_300_NOTE = "Разрешение растров не выше 300 dpi: менять нечего";
+
+// Кнопки, которые запускать бессмысленно: { key: причина }. «Уменьшить разрешение» отключается,
+// только если проверка callas не нашла изображений выше порога и все файлы заказа — растры,
+// которые в PDF уже не выше 300 dpi (PDF клиента может содержать 300–500 ppi — его не трогаем).
+export function disabledFixes(order) {
+  const disabled = {};
+  const ppi = order?.prepress?.high_ppi;
+  const files = order?.files || [];
+  if (ok(ppi) && !ppi.count && files.length && files.every(rasterAtMost300)) {
+    disabled.downsample_images = files.some((file) => Number(file?.downsampled_from_dpi) > 0)
+      ? DOWNSAMPLED_AT_BUILD_NOTE
+      : RASTER_AT_MOST_300_NOTE;
+  }
+  return disabled;
 }
 
 export function availableFixes() {
