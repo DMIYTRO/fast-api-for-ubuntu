@@ -190,30 +190,19 @@ class PrintBuildWorkflowTests(forced.ForcedPrintWorkflowTests):
         self.assertEqual(self.print_orders(run_id, "26252239", confirm=False)["26252239"]["status"], "prepared")
         self.assertEqual(self.orders(run_id)["26252239"]["status"], "accepted_for_print")
 
-    def test_built_pdf_with_errors_needs_the_red_confirmation(self):
+    def test_built_pdf_with_overprint_is_yellow_and_printed_without_confirmation(self):
+        # Запуск 5beedd75 (27.11): профиль RGB → CMYK ставит overprint на чёрное, и 35
+        # собранных заказов краснели и не уходили в печать. Overprint — только предупреждение.
         run_id, _order = self.yellow_run()
-        self.prepress.blocking = 4  # собранный PDF содержит overprint → «ошибка»
+        self.prepress.blocking = 4
 
         item = self.print_orders(run_id, "26252239", confirm=False)["26252239"]
 
-        self.assertEqual((item["status"], item["code"]), ("rejected", "forced_print_confirmation"), item)
-        self.assertIn("overprint", item["message"])
-        self.assertEqual([blocker["code"] for blocker in item["blockers"]], ["forced_print_confirmation"])
-        order = self.orders(run_id)["26252239"]
-        self.assertEqual(
-            (order["status"], order["pdf_kind"], order["current_pdf_revision"]),
-            ("error", "production", 2),
-        )
-        self.assertEqual(order["print_mode"], "forced")
-        self.assertFalse((self.root / "PDF" / "Print").exists() and any((self.root / "PDF" / "Print").iterdir()))
-        self.assertEqual(self.sent, [])
-
-        # Дальше — обычная печать красного заказа с готовым PDF по подтверждению.
-        item = self.print_orders(run_id, "26252239", confirm=True)["26252239"]
         self.assertEqual(item["status"], "prepared", item)
+        self.assertEqual(item["print_build"]["status_after_build"], "warning")
         order = self.orders(run_id)["26252239"]
         self.assertEqual((order["status"], order["current_pdf_revision"]), ("accepted_for_print", 2))
-        self.assertEqual(len(self.converter.calls), 1)  # повторной сборки не было
+        self.assertEqual(self.sent, ["26252239"])
 
     def test_diagnostic_order_with_wrong_pdf_size_is_red_and_blocked(self):
         make_pdf(self.root / SIZE, dpi=None, size_mm=120.0)
@@ -269,6 +258,41 @@ class PrintBuildWorkflowTests(forced.ForcedPrintWorkflowTests):
         self.pitstop.fail_forced = False
         self.assertEqual(self.print_orders(run_id, "26252239", confirm=False)["26252239"]["status"], "prepared")
         self.assertEqual(self.sent[-1], "26252239")
+
+    # Запуск 5beedd75 (27.11): 88 заказов комплекта собирались при печати по одному, 15 мин.
+    def test_bulk_print_builds_orders_in_parallel(self):
+        import threading
+
+        second = LOW.replace("26252239", "26252244")
+        make_rgb_pdf(self.root / LOW, dpi=200)
+        make_rgb_pdf(self.root / second, dpi=200)
+        run_id = self.make_run()
+        statuses = {key: (value["status"], value["pdf_kind"]) for key, value in self.orders(run_id).items()}
+        self.assertEqual(statuses["26252244"], ("warning", "diagnostic"), statuses)
+
+        barrier = threading.Barrier(2, timeout=10)
+        original = self.workflow._forced_print_build
+
+        def build(*args, **kwargs):
+            barrier.wait()  # последовательная сборка не дождётся второй и упадёт
+            return original(*args, **kwargs)
+
+        self.workflow._forced_print_build = build
+        items = self.print_orders(run_id, "26252239", "26252244", confirm=False)
+
+        self.assertEqual({key: item["status"] for key, item in items.items()},
+                         {"26252239": "prepared", "26252244": "prepared"}, items)
+        orders = self.orders(run_id)
+        self.assertEqual({orders[key]["status"] for key in items}, {"accepted_for_print"})
+        self.assertEqual(sorted(self.sent), ["26252239", "26252244"])
+        self.assertEqual(self.workflow._action_locks, {})
+
+    def test_single_order_builds_without_a_pool(self):
+        make_rgb_pdf(self.root / LOW, dpi=200)
+        run_id = self.make_run()
+        self.assertEqual(self.workflow._start_print_builds([], None, set()), ({}, None))
+        item = self.print_orders(run_id, "26252239", confirm=False)["26252239"]
+        self.assertEqual(item["status"], "prepared", item)
 
 
 # Унаследованные сценарии красной сборки здесь не повторяем.

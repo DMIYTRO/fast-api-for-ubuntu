@@ -1235,6 +1235,7 @@ def create_app(
             callas_fix_service.publish_accepted if callas_fix_service else None
         ),
         forced_print_builder=_forced_print_builder(processor_factory),
+        print_build_workers=settings.print_build_workers,
         prepress_sender=(
             build_sender(
                 settings.sborka_api_dir,

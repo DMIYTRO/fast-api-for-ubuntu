@@ -369,6 +369,8 @@ class Settings:
     # Корень источника обязан быть точкой монтирования (иначе — пустая локальная папка).
     fetch_require_mount: bool = True
     fetch_workers: int = 4
+    # Параллельные сборки итоговых PDF в одном запросе «В печать» (services/order_workflow.py).
+    print_build_workers: int = 4
     fetch_mode: str = "move"
     # Файл, изменённый позже этого, ещё дописывается клиентом — не трогаем.
     fetch_min_age_seconds: float = 10.0
@@ -673,6 +675,7 @@ class Settings:
             fetch_routes_error=fetch_routes_error,
             fetch_require_mount=_env_bool("IMAGE_MAGIC_FETCH_REQUIRE_MOUNT", True),
             fetch_workers=_env_int("IMAGE_MAGIC_FETCH_WORKERS", 4, minimum=1, maximum=32),
+            print_build_workers=_env_int("IMAGE_MAGIC_PRINT_BUILD_WORKERS", 4, minimum=1, maximum=8),
             fetch_mode=_env_fetch_mode("IMAGE_MAGIC_FETCH_MODE"),
             fetch_min_age_seconds=_env_float(
                 "IMAGE_MAGIC_FETCH_MIN_AGE_SECONDS", 10.0, minimum=0.0, maximum=86400.0

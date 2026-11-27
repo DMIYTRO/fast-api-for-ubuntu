@@ -48,7 +48,7 @@ from .forced_print import (
     forced_build_assessment,
     print_build_assessment,
 )
-from .overprint import overprint_block, overprint_status_effect
+from .overprint import has_blocking_overprint, overprint_block
 from .pdf_routing import completed_status, pdf_root_for, route_pdf
 from .pdf_revision_validation import readable_pdf, validate_pdf_revision
 from .return_preview import (
@@ -116,8 +116,13 @@ class OrderWorkflowService:
         # ``builder(run, order, output_dir)`` -> ``ForcedPrintBuild``: итоговый PDF красного
         # заказа с одним лишь низким разрешением, собранный при печати (services/forced_print.py).
         forced_print_builder: Callable[[dict[str, Any], dict[str, Any], Path], ForcedPrintBuild] | None = None,
+        # Сколько итоговых PDF одного запроса «В печать» собирается одновременно. Каждая
+        # сборка ~10 с (callas, PitStop, превью); по одному 88 заказов комплекта шли 15 мин
+        # (запуск 5beedd75, 27.11). PitStop сам ограничен своим общим шлюзом.
+        print_build_workers: int = 4,
     ) -> None:
         self.forced_print_builder = forced_print_builder
+        self.print_build_workers = max(1, int(print_build_workers))
         # Политика проверки для заказов без записанной политики (services/check_policy.py);
         # по умолчанию — полная, как раньше.
         self.policy_settings = policy_settings or PolicySettings(
@@ -360,6 +365,147 @@ class OrderWorkflowService:
                     routed.unlink(missing_ok=True)
                 raise
         return updated, pitstop, revision, sha256
+
+    def _print_build_key(
+        self, run: dict[str, Any], order: dict[str, Any], command: OrderActionCommand
+    ) -> str | None:
+        """Какая сборка при печати понадобится заказу (те же условия, что в ``_prepare``)."""
+        if self.forced_print_builder is None:
+            return None
+        status = order.get("status")
+        fix_state = (
+            read_callas_fix_state_for_run(order["pdf_path"], run["id"])
+            if order.get("pdf_path")
+            else None
+        )
+        blockers = print_blockers(order, fix_state)
+        if any(item["kind"] == "approval" for item in blockers):
+            return None
+        if status == "error":
+            if (
+                command.confirm_failed_processing
+                and print_mode(blockers) == "forced"
+                and is_forced_build(blockers)
+            ):
+                return FORCED_PRINT_BUILD
+            return None
+        if (
+            status in {"passed", "warning"}
+            and pitstop_ready(order)
+            and order.get("pdf_kind") == "diagnostic"
+            and not blockers
+            and needs_print_build(order)
+        ):
+            return PRINT_BUILD
+        return None
+
+    @staticmethod
+    def _stored_order_result(
+        session: Any, run_id: str, order_id: str, customer_id: str | None
+    ) -> OrderResult | None:
+        stored = session.scalar(
+            select(OrderResult)
+            .where(
+                OrderResult.run_id == run_id,
+                OrderResult.order_id == order_id,
+                OrderResult.customer_id == customer_id,
+            )
+            .order_by(desc(OrderResult.updated_at))
+        )
+        if stored is None and customer_id is not None:
+            legacy_candidates = session.scalars(
+                select(OrderResult).where(
+                    OrderResult.run_id == run_id,
+                    OrderResult.order_id == order_id,
+                )
+            ).all()
+            if len(legacy_candidates) == 1 and legacy_candidates[0].customer_id is None:
+                stored = legacy_candidates[0]
+        return stored
+
+    def _start_print_builds(
+        self,
+        resolved_orders: list[tuple[str, dict[str, Any], dict[str, Any]]],
+        command: OrderActionCommand,
+        skip: set[tuple[str, str]],
+    ) -> tuple[dict[tuple[str, str], tuple[int, str, Future]], ThreadPoolExecutor | None]:
+        """Запустить сборки итоговых PDF пакета параллельно, заранее заняв заказы.
+
+        Возвращает ``{(run_id, aggregate_id): (order_result_id, build_key, future)}``.
+        Занятый здесь заказ освобождает ``_prepare`` (как и занятый им самим). Один заказ
+        собирается в основном цикле, как раньше: параллелить нечего.
+        """
+        candidates = []
+        for order_ref, run, order in resolved_orders:
+            aggregate_id = str(order.get("aggregate_id") or order_ref)
+            key = (str(run.get("id") or ""), aggregate_id)
+            if key in skip or self._order_in_progress(key[0], aggregate_id):
+                continue
+            build_key = self._print_build_key(run, order, command)
+            if build_key is not None:
+                candidates.append((key, run, order, build_key))
+        if len(candidates) < 2 or self.print_build_workers < 2:
+            return {}, None
+        claimed: list[tuple[tuple[str, str], int, dict[str, Any], dict[str, Any], str]] = []
+        with self.session_factory() as session:
+            for key, run, order, build_key in candidates:
+                order_id = str(order.get("order_id") or order.get("id") or key[1])
+                customer_id = order.get("customer_id")
+                stored = self._stored_order_result(
+                    session, run["id"], order_id, None if customer_id is None else str(customer_id)
+                )
+                if stored is None:
+                    continue
+                pending = session.scalar(
+                    select(OrderAction.id).where(
+                        OrderAction.order_result_id == stored.id,
+                        OrderAction.status == "pending",
+                    )
+                )
+                if pending is not None or self._claim_action(stored.id, "print") is not None:
+                    continue
+                claimed.append((key, stored.id, run, order, build_key))
+        if len(claimed) < 2:
+            for _key, stored_id, *_rest in claimed:
+                self._release_action(stored_id)
+            return {}, None
+        executor = ThreadPoolExecutor(
+            max_workers=min(self.print_build_workers, len(claimed)),
+            thread_name_prefix="image-magic-print-build",
+        )
+        builds: dict[tuple[str, str], tuple[int, str, Future]] = {}
+        for key, stored_id, run, order, build_key in claimed:
+            builds[key] = (
+                stored_id,
+                build_key,
+                executor.submit(
+                    self._forced_print_build, run, deepcopy(order), created_by_action=build_key
+                ),
+            )
+        logger.info(
+            "order.print_build.batch orders=%s workers=%s",
+            len(builds), min(self.print_build_workers, len(claimed)),
+        )
+        return builds, executor
+
+    @contextmanager
+    def _parallel_print_builds(
+        self,
+        resolved_orders: list[tuple[str, dict[str, Any], dict[str, Any]]],
+        command: OrderActionCommand,
+        skip: set[tuple[str, str]],
+    ):
+        """Сборки пакета на время ``_prepare``; не взятые циклом — дождаться и освободить."""
+        builds, executor = self._start_print_builds(resolved_orders, command, skip)
+        try:
+            yield builds
+        finally:
+            for stored_id, _build_key, future in builds.values():
+                future.exception()
+                self._release_action(stored_id)
+            builds.clear()
+            if executor is not None:
+                executor.shutdown(wait=True)
 
     def _forced_print_build(
         self,
@@ -999,7 +1145,13 @@ class OrderWorkflowService:
                     eligible_external_ids, None
                 )
                 batch_order_ids = set(eligible_external_ids)
-        with self.session_factory() as session:
+        build_skip = ambiguous_external_refs if sends_to_external_service else set()
+        with (
+            self._parallel_print_builds(
+                resolved_orders if action == "print" else [], command, build_skip
+            ) as parallel_builds,
+            self.session_factory() as session,
+        ):
             for order_ref, run, order in resolved_orders:
                 order_id = str(order.get("order_id") or order.get("id") or order_ref)
                 aggregate_id = str(order.get("aggregate_id") or order_ref)
@@ -1156,30 +1308,27 @@ class OrderWorkflowService:
                             }
                         )
                         continue
-                stored_query = select(OrderResult).where(
-                    OrderResult.run_id == run["id"],
-                    OrderResult.order_id == order_id,
-                    OrderResult.customer_id == customer_id,
-                )
-                stored = session.scalar(
-                    stored_query.order_by(desc(OrderResult.updated_at))
-                )
-                if stored is None and customer_id is not None:
-                    legacy_candidates = session.scalars(
-                        select(OrderResult).where(
-                            OrderResult.run_id == run["id"],
-                            OrderResult.order_id == order_id,
-                        )
-                    ).all()
-                    if (
-                        len(legacy_candidates) == 1
-                        and legacy_candidates[0].customer_id is None
-                    ):
-                        stored = legacy_candidates[0]
+                stored = self._stored_order_result(session, run["id"], order_id, customer_id)
                 if stored is None:
                     add_result({"order_id": order_id, "status": "not_found"})
                     continue
-                active_action = self._claim_action(stored.id, action)
+                prebuilt_build = parallel_builds.pop((str(run.get("id") or ""), aggregate_id), None)
+                if prebuilt_build is not None and (
+                    prebuilt_build[0] != stored.id or prebuilt_build[1] != build_key or not builds_pdf
+                ):
+                    # Условия разошлись с предварительной оценкой: заказ уже занят этим
+                    # запросом, сборка (если была) зарегистрировала ревизию, печати нет.
+                    prebuilt_build[2].exception()
+                    self._release_action(prebuilt_build[0])
+                    prebuilt_build = None
+                    add_result({
+                        "order_id": order_id, "status": "error", "code": "preparation_failed",
+                        "message": "Состояние заказа изменилось во время сборки: повторите «В печать».",
+                    })
+                    continue
+                active_action = (
+                    None if prebuilt_build is not None else self._claim_action(stored.id, action)
+                )
                 if active_action is not None:
                     add_result(
                         self._busy_result(order_id, action, active_action)
@@ -1313,7 +1462,9 @@ class OrderWorkflowService:
                             # Итоговый PDF собирается и проверяется PitStop прямо сейчас;
                             # без завершённого PitStop ревизия не сохраняется и печати нет.
                             order, reviewed_pitstop, reviewed_revision, reviewed_sha256, forced_build_info = (
-                                self._forced_print_build(run, order, created_by_action=build_key)
+                                prebuilt_build[2].result()
+                                if prebuilt_build is not None
+                                else self._forced_print_build(run, order, created_by_action=build_key)
                             )
                             previous_order = deepcopy(order)
                             transition_order = order
@@ -1324,7 +1475,7 @@ class OrderWorkflowService:
                                     "Итоговый PDF собран, но содержит ошибки (статус «ошибка»"
                                     + (
                                         ", overprint"
-                                        if overprint_status_effect(order.get("prepress")) == "error"
+                                        if has_blocking_overprint(order.get("prepress"))
                                         else ""
                                     )
                                     + "): заказ не отправлен в печать. Проверьте новую ревизию и "
@@ -1640,6 +1791,8 @@ class OrderWorkflowService:
                             )
                         add_result(item)
                 finally:
+                    if prebuilt_build is not None:
+                        prebuilt_build[2].exception()  # заказ занят, пока идёт его сборка
                     self._release_action(stored.id)
         return {"items": results}
 
