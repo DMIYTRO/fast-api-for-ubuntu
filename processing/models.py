@@ -115,6 +115,12 @@ class FileCheck:
     source_folder: str = ""
     # Формат страницы PDF не принят проверкой геометрии.
     pdf_size_mismatch: bool = False
+    # Автоматический поворот стороны для совмещения лица и оборота (processing/side_rotation.py):
+    # растр — ``side_rotation_degrees`` (±90, ImageMagick без ресэмпла), PDF — по страницам
+    # ``pdf_page_rotations`` {номер страницы: ±90} (callas, поворот «запекается», без /Rotate);
+    # у PDF ``side_rotation_degrees`` повторяет поворот его повёрнутой страницы.
+    side_rotation_degrees: int = 0
+    pdf_page_rotations: dict[int, int] = field(default_factory=dict)
 
     @property
     def input_path(self) -> Path:
@@ -157,6 +163,10 @@ class OrderCheck:
     prepress: dict[str, object] | None = None
     # Политика проверки заказа {"key", "label", "reason"} (services/check_policy.py).
     check_policy: dict[str, str] | None = None
+    # Стороны разной ориентации: одна сторона повёрнута на ±90° при сборке итогового PDF
+    # (processing/side_rotation.py) — {"side", "degrees", "from", "to", "reason", "file",
+    # "page"}. Заказ собирается, но остаётся красным (``completed_order_status``).
+    side_alignment: dict[str, object] | None = None
 
     @property
     def aggregate_id(self) -> str:

@@ -21,7 +21,7 @@ from core.pdf_exporter import convert_image_to_pdf
 from core.preview_cache import preview_extension
 from core.preview_generator import generate_preview
 from core.preview_cache import full_preview_cache_path, preview_work_dir
-from core.resampler import canvas_image, resample_image
+from core.resampler import canvas_image, resample_image, rotate_image
 from core.share_tempdir import share_temp_dir, sweep_stale_temp_dirs
 from core.tool_runner import run_command
 from config.profiles import DEFAULT_PROFILE, PrePressProfile
@@ -46,6 +46,12 @@ from .pdf_resize_policy import (
 from .profile_rules import evaluate_metadata_rules
 
 from .filename_parser import parse_filename
+from .side_rotation import (
+    direction_text,
+    normalize_degrees,
+    orientation as side_orientation,
+    plan_side_rotation,
+)
 from .models import FileCheck, OrderCheck, has_page_rule_violation, make_size_fix
 
 
@@ -292,6 +298,12 @@ class _LogicalPageRef:
     expected_side: str
     expected_width_mm: float
     expected_height_mm: float
+    # Поворот стороны для совмещения с другой стороной (±90°; размеры выше — уже после него).
+    side_rotation_degrees: int = 0
+
+
+def _swap_if_rotated(size: tuple[float, float], degrees: int) -> tuple[float, float]:
+    return (size[1], size[0]) if degrees % 180 else size
 
 
 def _resized(item: FileCheck, page) -> tuple[float, float]:
@@ -299,6 +311,17 @@ def _resized(item: FileCheck, page) -> tuple[float, float]:
     plan = item.pdf_resize_plans.get(page.page_number) if item.needs_resample else None
     if plan is not None:
         return plan.target_mm
+    return (page.width_mm, page.height_mm)
+
+
+def _final_page_size(item: FileCheck, page) -> tuple[float, float]:
+    """Итоговый размер страницы PDF до поворота стороны: цель QuickFix (в т. ч. ещё не
+    подтверждённая) или размер с учётом ``/Rotate``."""
+    plan = item.pdf_resize_plans.get(page.page_number)
+    if plan is not None:
+        return tuple(plan.target_mm)
+    if page.rotation in {90, 270}:
+        return (page.height_mm, page.width_mm)
     return (page.width_mm, page.height_mm)
 
 
@@ -353,7 +376,17 @@ class BatchProcessor:
         auto_bleed: "Callable[[FileCheck, BatchProcessor], FileCheck | None] | None" = None,
         auto_bleed_max_concurrent: int = 2,
         strict_source_dirs: "Sequence[str]" = (),
+        side_auto_rotate: bool = True,
+        side_rotate_degrees: int = 90,
+        pdf_rotator: "Callable[[Path, Path, dict[int, int], str], object] | None" = None,
     ):
+        # Стороны разной ориентации: одна поворачивается на ±90° при сборке
+        # (processing/side_rotation.py, IMAGE_MAGIC_SIDE_AUTO_ROTATE_ENABLED и
+        # IMAGE_MAGIC_SIDE_ROTATE_DEGREES); PDF — через callas (services/callas/page_rotate.py),
+        # без ``pdf_rotator`` сторона-PDF не поворачивается (прежняя ошибка заказа).
+        self.side_auto_rotate = bool(side_auto_rotate)
+        self.side_rotate_degrees = normalize_degrees(side_rotate_degrees)
+        self.pdf_rotator = pdf_rotator
         # Подпапки входной папки, которые проверяются полностью и просматриваются наравне
         # с корнем (config/check_policies.py); вложенные папки не сканируются.
         self.strict_source_dirs: tuple[str, ...] = tuple(strict_source_dirs)
@@ -1268,8 +1301,8 @@ class BatchProcessor:
         self._validate_order(order)
         self._skip_corrections_for_page_rule(order)
 
-    @staticmethod
-    def _validate_order(order: OrderCheck) -> None:
+    def _validate_order(self, order: OrderCheck) -> None:
+        self._clear_side_rotation(order)
         sides: dict[str, list[FileCheck]] = defaultdict(list)
         for item in order.files:
             # A two-page PDF is a complete duplex order.  Its page indices
@@ -1301,6 +1334,7 @@ class BatchProcessor:
             # A complete PDF does not need a filename side and must not be
             # forced through the legacy face/back checks below.
             if len(order.files) == 1:
+                self._validate_side_orientation(order)
                 return
 
         if back_colors == 0 and len(order.files) > 1:
@@ -1317,23 +1351,6 @@ class BatchProcessor:
             order.errors.append("найдено несколько файлов face")
         if len(sides["back"]) > 1:
             order.errors.append("найдено несколько файлов back")
-
-        readable_files = [
-            item for item in order.files
-            if item.actual_width_mm is not None and item.actual_height_mm is not None
-        ]
-        orientations = {
-            BatchProcessor._orientation(
-                item.actual_height_mm if item.rotation_degrees in {90, 270} else item.actual_width_mm,
-                item.actual_width_mm if item.rotation_degrees in {90, 270} else item.actual_height_mm,
-            ) for item in readable_files
-        }
-        if len(orientations) > 1:
-            details = ", ".join(
-                f"{item.parsed.side}={BatchProcessor._orientation(item.actual_width_mm, item.actual_height_mm)}"
-                for item in readable_files
-            )
-            order.errors.append(f"ориентация сторон не совпадает: {details}")
 
         declared_sizes = {(item.parsed.width_mm, item.parsed.height_mm) for item in order.files}
         if len(declared_sizes) != 1:
@@ -1355,6 +1372,111 @@ class BatchProcessor:
             order.errors.append("для двусторонней печати не найден файл back")
         if back_colors == 0 and sides["back"]:
             order.errors.append("для односторонней печати найден лишний файл back")
+
+        # Последней: решение о повороте зависит от всех прочих ошибок заказа и файлов.
+        self._validate_side_orientation(order)
+
+    def _side_sizes(self, order: OrderCheck) -> list[tuple[str, FileCheck, int | None, tuple[float, float]]]:
+        """Итоговые размеры сторон: (сторона, файл, страница PDF или None, (ш, в) мм).
+
+        Размер — после запланированной коррекции (цель ресэмпла / план QuickFix страницы),
+        иначе фактический с учётом ``/Rotate``. Двухстраничный PDF даёт обе стороны.
+        """
+        result: list[tuple[str, FileCheck, int | None, tuple[float, float]]] = []
+        for item in order.files:
+            if item.actual_width_mm is None or item.actual_height_mm is None or item.parsed is None:
+                continue
+            if _is_pdf_content(item) and item.pdf_pages:
+                pages = item.pdf_pages if item.page_count == 2 else item.pdf_pages[:1]
+                for index, page in enumerate(pages):
+                    side = ("face" if index == 0 else "back") if item.page_count == 2 else _logical_side(item)
+                    result.append((side, item, page.page_number, _final_page_size(item, page)))
+                continue
+            if item.resample_target_mm:
+                size = (float(item.resample_target_mm[0]), float(item.resample_target_mm[1]))
+            elif item.rotation_degrees in {90, 270}:
+                size = (item.actual_height_mm, item.actual_width_mm)
+            else:
+                size = (item.actual_width_mm, item.actual_height_mm)
+            result.append((_logical_side(item), item, None, size))
+        return result
+
+    def _validate_side_orientation(self, order: OrderCheck) -> None:
+        """Стороны разной ориентации: повернуть одну на ±90° или прежняя ошибка заказа.
+
+        Поворот (``processing/side_rotation.py``) только у двустороннего заказа ровно из
+        лица и оборота без других ошибок, без метки «без масштабирования» и при включённой
+        настройке; у стороны-PDF — только если настроен поворот callas. Иначе — ошибка
+        «ориентация сторон не совпадает», как раньше (диагностический PDF «как есть»).
+        """
+        sizes = self._side_sizes(order)
+        orientations = {self._orientation(*size) for _side, _item, _page, size in sizes}
+        if len(orientations) <= 1:
+            return
+        plan = self._side_rotation_plan(order, sizes)
+        if plan is None:
+            details = ", ".join(
+                f"{side}={self._orientation(*size)}" for side, _item, _page, size in sizes
+            )
+            order.errors.append(f"ориентация сторон не совпадает: {details}")
+            return
+        side, item, page, _size = next(entry for entry in sizes if entry[0] == plan["side"])
+        degrees = int(plan["degrees"])
+        item.side_rotation_degrees = degrees
+        if page is not None:
+            item.pdf_page_rotations = {page: degrees}
+        order.side_alignment = {
+            **plan,
+            "file": item.path.name,
+            "page": page,
+            "direction": direction_text(degrees),
+        }
+
+    def _side_rotation_plan(
+        self, order: OrderCheck, sizes: list[tuple[str, FileCheck, int | None, tuple[float, float]]]
+    ) -> dict[str, object] | None:
+        if not self.side_auto_rotate:
+            return None
+        if order.errors or has_page_rule_violation(order) or any(item.errors for item in order.files):
+            return None
+        if any(item.no_scale for item in order.files):
+            return None  # листовые раскладки (SRA3, BAN): только холст, без поворота
+        if any(item.parsed is None or item.parsed.back_colors <= 0 for item in order.files):
+            return None
+        by_side = {side: size for side, _item, _page, size in sizes}
+        if len(sizes) != 2 or set(by_side) != {"face", "back"}:
+            return None
+        parsed = order.files[0].parsed
+        plan = plan_side_rotation(
+            by_side["face"], by_side["back"], (parsed.width_mm, parsed.height_mm),
+            self.side_rotate_degrees,
+        )
+        if plan is None:
+            return None
+        target = next(item for side, item, _page, _size in sizes if side == plan["side"])
+        if _is_pdf_content(target) and self.pdf_rotator is None:
+            return None
+        return plan
+
+    @staticmethod
+    def _clear_side_rotation(order: OrderCheck) -> None:
+        order.side_alignment = None
+        for item in order.files:
+            item.side_rotation_degrees = 0
+            item.pdf_page_rotations = {}
+
+    def settle_side_alignment(self, order: OrderCheck) -> None:
+        """Запланированный поворот стороны больше неприменим (оператор отклонил коррекцию,
+        файл получил ошибку): проверки уровня заказа пересчитываются, и заказ получает
+        прежнюю ошибку «ориентация сторон не совпадает»."""
+        if order.side_alignment is None:
+            return
+        if (
+            order.errors
+            or has_page_rule_violation(order)
+            or any(item.errors for item in order.files)
+        ):
+            self.revalidate_order(order)
 
     @staticmethod
     def _skip_corrections_for_page_rule(order: OrderCheck) -> None:
@@ -1400,9 +1522,7 @@ class BatchProcessor:
 
     @staticmethod
     def _orientation(width_mm: float, height_mm: float) -> str:
-        if abs(width_mm - height_mm) <= 0.5:
-            return "квадратная"
-        return "горизонтальная" if width_mm > height_mm else "вертикальная"
+        return side_orientation(width_mm, height_mm)
 
     def create_pdfs(self, orders: list[OrderCheck]) -> list[tuple[OrderCheck, Path, str | None]]:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -1698,13 +1818,16 @@ class BatchProcessor:
         if len(ordered_files) == 1 and ordered_files[0].page_count == 2:
             item = ordered_files[0]
             for index, page in enumerate(item.pdf_pages):
+                rotation = item.pdf_page_rotations.get(page.page_number, 0)
+                width_mm, height_mm = _swap_if_rotated(_resized(item, page), rotation)
                 refs.append(
                     _LogicalPageRef(
                         source=item,
                         source_page_index=index,
                         expected_side="face" if index == 0 else "back",
-                        expected_width_mm=_resized(item, page)[0],
-                        expected_height_mm=_resized(item, page)[1],
+                        expected_width_mm=width_mm,
+                        expected_height_mm=height_mm,
+                        side_rotation_degrees=rotation,
                     )
                 )
             return refs
@@ -1713,12 +1836,15 @@ class BatchProcessor:
             if item.page_count == 1 and item.pdf_pages:
                 page = item.pdf_pages[0]
                 width_mm, height_mm = _resized(item, page)
+                rotation = item.pdf_page_rotations.get(page.page_number, 0)
                 page_index = 0
             else:
                 width_mm, height_mm = item.actual_width_mm, item.actual_height_mm
+                rotation = item.side_rotation_degrees
                 page_index = 0
             if width_mm is None or height_mm is None:
                 raise ValueError(f"не удалось определить размер страницы: {item.path.name}")
+            width_mm, height_mm = _swap_if_rotated((width_mm, height_mm), rotation)
             refs.append(
                 _LogicalPageRef(
                     source=item,
@@ -1726,6 +1852,7 @@ class BatchProcessor:
                     expected_side=_logical_side(item),
                     expected_width_mm=width_mm,
                     expected_height_mm=height_mm,
+                    side_rotation_degrees=rotation,
                 )
             )
         return refs
@@ -1741,6 +1868,7 @@ class BatchProcessor:
                 pdf_path = converted.get(item.path)
                 if pdf_path is None:
                     pdf_path = self._resize_pdf_if_needed(item, page_number, temporary_dir)
+                    pdf_path = self._rotate_pdf_if_needed(item, pdf_path, page_number, temporary_dir)
                     converted[item.path] = pdf_path
                 if pdf_path not in page_pdfs:
                     page_pdfs.append(pdf_path)
@@ -1781,6 +1909,22 @@ class BatchProcessor:
                 source_image_path = str(resampled_path)
                 dpi_arg = str(self.profile.target_dpi)
 
+            if item.side_rotation_degrees:
+                # Поворот на ±90° после коррекции размера в собственной ориентации стороны:
+                # пиксели только переставляются (без ресэмпла), DPI по осям меняются местами.
+                rotated_path = temporary_dir / f"rotated_{page_number}_{ref.expected_side}.tif"
+                resampled_dpi = item.needs_resample and item.resample_target_mm and not canvas
+                if not resampled_dpi:
+                    dpi_arg = f"{item.dpi_y}x{item.dpi_x}"
+                rotate_image(
+                    source_image_path,
+                    str(rotated_path),
+                    item.side_rotation_degrees,
+                    density=dpi_arg,
+                    ignore_tiff_layers=item.tiff_layer_count == 1,
+                )
+                source_image_path = str(rotated_path)
+
             page_path = temporary_dir / f"{page_number}_{ref.expected_side}.pdf"
             _convert_raster_page(item, source_image_path, page_path, dpi_arg, self.strip_icc_cmyk)
             if canvas:
@@ -1801,6 +1945,11 @@ class BatchProcessor:
                         "kind": "size_correction", "target_mm": list(item.resample_target_mm),
                         "target_dpi": self.profile.target_dpi, "rotation_degrees": item.rotation_degrees,
                     })
+            if item.side_rotation_degrees:
+                item.processing_actions.append({
+                    "kind": "side_rotation", "degrees": item.side_rotation_degrees,
+                    "side": ref.expected_side, "method": "imagemagick",
+                })
             if self.strip_icc_cmyk and (item.colorspace or "").upper() == "CMYK":
                 item.processing_actions.append({"kind": "strip_icc"})
             _record_flatten(item, flattened)
@@ -1834,6 +1983,25 @@ class BatchProcessor:
         })
         return str(resized)
 
+    def _rotate_pdf_if_needed(
+        self, item: FileCheck, pdf_path: str, page_number: int, temporary_dir: Path
+    ) -> str:
+        """Копия PDF с повёрнутой страницей стороны (callas, поворот «запечён», без /Rotate)."""
+        if not item.pdf_page_rotations:
+            return pdf_path
+        if self.pdf_rotator is None:
+            raise ValueError("поворот стороны PDF запланирован, но поворот callas не настроен")
+        rotated = temporary_dir / f"rotated_{page_number}_{item.path.stem}.pdf"
+        rotations = dict(item.pdf_page_rotations)
+        self.pdf_rotator(Path(pdf_path), rotated, rotations, item.path.stem)
+        for page, degrees in sorted(rotations.items()):
+            item.processing_actions.append({
+                "kind": "side_rotation", "degrees": degrees, "page": page,
+                "side": ("face" if page == 1 else "back") if item.page_count == 2 else _logical_side(item),
+                "method": "callas",
+            })
+        return str(rotated)
+
     def _render_pdf_pages(self, pdf_path: Path, validation_dir: Path) -> list[Path]:
         """Контрольный рендер callas: доказывает, что PDF открывается; возвращает PNG страниц."""
         if not pdf_path.is_file() or pdf_path.stat().st_size == 0:
@@ -1864,12 +2032,13 @@ class BatchProcessor:
                 f"в итоговом PDF {len(rendered_pages)} страниц; ожидалось {len(page_refs)}"
             )
         box_sizes = _pdf_page_sizes_mm(pdf_path, len(page_refs))
+        final_sizes: list[tuple[float, float]] = []
 
         for page_number, (rendered_page, ref) in enumerate(zip(rendered_pages, page_refs), start=1):
             source = ref.source
             expected = (ref.expected_width_mm, ref.expected_height_mm)
             if source.needs_resample and source.resample_target_mm and not _is_pdf_content(source):
-                expected = source.resample_target_mm
+                expected = _swap_if_rotated(tuple(source.resample_target_mm), ref.side_rotation_degrees)
             if box_sizes is not None:
                 actual = box_sizes[page_number - 1]
                 validation_tolerance = max(self.tolerance_mm, 0.6)
@@ -1895,10 +2064,23 @@ class BatchProcessor:
                     f"{expected[0]:.1f}x{expected[1]:.1f} мм"
                 )
 
+            final_sizes.append(tuple(actual))
             expected_side = "face" if page_number == 1 else "back"
             if ref.expected_side != expected_side:
                 raise ValueError(
                     f"нарушен порядок страниц: страница {page_number} должна быть {expected_side}"
+                )
+        if any(ref.side_rotation_degrees for ref in page_refs):
+            # Сторона повёрнута ради совмещения: все страницы итогового PDF одной ориентации.
+            orientations = [self._orientation(*size) for size in final_sizes]
+            if len(set(orientations)) > 1:
+                listed = ", ".join(
+                    f"стр. {number} {size[0]:.1f}x{size[1]:.1f} мм"
+                    for number, size in enumerate(final_sizes, start=1)
+                )
+                raise ValueError(
+                    "после автоматического поворота стороны страницы итогового PDF "
+                    f"разной ориентации: {listed}"
                 )
 
     def copy_failed_to_troubles(

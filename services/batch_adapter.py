@@ -115,6 +115,9 @@ def completed_order_status(order: OrderCheck, artifacts: OrderArtifacts) -> str:
             or (not order.passed and artifacts.pdf_kind != "diagnostic")
             or has_page_rule_violation(order)
             or any(item.pdf_size_mismatch for item in order.files)
+            # Сторона повёрнута для совмещения (processing/side_rotation.py): итоговый PDF
+            # настоящий, но заказ красный — оператор сверяет превью и подтверждает печать.
+            or bool(getattr(order, "side_alignment", None))
         ),
         local_warnings=bool(
             not order.passed or order.warnings or any(item.warnings for item in order.files)
@@ -520,6 +523,13 @@ class BatchProcessorAdapter:
     def decide(self, order: OrderCheck, approved: bool) -> None:
         for item in self.pending_files(order):
             self.processor.confirm_resample(item, approved)
+        self._settle_side_alignment(order)
+
+    def _settle_side_alignment(self, order: OrderCheck) -> None:
+        """Отклонённая коррекция и т. п.: запланированный поворот стороны снимается."""
+        settle = getattr(self.processor, "settle_side_alignment", None)
+        if callable(settle):
+            settle(order)
 
     def reinspect_file(self, item: FileCheck, content_path: Path | None) -> FileCheck:
         """Проверить PDF-файл заказа заново по ``content_path`` (``None`` — по исходнику)."""
@@ -711,6 +721,7 @@ class BatchProcessorAdapter:
         # (bounded) rather than when the order is first shown.
         self._apply_postpress(order, wait=True)
         self._drop_stale_source_fixes(order)
+        self._settle_side_alignment(order)
         result = OrderArtifacts()
         source_previews_created = False
 

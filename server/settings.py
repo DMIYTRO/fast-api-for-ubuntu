@@ -83,6 +83,23 @@ def _env_max_dpi(name: str, default: float = DEFAULT_MAX_DPI) -> float:
         ) from exc
 
 
+def _env_side_rotate_degrees(name: str) -> int:
+    """Поворот лица при совмещении сторон: 90 или −90 (270 = −90); иное — 90 с предупреждением."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return 90
+    try:
+        value = ((int(raw) + 180) % 360) - 180  # 270 → −90, −270 → 90
+    except ValueError:
+        value = 0
+    if value not in {90, -90}:
+        logging.getLogger("image_magic").warning(
+            "settings.side_rotate_degrees_invalid value=%r: используется 90", raw
+        )
+        return 90
+    return value
+
+
 def _env_bool(name: str, default: bool) -> bool:
     value = os.environ.get(name)
     if value is None:
@@ -316,6 +333,12 @@ class Settings:
     # Метки в имени файла, при которых макет не масштабируется (только белые поля или
     # обрезка), IMAGE_MAGIC_NO_SCALE_NAME_MARKERS; пустой кортеж выключает правило.
     no_scale_name_markers: tuple[str, ...] = DEFAULT_NO_SCALE_NAME_MARKERS
+    # Лицо и оборот разной ориентации: одна сторона поворачивается на ±90° при сборке
+    # (processing/side_rotation.py), заказ остаётся красным. IMAGE_MAGIC_SIDE_AUTO_ROTATE_ENABLED;
+    # IMAGE_MAGIC_SIDE_ROTATE_DEGREES — поворот лица (90 — по часовой, −90 — против),
+    # оборот поворачивается в обратную сторону.
+    side_auto_rotate_enabled: bool = True
+    side_rotate_degrees: int = 90
     # Политика проверки файлов из корня входной папки (config/check_policies.py):
     # "basic" — облегчённая, "full" — как раньше (выключатель), IMAGE_MAGIC_INPUT_CHECK_POLICY.
     input_check_policy: str = DEFAULT_INPUT_CHECK_POLICY
@@ -599,6 +622,8 @@ class Settings:
             ),
             max_dpi=_env_max_dpi("IMAGE_MAGIC_MAX_DPI"),
             no_scale_name_markers=_env_no_scale_markers("IMAGE_MAGIC_NO_SCALE_NAME_MARKERS"),
+            side_auto_rotate_enabled=_env_bool("IMAGE_MAGIC_SIDE_AUTO_ROTATE_ENABLED", True),
+            side_rotate_degrees=_env_side_rotate_degrees("IMAGE_MAGIC_SIDE_ROTATE_DEGREES"),
             input_check_policy=_env_input_check_policy("IMAGE_MAGIC_INPUT_CHECK_POLICY"),
             strict_source_dirs=_env_strict_source_dirs("IMAGE_MAGIC_STRICT_SOURCE_DIRS"),
             strip_icc_cmyk=_env_bool("IMAGE_MAGIC_STRIP_ICC_CMYK", False),

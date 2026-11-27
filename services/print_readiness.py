@@ -17,6 +17,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from processing.side_rotation import format_degrees
+
 from .forced_print import (
     FORCED_PRINT_BUILD,
     diagnostic_blocked_message,
@@ -113,10 +115,21 @@ def print_blockers(order: dict[str, Any], fix_state: dict[str, Any] | None = Non
         ):
             add(CHECK, "pitstop_stale", "Нет проверки PitStop для текущей версии PDF: запустите проверку заново.")
     if status == "error" and not blockers:
-        add(
-            CONFIRM, "forced_print_confirmation",
-            "Заказ с ошибками. Отправить в печать можно только по подтверждению оператора под его ответственность.",
-        )
+        alignment = order.get("side_alignment")
+        if isinstance(alignment, dict) and alignment.get("side"):
+            # Итоговый PDF собран с повёрнутой стороной (processing/side_rotation.py).
+            message = (
+                f"Сторона {alignment.get('side')} автоматически повёрнута на "
+                f"{format_degrees(int(alignment.get('degrees') or 0))}° для совмещения с другой стороной. "
+                "Проверьте по превью ориентацию и совмещение лица и оборота: отправить в печать можно "
+                "только по подтверждению оператора под его ответственность."
+            )
+        else:
+            message = (
+                "Заказ с ошибками. Отправить в печать можно только по подтверждению оператора "
+                "под его ответственность."
+            )
+        add(CONFIRM, "forced_print_confirmation", message)
     return blockers
 
 

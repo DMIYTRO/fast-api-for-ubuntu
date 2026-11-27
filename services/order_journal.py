@@ -610,6 +610,17 @@ def _action_entry(file: str | None, action: Mapping[str, Any], source: str, at: 
             file=file, at=at, data={"from_dpi": action.get("from_dpi"), "target_dpi": action.get("target_dpi"),
                                     "target_mm": action.get("target_mm")},
         )
+    if kind == "side_rotation":
+        degrees = action.get("degrees")
+        turn = f"{'+' if isinstance(degrees, (int, float)) and degrees > 0 else ''}{_num(degrees)}°"
+        page = action.get("page")
+        return _entry(
+            KIND_AUTO, "auto:side_rotated", source,
+            f"Сторона {action.get('side') or ''} повёрнута на {turn} для совмещения лица и оборота".replace("  ", " "),
+            pages=[page] if page else None,
+            file=file, at=at, severity="warning",
+            data={"degrees": degrees, "side": action.get("side"), "page": page, "method": action.get("method")},
+        )
     if kind == "size_correction":
         target = _mm(action.get("target_mm"))
         return _entry(

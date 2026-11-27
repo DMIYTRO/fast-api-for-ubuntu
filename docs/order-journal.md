@@ -74,6 +74,7 @@
 | `pitstop:<action_id>` | pitstop | группа находок PitStop по ActionID, напр. `pitstop:2079` (обтравка), `pitstop:3004` (прозрачность), `pitstop:1153` (суммарное покрытие > 310%), `pitstop:2078` (RGB/ICC), `pitstop:1150` (разрешение) |
 | `pitstop:other` | pitstop | находка без ActionID (текст в `title`, ключ в `data.group_code`) |
 | `local:<code>` | local | локальная проверка (`services/issue_groups.py`, `_LOCAL_RULES`): `low_dpi`, `size_mismatch`, `colorspace_not_allowed`, `tiff_layers`, `pdf_error`… |
+| `local:side_rotated` | local | лицо и оборот были разной ориентации, одна сторона автоматически повёрнута на ±90° при сборке итогового PDF (`processing/side_rotation.py`): `severity: "error"`, заказ красный, печать — с подтверждением оператора; текст «Сторона <side> автоматически повёрнута на <±90>°: проверьте ориентацию и совмещение лица и оборота». Сам поворот — `auto:side_rotated` |
 | `local:other` | local | локальное сообщение вне таблицы (исходный текст в `title`) |
 | `page_rule:<code>` | local | нарушение правила страниц (жёсткая ошибка): `pdf_too_many_pages`, `order_too_many_pages`, `two_page_pdf_one_sided`, `duplex_pages_required`, `two_page_pdf_extra_sides`, `multiple_two_page_pdf` |
 | `prepress:black_solid` | callas | плашка 100% K выше порога (`data.share`, `data.page_shares`) |
@@ -114,6 +115,7 @@ PitStop); `introduced_by_fix` / `baseline_occurrences` — частично до
 | `auto:strip_icc` | ICC-профиль растра CMYK удалён при сборке PDF |
 | `auto:size_correction` | коррекция размера при сборке без отметки `size_fix` (старые запуски) |
 | `auto:rotate` | сторона повёрнута (`data.rotation_degrees`) |
+| `auto:side_rotated` | сторона повёрнута на ±90° для совмещения с другой стороной (`severity: warning`): `data.degrees` (+90 — по часовой, −90 — против), `data.side` (`face`/`back`), `data.method` (`imagemagick` — растр без ресэмпла, `callas` — страница PDF, поворот «запечён», без `/Rotate`), `data.page` и `pages` — страница PDF |
 | `auto:action:<kind>` | любое другое действие обработки файла: сырые поля в `data` |
 
 Состояния берутся из снимка первой проверки, снимков ревизий PDF и итогового

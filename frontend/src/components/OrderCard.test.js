@@ -614,3 +614,21 @@ describe("OrderCard cancelled in Sborka", () => {
     expect(host.querySelector(".sborka-cancelled-error").textContent).toContain("Permission denied");
   });
 });
+
+describe("OrderCard side rotation", () => {
+  it("marks an order whose side was rotated to match the other side", () => {
+    const host = mount({
+      order_id: "26288404", status: "error", files: [],
+      side_alignment: { side: "back", degrees: -90, file: "x-back.jpg", page: null },
+    });
+    const badge = host.querySelector("[data-testid='side-rotation-indicator']");
+    expect(badge?.textContent).toContain("Повёрнут на −90°");
+    expect(badge?.title).toContain("против часовой стрелки");
+    expect(badge?.title).toContain("Сторона back (x-back.jpg)");
+  });
+
+  it("shows no rotation badge without side_alignment", () => {
+    const host = mount({ order_id: "1", status: "passed", files: [] });
+    expect(host.querySelector("[data-testid='side-rotation-indicator']")).toBeNull();
+  });
+});

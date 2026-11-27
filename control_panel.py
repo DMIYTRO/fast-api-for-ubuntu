@@ -808,6 +808,8 @@ def _callas_processor_factory(settings: Settings):
             BatchProcessor,
             strip_icc_cmyk=settings.strip_icc_cmyk,
             auto_bleed_max_concurrent=settings.callas_auto_bleed_max_concurrent,
+            side_auto_rotate=settings.side_auto_rotate_enabled,
+            side_rotate_degrees=settings.side_rotate_degrees,
         )
     client = _shared_callas_client(settings)
     return partial(
@@ -816,9 +818,12 @@ def _callas_processor_factory(settings: Settings):
         pdf_color_converter=_callas_rgb_to_cmyk_converter(settings, client),
         pdf_prepress_checker=_callas_prepress_checker(settings, client),
         pdf_resizer=_callas_pdf_resizer(settings, client),
+        pdf_rotator=_callas_pdf_rotator(settings, client),
         callas_render=settings.callas_render_enabled,
         strip_icc_cmyk=settings.strip_icc_cmyk,
         auto_bleed_max_concurrent=settings.callas_auto_bleed_max_concurrent,
+        side_auto_rotate=settings.side_auto_rotate_enabled,
+        side_rotate_degrees=settings.side_rotate_degrees,
     )
 
 
@@ -842,6 +847,18 @@ def _callas_pdf_resizer(settings: Settings, client=None):
     from services.callas.page_resize import CallasPdfResizer
 
     return CallasPdfResizer(
+        client or _shared_callas_client(settings), settings.callas_pdf_resize_profile
+    )
+
+
+def _callas_pdf_rotator(settings: Settings, client=None):
+    """Поворот стороны-PDF на ±90° (совмещение лица и оборота) QuickFix callas через тот же
+    профиль, что и коррекция размера; None, если поворот выключен или callas не настроен."""
+    if not settings.callas_url or not settings.side_auto_rotate_enabled:
+        return None
+    from services.callas.page_rotate import CallasPdfRotator
+
+    return CallasPdfRotator(
         client or _shared_callas_client(settings), settings.callas_pdf_resize_profile
     )
 

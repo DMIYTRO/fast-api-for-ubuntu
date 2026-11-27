@@ -12,6 +12,8 @@ from typing import Any
 
 from processing.models import FileCheck, OrderCheck, ParsedFilename
 
+from processing.side_rotation import side_rotation_message
+
 from .issue_groups import attach_issue_groups
 from .postpress import with_postpress_operations
 
@@ -97,6 +99,11 @@ def file_check_to_dto(
         "expected_mm": list(value.expected_mm) if value.expected_mm else None,
         "downsampled_from_dpi": value.downsampled_from_dpi,
         "rotation_degrees": value.rotation_degrees,
+        # Поворот стороны для совмещения лица и оборота (±90°, 0 — нет).
+        "side_rotation_degrees": value.side_rotation_degrees,
+        "pdf_page_rotations": {
+            str(page): degrees for page, degrees in sorted(value.pdf_page_rotations.items())
+        },
         "orientation_verified": value.orientation_verified,
         "passed": value.passed,
         "source_folder": value.source_folder,
@@ -147,7 +154,7 @@ def order_check_to_dto(
     if status is None:
         if pending:
             status = "waiting_confirmation"
-        elif not value.passed:
+        elif not value.passed or value.side_alignment:
             status = "error"
         elif value.warnings or any(item.warnings for item in value.files):
             status = "warning"
@@ -192,6 +199,11 @@ def order_check_to_dto(
         result["prepress"] = value.prepress
     if value.check_policy is not None:
         result["check_policy"] = dict(value.check_policy)
+    if value.side_alignment:
+        # Заказ собран с повёрнутой стороной: ошибка заказа для оператора (не в
+        # ``OrderCheck.errors``, иначе заказ не собирался бы).
+        result["side_alignment"] = dict(value.side_alignment)
+        result["errors"].append(side_rotation_message(value.side_alignment))
     if current_pdf_revision is not None:
         result["current_pdf_revision"] = current_pdf_revision
     if current_pdf_sha256 is not None:

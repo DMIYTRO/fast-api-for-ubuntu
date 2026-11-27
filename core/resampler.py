@@ -123,3 +123,36 @@ def canvas_image(
 
     run_command(cmd, check=True)
     return output_path
+
+
+def rotate_image(
+    input_path: str,
+    output_path: str,
+    degrees: int,
+    *,
+    density: Optional[str] = None,
+    ignore_tiff_layers: bool = False,
+) -> str:
+    """Повернуть растр на ±90° без ресэмпла (ImageMagick ``-rotate``: по часовой при +90).
+
+    Пиксели только переставляются: размер в пикселях меняется местами, цвет и значения
+    не пересчитываются. ``density`` — DPI результата («x» или «XxY», уже для повёрнутого
+    изображения). Результат пишется в ``output_path`` (лучше TIFF: без повторного сжатия
+    JPEG); исходник не меняется.
+    """
+    if int(degrees) not in {90, -90, 270, -270}:
+        raise ValueError(f"поворот стороны допускается только на ±90°, получено {degrees}")
+    magick_cmd = shutil.which("magick")
+    if not magick_cmd:
+        raise FileNotFoundError("ImageMagick (`magick`) не найден.")
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    cmd = [magick_cmd]
+    if ignore_tiff_layers:
+        cmd += ["-define", "tiff:ignore-layers=true"]
+    cmd += [input_path, "-rotate", str(int(degrees)), "+repage"]
+    if density:
+        cmd += ["-units", "PixelsPerInch", "-density", str(density)]
+    cmd += [output_path]
+    run_command(cmd, check=True)
+    return output_path

@@ -300,8 +300,13 @@ class OrderWorkflowService:
                     f"PitStop не проверил собранный итоговый PDF ({reason}). Заказ не отправлен "
                     "в печать и остался с ошибками; повторите «Провести в печать» позже."
                 )
+        # Сторона повёрнута при сборке (processing/side_rotation.py): исправление Callas этого
+        # PDF и сборка при печати поворот сохраняют — заказ остаётся красным; ручная замена
+        # PDF признак снимает.
+        side_alignment = order.get("side_alignment") if isinstance(order.get("side_alignment"), dict) else None
+        keeps_rotation = side_alignment is not None and (callas_fix or prebuilt is not None)
         status = completed_status(
-            local_errors=not readable_pdf(inspection),
+            local_errors=not readable_pdf(inspection) or keeps_rotation,
             local_warnings=bool(inspection.errors or inspection.warnings),
             pitstop=pitstop,
             # Overprint — по проверке этой же ревизии (кандидата), не по прежнему PDF.
@@ -355,6 +360,7 @@ class OrderWorkflowService:
                     pitstop_baseline=captured_baseline,
                     invalidate_pitstop_baseline=not callas_fix,
                     **({"created_by_action": created_by_action} if created_by_action else {}),
+                    **({"clear_side_alignment": True} if side_alignment is not None and not keeps_rotation else {}),
                 )
             except Exception:
                 # Storage did not commit the new status: restore its previous bytes.

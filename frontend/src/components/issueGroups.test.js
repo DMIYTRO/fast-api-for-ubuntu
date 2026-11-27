@@ -186,3 +186,10 @@ describe("policy fields in pitstop groups", () => {
     expect(by["action:1"]).toMatchObject({ policy_demoted: false, policy_unclassified: false, category_label: "" });
   });
 });
+
+describe("side rotation message", () => {
+  it("has its own group code, distinct from the planned-rotation warning", () => {
+    expect(normalizeIssueMessage("Сторона back автоматически повёрнута на −90°: проверьте ориентацию и совмещение лица и оборота").code).toBe("side_rotated");
+    expect(normalizeIssueMessage("back будет автоматически повёрнут на 90°; проверьте").code).toBe("auto_rotate");
+  });
+});

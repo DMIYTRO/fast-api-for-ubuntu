@@ -17,6 +17,7 @@ from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from processing.models import OrderCheck
+from processing.side_rotation import side_rotation_message
 
 from .batch_adapter import (
     BatchProcessorAdapter,
@@ -869,8 +870,12 @@ class RunCoordinator:
         pitstop_baseline: dict[str, Any] | None = None,
         invalidate_pitstop_baseline: bool = False,
         created_by_action: str | None = None,
+        clear_side_alignment: bool = False,
     ) -> dict[str, Any]:
         """Replace the production PDF with a re-checked revision.
+
+        ``clear_side_alignment`` — PDF заменён вручную: автоматический поворот стороны
+        (``side_alignment`` и его ошибка заказа) к новой ревизии не относится.
 
         ``created_by_action`` (e.g. ``forced_print_build``) is stored as
         ``current_pdf_created_by`` and becomes ``pdf_revisions.created_by_action``.
@@ -924,6 +929,11 @@ class RunCoordinator:
             ):
                 updated["pitstop_baseline_invalid_since_revision"] = current_pdf_revision
             updated["processing_errors"] = list(errors or [])
+            if clear_side_alignment and updated.get("side_alignment"):
+                message = side_rotation_message(updated.pop("side_alignment"))
+                updated["errors"] = [
+                    text for text in updated.get("errors") or [] if text != message
+                ]
             updated["status"] = status
             updated["passed"] = status in {"passed", "warning"}
             attach_issue_groups(updated)
@@ -2098,7 +2108,7 @@ def _inspection_status(order: OrderCheck) -> str:
         return OrderStatus.CANCELLED.value
     if any(item.resample_decision == "ask_confirmation" for item in order.files):
         return "waiting_confirmation"
-    if not order.passed:
+    if not order.passed or getattr(order, "side_alignment", None):
         return "error"
     if order.warnings or any(item.warnings for item in order.files):
         return "warning"
