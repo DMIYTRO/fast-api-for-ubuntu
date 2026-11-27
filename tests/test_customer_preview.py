@@ -30,7 +30,9 @@ from services.customer_preview import (  # noqa: E402
     derive_filename,
     has_postpress,
     preview_url,
+    preview_urls,
     public_customer_preview,
+    template_filename,
     valid_filename,
 )
 from services.dto import order_check_to_dto  # noqa: E402
@@ -204,8 +206,47 @@ def test_changed_last_modified_is_downloaded_again(tmp_path):
 def test_404_means_no_preview_and_no_file(tmp_path):
     http = FakeHttp()
     assert fetcher_for(http).fetch("1", NAME, tmp_path) is None
-    assert [method for method, _ in http.calls] == ["HEAD"]
+    assert http.calls == [("HEAD", url) for url in preview_urls(NAME)]
     assert not (tmp_path / "Previews").exists()
+
+
+def test_candidate_urls_try_jpg_and_the_unfilled_name_template():
+    templated = "{dateD}_{delivery}(P)_Bezlam_350_mel_(144x101)_4-4_L4_T32_(1733-26250113)_drill1"
+    assert template_filename(NAME) == templated
+    assert template_filename("29_KS(P)_x") == "{dateD}_{delivery}(P)_x"
+    assert template_filename("Візитка_(90x50)") is None
+    assert preview_urls(NAME) == [
+        preview_url(NAME), preview_url(NAME, extension=".jpg"),
+        preview_url(templated), preview_url(templated, extension=".jpg"),
+    ]
+    assert preview_urls("from-record") == [
+        preview_url("from-record"), preview_url("from-record", extension=".jpg"),
+    ]
+
+
+def test_scheme_saved_under_unfilled_template_as_jpg_is_found(tmp_path):
+    # order 26286105: Sborka kept the scheme as «{dateD}_{delivery}(P)_…-preview.jpg»
+    name = "30_NP(P)_Mlam10_250_whiteBack_250_(217x60)_4-0_L39_T230_(3655-26286105)_creas4"
+    url = (
+        "https://sborka.ua/preview/%7BdateD%7D_%7Bdelivery%7D%28P%29_Mlam10_250_whiteBack_250_"
+        "%28217x60%29_4-0_L39_T230_%283655-26286105%29_creas4-preview.jpg"
+    )
+    http = FakeHttp()
+    http.add(url, body=JPEG, content_type="image/jpeg")
+    result = fetcher_for(http).fetch("26286105", name, tmp_path)
+
+    target = tmp_path / "Previews" / "Customer" / "26286105" / f"{name}-preview.jpg"
+    assert result is not None and result["file"] == str(target)
+    assert result["source_url"] == url
+    assert target.read_bytes() == JPEG
+    assert [method for method, _ in http.calls] == ["HEAD"] * 4 + ["GET"]
+
+
+def test_real_name_png_wins_without_trying_the_others(tmp_path):
+    http = FakeHttp()
+    http.add(preview_url(NAME))
+    assert fetcher_for(http).fetch("1", NAME, tmp_path) is not None
+    assert http.calls == [("HEAD", preview_url(NAME)), ("GET", preview_url(NAME))]
 
 
 @pytest.mark.parametrize("content_type", ["text/html", "image/gif", ""])
@@ -332,7 +373,7 @@ def test_adapter_fetches_only_orders_with_postpress(tmp_path):
     adapter.wait_customer_previews(5)
 
     requested = sorted(url for method, url in http.calls if method == "HEAD")
-    assert requested == sorted([preview_url("from-record"), preview_url(f"{NAME}_101")])
+    assert requested == sorted([preview_url("from-record"), *preview_urls(f"{NAME}_101")])
     assert orders[0].sborka_filename == "from-record"
     preview = adapter.customer_preview_for(orders[0])
     assert preview["source_url"] == preview_url("from-record")

@@ -10,6 +10,11 @@
 Скачивание идёт в фоне и никогда не задерживает проверку: 404 или любой сбой —
 просто «схемы нет» (в журнал приложения, не в ошибки заказа). Найденная схема
 сохраняется в ``<входная папка>/Previews/Customer/<заказ>/<filename>-preview.<ext>``.
+
+Схема бывает и ``.png``, и ``.jpg``. Кроме того, Sborka иногда сохраняет её под
+именем с неподставленным шаблоном префикса — ``{dateD}_{delivery}(P)_…`` вместо
+``30_NP(P)_…`` (заказ 26286105). Поэтому адреса пробуются по очереди
+(``preview_urls``): настоящее имя, затем имя с шаблоном, каждое с ``.png`` и ``.jpg``.
 """
 
 from __future__ import annotations
@@ -42,6 +47,10 @@ _MAGIC = {".png": b"\x89PNG\r\n\x1a\n", ".jpg": b"\xff\xd8\xff"}
 _FILENAME_RE = re.compile(r"^[\w()\[\]\-.,+=@#№ ]+$")
 _SIDE_SUFFIX_RE = re.compile(r"-(?:face|back)$", re.IGNORECASE)
 _ORDER_DIR_RE = re.compile(r"^[\w\-]{1,64}$")
+#: Префикс имени Sborka «<день>_<доставка>» перед «(»: ``30_NP(P)_…``, ``29_KS(P)_…``.
+_PREFIX_RE = re.compile(r"^\d{1,2}_[A-Za-z]+(?=\()")
+TEMPLATE_PREFIX = "{dateD}_{delivery}"
+PREVIEW_EXTENSIONS = (".png", ".jpg")
 
 
 @dataclass(frozen=True)
@@ -117,8 +126,26 @@ def derive_filename(paths: Iterable[Path | str]) -> str | None:
     return valid_filename(_SIDE_SUFFIX_RE.sub("", stem))
 
 
-def preview_url(filename: str, base_url: str = PREVIEW_BASE_URL) -> str:
-    return f"{base_url}{quote(filename + PREVIEW_SUFFIX, safe='')}.png"
+def preview_url(
+    filename: str, base_url: str = PREVIEW_BASE_URL, extension: str = ".png"
+) -> str:
+    return f"{base_url}{quote(filename + PREVIEW_SUFFIX, safe='')}{extension}"
+
+
+def template_filename(filename: str) -> str | None:
+    """Имя с неподставленным шаблоном префикса (``{dateD}_{delivery}``) или ``None``."""
+    if not _PREFIX_RE.match(filename):
+        return None
+    return _PREFIX_RE.sub(TEMPLATE_PREFIX, filename, count=1)
+
+
+def preview_urls(filename: str, base_url: str = PREVIEW_BASE_URL) -> list[str]:
+    """Адреса схемы в порядке проверки: настоящее имя, затем шаблонное; ``.png``, ``.jpg``."""
+    names = [filename]
+    templated = template_filename(filename)
+    if templated:
+        names.append(templated)
+    return [preview_url(name, base_url, ext) for name in names for ext in PREVIEW_EXTENSIONS]
 
 
 def public_customer_preview(
@@ -190,10 +217,11 @@ class CustomerPreviewFetcher:
                 "customer_preview.invalid_name order_id=%s filename=%r", order_id, filename
             )
             return None
-        url = preview_url(name, self.base_url)
+        urls = preview_urls(name, self.base_url)
+        url = urls[0]
         with self._slots:
             try:
-                return self._fetch(order_dir, name, url, Path(input_root))
+                return self._fetch(order_dir, name, urls, Path(input_root))
             except Exception as exc:  # noqa: BLE001 — схема никогда не ломает проверку
                 logger.warning(
                     "customer_preview.failed order_id=%s url=%s error=%s",
@@ -201,11 +229,22 @@ class CustomerPreviewFetcher:
                 )
                 return None
 
-    def _fetch(self, order_id: str, name: str, url: str, input_root: Path) -> dict[str, Any] | None:
-        head = self.http("HEAD", url, self.timeout_seconds, self.max_bytes)
-        if head.status != 200:
-            log = logger.info if head.status == 404 else logger.warning
-            log("customer_preview.absent order_id=%s status=%s", order_id, head.status)
+    def _fetch(
+        self, order_id: str, name: str, urls: list[str], input_root: Path
+    ) -> dict[str, Any] | None:
+        statuses: list[int] = []
+        for url in urls:
+            head = self.http("HEAD", url, self.timeout_seconds, self.max_bytes)
+            if head.status == 200:
+                break
+            statuses.append(head.status)
+        else:
+            unexpected = [status for status in statuses if status != 404]
+            log = logger.warning if unexpected else logger.info
+            log(
+                "customer_preview.absent order_id=%s status=%s tried=%s",
+                order_id, unexpected[0] if unexpected else 404, len(urls),
+            )
             return None
         suffix = _content_suffix(head)
         if suffix is None:
