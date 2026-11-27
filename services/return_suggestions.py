@@ -66,6 +66,8 @@ _LOCAL_CODE_SIGNALS: Mapping[str, str] = {
     "single_file_required": "extra_back_one_sided",
     "missing_back": "missing_back",
     "missing_face": "missing_face",
+    "side_rotated": "side_orientation",
+    "orientation_mismatch": "side_orientation",
     "tiff_layers": "tiff_layers",
     "tiff_alpha": "tiff_alpha",
     "file_unreadable": "file_unreadable",

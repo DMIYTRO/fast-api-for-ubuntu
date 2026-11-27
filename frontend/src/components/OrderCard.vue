@@ -56,6 +56,18 @@ const flattenedTiffs = computed(() => files.value.filter((file) => file.tiff_fla
 // Несведённая прозрачность TIFF сведена на белый фон при сборке PDF.
 const transparencyFlattened = computed(() => files.value.filter((file) => file.transparency_flattened));
 const transparencyTitle = computed(() => `Прозрачность сведена на белый фон (ImageMagick): ${transparencyFlattened.value.map((file) => file.name || file.filename).join(", ")}. Проверьте превью.`);
+// Сторона повёрнута на ±90° для совмещения лица и оборота (side_alignment): заказ красный.
+const formatTurn = (degrees) => `${degrees > 0 ? "+" : "−"}${Math.abs(degrees)}°`;
+const sideRotation = computed(() => {
+  const alignment = props.order.side_alignment;
+  if (!alignment?.side || !Number(alignment.degrees)) return null;
+  const degrees = Number(alignment.degrees);
+  const page = alignment.page ? `, стр. ${alignment.page}` : "";
+  return {
+    label: `Повёрнут на ${formatTurn(degrees)}`,
+    title: `Сторона ${alignment.side} (${alignment.file || "файл"}${page}) автоматически повёрнута на ${formatTurn(degrees)} ${degrees > 0 ? "по часовой стрелке" : "против часовой стрелки"}, чтобы совпасть по ориентации с другой стороной. Проверьте по превью ориентацию и совмещение лица и оборота.`,
+  };
+});
 const tiffFlattenTitle = computed(() => flattenedTiffs.value.map((file) => `${file.name || file.filename || "TIFF"}: сведён сохранённый видимый композит; видимых слоёв ${file.tiff_visible_layer_count ?? "—"}, скрытых ${file.tiff_hidden_layer_count ?? "—"}`).join("; "));
 const colorMode = computed(() => parsed.value.front_colors != null ? `${parsed.value.front_colors}-${parsed.value.back_colors ?? 0}` : "—");
 const declaredSize = computed(() => parsed.value.width_mm && parsed.value.height_mm ? `${parsed.value.width_mm} × ${parsed.value.height_mm} мм` : "Размер не указан");
@@ -328,6 +340,10 @@ onBeforeUnmount(() => layeredTiffPolls.forEach(clearTimeout));
         <span v-if="policyBadge" class="check-policy-indicator" :class="`policy-${policyBadge.key}`" :title="policyBadge.title" :aria-label="policyBadge.title">{{ policyBadge.label }}</span>
         <span v-if="kit" class="kit-indicator" :title="kitTitle" :aria-label="kitTitle">Комплект {{ kit.position }}/{{ kit.size }}<template v-if="kit.position !== 1"> · {{ kit.main_id }}</template></span>
         <span v-if="sizeBadge" class="callas-source-fix-indicator size-fix-indicator" :title="sizeBadge.title" :aria-label="sizeBadge.title">{{ sizeBadge.label }}</span>
+        <span v-if="sideRotation" class="tiff-flatten-indicator side-rotation-indicator" data-testid="side-rotation-indicator" :title="sideRotation.title" :aria-label="sideRotation.title">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v4h-4" /></svg>
+          {{ sideRotation.label }}
+        </span>
         <span v-if="flattenedTiffs.length" class="tiff-flatten-indicator" :title="tiffFlattenTitle" :aria-label="tiffFlattenTitle">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" aria-hidden="true"><path d="m3 7 9-4 9 4-9 4-9-4Zm0 5 9 4 9-4M3 17l9 4 9-4" /></svg>
           TIFF сведён
