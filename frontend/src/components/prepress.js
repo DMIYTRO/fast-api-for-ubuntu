@@ -224,8 +224,8 @@ export function visiblePrepressNotices(order) {
 export const OVERPRINT_CODE = "prepress:overprint";
 export const isOverprintGroup = (group) => String(group?.code || "").startsWith(OVERPRINT_CODE);
 
-// Overprint итогового PDF (order.prepress.overprint). Не только технические краски — ошибка
-// (заказ красный в любой политике), только технические — справка, сбой проверки — предупреждение.
+// Overprint итогового PDF (order.prepress.overprint). Не только технические краски — предупреждение
+// (заказ жёлтый в любой политике), только технические — справка, сбой проверки — предупреждение.
 export function overprintNotices(order) {
   const block = order?.prepress?.overprint;
   if (!block || typeof block !== "object") return [];
@@ -234,7 +234,7 @@ export function overprintNotices(order) {
   }
   if (!ok(block)) return [];
   const notices = [];
-  if (block.blocking_count > 0 && block.message) notices.push({ key: "overprint", level: "error", text: block.message });
+  if (block.blocking_count > 0 && block.message) notices.push({ key: "overprint", level: "warning", text: block.message });
   if (block.technical_count > 0 && block.technical_message) {
     notices.push({ key: "overprint_technical", level: "info", text: block.technical_message, pinned: true });
   }

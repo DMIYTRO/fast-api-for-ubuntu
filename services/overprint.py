@@ -5,9 +5,11 @@
 функции без зависимостей от клиента callas: их используют расчёт статуса
 (``services.pdf_routing.completed_status``), группы проблем и журнал заказа.
 
-Решение оператора (2026-11-21): overprint на любом объекте, кроме технических красок
-(белила, лак, контур реза и т. п.), — ошибка заказа (красная группа) в любой политике
-проверки. Overprint только на технических красках — справка, статус не меняется.
+Решение оператора (2026-11-27, раньше — ошибка с 2026-11-21): overprint на любом объекте,
+кроме технических красок (белила, лак, контур реза и т. п.), — предупреждение (жёлтая
+группа) в любой политике проверки: профиль конвертации RGB→CMYK сам ставит overprint на
+чёрное (запуск 5beedd75: 35 из 35 сконвертированных заказов), и заказ не должен краснеть.
+Overprint только на технических красках — справка, статус не меняется.
 Сбой проверки — предупреждение: заказ не краснеет из-за сбоя callas, но и не
 считается проверенным.
 """
@@ -69,17 +71,23 @@ def _count(value: object) -> int:
 def overprint_status_effect(prepress: object) -> str | None:
     """Влияние проверки overprint на итоговый статус: ``error``, ``warning`` или ``None``.
 
-    ``error`` — проверка выполнена и нашла overprint не только на технических красках;
-    ``warning`` — проверка не выполнена (сбой callas): заказ не краснеет, но и не зелёный.
+    ``warning`` — проверка нашла overprint не только на технических красках или не
+    выполнена (сбой callas): заказ не краснеет, но и не зелёный.
     Справочные находки (только технические краски), пропуск и отсутствие блока — ``None``.
     """
     block = overprint_block(prepress)
     status = block.get("status")
     if status == "ok":
-        return STATUS_ERROR if _count(block.get("blocking_count")) else None
+        return STATUS_WARNING if _count(block.get("blocking_count")) else None
     if status == "failed":
         return STATUS_WARNING
     return None
+
+
+def has_blocking_overprint(prepress: object) -> bool:
+    """Проверка выполнена и нашла overprint не только на технических красках."""
+    block = overprint_block(prepress)
+    return block.get("status") == "ok" and bool(_count(block.get("blocking_count")))
 
 
 def overprint_failed_message(block: Mapping[str, Any]) -> str:
@@ -107,7 +115,7 @@ def overprint_issue_groups(prepress: object) -> list[dict[str, Any]]:
         blocking = _count(block.get("blocking_count"))
         technical = _count(block.get("technical_count"))
         if blocking and block.get("message"):
-            group("prepress:overprint", STATUS_ERROR, str(block["message"]), blocking,
+            group("prepress:overprint", STATUS_WARNING, str(block["message"]), blocking,
                   block.get("blocking_pages"), block.get("samples"))
         if technical and block.get("technical_message"):
             group("prepress:overprint", "info", str(block["technical_message"]), technical,

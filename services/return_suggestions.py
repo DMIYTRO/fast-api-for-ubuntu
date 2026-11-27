@@ -41,7 +41,7 @@ from config.return_reason_rules import (
 from config.overprint import DEFAULT_OVERPRINT_IGNORE_SPOTS
 from core.return_reasons import load_return_reasons
 from services.issue_groups import normalize_local_message, pitstop_severity
-from services.overprint import is_technical_spot, overprint_block, overprint_status_effect
+from services.overprint import has_blocking_overprint, is_technical_spot, overprint_block
 
 logger = logging.getLogger("image_magic.return_suggestions")
 
@@ -407,7 +407,7 @@ def _collect(dto: Mapping[str, Any]) -> tuple[_Hits, list[tuple[float, float]], 
                 hits.add("ink_min", f"Светлые участки{lighter}: {percent:g}% площади{on_page}")
 
     prepress = dto.get("prepress")
-    if overprint_status_effect(prepress) == "error":
+    if has_blocking_overprint(prepress):
         block = overprint_block(prepress)
         by_kind = block.get("by_kind") if isinstance(block.get("by_kind"), Mapping) else {}
         white = by_kind.get("white") if isinstance(by_kind, Mapping) else None

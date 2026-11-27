@@ -222,7 +222,8 @@ PASSED_PITSTOP = {"execution_status": "completed", "verdict": "passed"}
 
 
 def test_status_effect_and_completed_status():
-    assert overprint_status_effect(BLOCKING) == "error"
+    # 27.11: overprint (не только технические краски) — предупреждение, не ошибка.
+    assert overprint_status_effect(BLOCKING) == "warning"
     assert overprint_status_effect(TECHNICAL) is None
     assert overprint_status_effect(FAILED) == "warning"
     assert overprint_status_effect({"overprint": {"status": "skipped"}}) is None
@@ -232,7 +233,8 @@ def test_status_effect_and_completed_status():
         args = {"local_errors": False, "local_warnings": False, "pitstop": PASSED_PITSTOP, **kwargs}
         return completed_status(**args, prepress=prepress)
 
-    assert status(BLOCKING) == "error"
+    assert status(BLOCKING) == "warning"
+    assert status(BLOCKING, local_errors=True) == "error"
     assert status(TECHNICAL) == "passed"
     assert status(FAILED) == "warning"
     # сбой проверки не делает красный заказ зелёным
@@ -243,7 +245,7 @@ def test_status_effect_and_completed_status():
 def test_issue_groups_are_one_line_per_kind():
     groups = overprint_issue_groups(BLOCKING)
     assert [(g["code"], g["severity"], g["count"], g["pages"]) for g in groups] == [
-        ("prepress:overprint", "error", 2, [1]),
+        ("prepress:overprint", "warning", 2, [1]),
         ("prepress:overprint", "info", 1, [2]),
     ]
     assert groups[0]["source"] == "callas" and groups[0]["samples"] == ["Заливка K100 (DeviceCMYK), стр. 1"]
@@ -252,14 +254,14 @@ def test_issue_groups_are_one_line_per_kind():
     dto = {"errors": ["размер 1 мм"], "warnings": [], "prepress": BLOCKING, "files": []}
     built = issue_groups_for_order_dto(dto)
     assert [g["code"] for g in built if g["source"] == "callas"] == ["prepress:overprint", "prepress:overprint"]
-    assert built[0]["source"] == "local"  # локальная ошибка выше ошибки callas
+    assert built[0]["source"] == "local"  # локальная ошибка выше предупреждения callas
     revision = issue_groups_for_order_dto({"revision_check": {"errors": [], "warnings": []}, "prepress": BLOCKING})
-    assert revision[0]["code"] == "prepress:overprint" and revision[0]["severity"] == "error"
+    assert revision[0]["code"] == "prepress:overprint" and revision[0]["severity"] == "warning"
 
 
 def test_journal_entries():
     entry = _prepress_entries({"prepress": BLOCKING})[0]
-    assert (entry["code"], entry["severity"], entry["count"], entry["pages"]) == ("prepress:overprint", "error", 2, [1])
+    assert (entry["code"], entry["severity"], entry["count"], entry["pages"]) == ("prepress:overprint", "warning", 2, [1])
     assert entry["data"]["technical_count"] == 1 and entry["data"]["samples"]
     info = _prepress_entries({"prepress": TECHNICAL})[0]
     assert (info["code"], info["severity"], info["count"]) == ("prepress:overprint", "info", 20)
@@ -271,14 +273,14 @@ def test_journal_entries():
 def test_journal_marks_fixed_overprint_as_resolved():
     from services.order_journal import build_order_journal
 
-    initial = {"order_id": "1", "status": "error", "prepress": BLOCKING}
+    initial = {"order_id": "1", "status": "warning", "prepress": BLOCKING}
     final = {"order_id": "1", "status": "passed", "prepress": {"overprint": {"status": "ok", "blocking_count": 0, "technical_count": 0}}}
     journal = build_order_journal(
         final,
         events=[{"id": 1, "type": "order.completed", "created_at": "2026-11-21T10:00:00+00:00", "data": {"order": initial}}],
     )
     entry = next(item for item in journal["entries"] if item["code"] == "prepress:overprint")
-    assert entry["outcome"] == "resolved" and entry["severity"] == "error"
+    assert entry["outcome"] == "resolved" and entry["severity"] == "warning"
 
 
 # ----------------------------------------------------------------------------- adapter
@@ -338,7 +340,7 @@ def order_in(tmp_path, *, errors=()):
 
 
 @pytest.mark.parametrize("prepress, status, folder", [
-    (BLOCKING, "error", "Failed"),
+    (BLOCKING, "warning", "Rework"),
     (TECHNICAL, "passed", "Checked"),
     (FAILED, "warning", "Rework"),
     (None, "passed", "Checked"),
@@ -352,27 +354,27 @@ def test_adapter_status_under_basic_policy_with_pitstop_passed(tmp_path, prepres
     dto = order_check_to_dto(order, status=status, pitstop=artifacts.pitstop)
     codes = {(g["code"], g["severity"]) for g in dto["issue_groups"]}
     if prepress is BLOCKING:
-        assert ("prepress:overprint", "error") in codes
+        assert ("prepress:overprint", "warning") in codes
     if prepress is FAILED:
         assert ("prepress:overprint:failed", "warning") in codes
 
 
-def test_adapter_full_policy_blocking_is_still_error(tmp_path):
+def test_adapter_full_policy_blocking_is_warning_too(tmp_path):
     adapter = adapter_with(tmp_path, BLOCKING)
     adapter.options = ProcessingOptions(str(tmp_path), "digital", generate_previews=False,
                                         copy_failures=False, check_policy="full")
     order = order_in(tmp_path)
     artifacts = adapter.process_order(order)
     assert order.check_policy["key"] == "full"
-    assert _completed_order_status(order, artifacts) == "error"
+    assert _completed_order_status(order, artifacts) == "warning"
 
 
-def test_adapter_diagnostic_pdf_with_overprint_is_error(tmp_path):
+def test_adapter_diagnostic_pdf_with_overprint_is_warning(tmp_path):
     order = order_in(tmp_path, errors=["размер 80x40 мм не соответствует"])
     artifacts = adapter_with(tmp_path, None, diagnostic=BLOCKING).process_order(order)
     assert artifacts.pdf_kind == "diagnostic"
-    assert _completed_order_status(order, artifacts) == "error"
-    # без overprint диагностический заказ с читаемыми находками — «warning», как раньше
+    assert _completed_order_status(order, artifacts) == "warning"
+    # без overprint — тоже «warning», как раньше
     clean = order_in(tmp_path, errors=["размер 80x40 мм не соответствует"])
     artifacts = adapter_with(tmp_path, None, diagnostic=TECHNICAL).process_order(clean)
     assert _completed_order_status(clean, artifacts) == "warning"

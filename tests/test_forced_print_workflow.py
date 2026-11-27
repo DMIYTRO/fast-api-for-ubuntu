@@ -171,6 +171,8 @@ class ForcedPrintWorkflowTests(unittest.TestCase):
         return {item["order_id"]: item for item in response.json()["items"]}
 
     def test_low_dpi_order_is_built_checked_by_pitstop_and_printed(self):
+        # Красным заказ делает PitStop диагностического PDF; overprint — лишь предупреждение.
+        self.pitstop.fail_diagnostic = True
         make_pdf(self.root / LOW, dpi=200)
         run_id = self.make_run()
         order = self.orders(run_id)["26252239"]
@@ -195,7 +197,7 @@ class ForcedPrintWorkflowTests(unittest.TestCase):
         self.assertEqual(item["status"], "prepared", item)
         build = item["forced_print_build"]
         self.assertEqual((build["pdf_revision"], build["created_by_action"]), (2, "forced_print_build"))
-        self.assertEqual(build["status_after_build"], "error")  # overprint остался
+        self.assertEqual(build["status_after_build"], "warning")  # overprint остался — предупреждение
 
         order = self.orders(run_id)["26252239"]
         printed = self.root / "PDF" / "Print" / diagnostic.name
@@ -246,6 +248,7 @@ class ForcedPrintWorkflowTests(unittest.TestCase):
         self.assertEqual(self.orders(run_id)["26252239"]["status"], "accepted_for_print")
 
     def test_pitstop_failure_keeps_order_red_and_out_of_print(self):
+        self.pitstop.fail_diagnostic = True
         make_pdf(self.root / LOW, dpi=200)
         run_id = self.make_run()
         diagnostic = Path(self.orders(run_id)["26252239"]["pdf_path"])
@@ -297,6 +300,7 @@ class ForcedPrintWorkflowTests(unittest.TestCase):
         self.assertEqual(len(self.merger.calls), 1)
 
     def test_bulk_print_builds_forced_order_and_keeps_others_independent(self):
+        self.pitstop.fail_diagnostic = True
         make_pdf(self.root / LOW, dpi=200)
         make_pdf(self.root / GOOD_A, dpi=None)
         make_pdf(self.root / GOOD_B, dpi=None)

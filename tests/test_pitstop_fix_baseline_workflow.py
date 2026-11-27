@@ -215,8 +215,8 @@ class BaselineFixTests(CallasFixApiTests):
         self.pitstop.reports.append(pitstop_report)
         return self.workflow.recheck_pdf_revision(run, order, candidate, callas_fix=True, **kwargs)
 
-    def test_recheck_reruns_overprint_on_the_new_revision_and_a_fixed_file_clears_the_error(self):
-        """Overprint — ошибка в любой политике и при чистом PitStop; новая ревизия проверяется заново."""
+    def test_recheck_reruns_overprint_on_the_new_revision_and_a_fixed_file_clears_the_warning(self):
+        """Overprint — предупреждение в любой политике и при чистом PitStop; новая ревизия проверяется заново."""
         from services.check_policy import PolicySettings
 
         blocking = {"overprint": {
@@ -239,10 +239,10 @@ class BaselineFixTests(CallasFixApiTests):
         order, pitstop, _revision, _sha = self.recheck(run_id, report((TRANSPARENCY, 1)))
         self.assertEqual(checked, ["callas-candidate.pdf"])
         self.assertEqual((pitstop["check_policy"], pitstop["verdict"]), ("basic", "passed"))
-        self.assertEqual(order["status"], "error")
-        self.assertEqual(Path(order["pdf_path"]).parent.name, "Failed")
+        self.assertEqual(order["status"], "warning")
+        self.assertEqual(Path(order["pdf_path"]).parent.name, "Rework")
         groups = [(g["code"], g["severity"]) for g in order["issue_groups"]]
-        self.assertIn(("prepress:overprint", "error"), groups)
+        self.assertIn(("prepress:overprint", "warning"), groups)
 
         order, _pitstop, _revision, _sha = self.recheck(run_id, report())
         self.assertEqual(checked, ["callas-candidate.pdf", "callas-candidate.pdf"])

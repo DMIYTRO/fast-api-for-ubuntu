@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from .issue_groups import normalize_local_message
-from .overprint import overprint_status_effect
+from .overprint import has_blocking_overprint
 
 #: ``created_by_action`` ревизии PDF и код блокера / записи журнала.
 FORCED_PRINT_BUILD = "forced_print_build"
@@ -218,7 +218,7 @@ def forced_build_message(order: Mapping[str, Any], assessment: LowDpiAssessment)
         f"{_dpi(assessment.required_dpi)}). Будет собран итоговый PDF и отправлен в печать "
         "под вашу ответственность."
     )
-    if overprint_status_effect(order.get("prepress")) == "error":
+    if has_blocking_overprint(order.get("prepress")):
         message += (
             " Также найден overprint (наложение красок): он останется в итоговом PDF."
         )

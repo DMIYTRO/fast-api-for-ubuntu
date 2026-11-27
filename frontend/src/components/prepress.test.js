@@ -250,12 +250,12 @@ describe("overprint notices", () => {
   };
   const technical = { ...blocking, blocking_count: 0, blocking_pages: [], message: null };
   const groups = [
-    { code: "prepress:overprint", source: "callas", severity: "error", message: blocking.message, count: 2, pages: [1], files: [], samples: [] },
+    { code: "prepress:overprint", source: "callas", severity: "warning", message: blocking.message, count: 2, pages: [1], files: [], samples: [] },
     { code: "prepress:overprint", source: "callas", severity: "info", message: technical.technical_message, count: 1, pages: [2], files: [], samples: [] },
   ];
 
-  it("maps the backend block to error, pinned info and failure warning", () => {
-    expect(overprintNotices({ prepress: { overprint: blocking } }).map((note) => [note.key, note.level])).toEqual([["overprint", "error"], ["overprint_technical", "info"]]);
+  it("maps the backend block to warning, pinned info and failure warning", () => {
+    expect(overprintNotices({ prepress: { overprint: blocking } }).map((note) => [note.key, note.level])).toEqual([["overprint", "warning"], ["overprint_technical", "info"]]);
     expect(overprintNotices({ prepress: { overprint: technical } })).toEqual([{ key: "overprint_technical", level: "info", text: technical.technical_message, pinned: true }]);
     expect(overprintNotices({ prepress: { overprint: { status: "failed", error: "callas недоступен" } } })).toEqual([
       { key: "overprint_failed", level: "warning", text: "Проверка overprint не выполнена: callas недоступен" },
@@ -272,13 +272,13 @@ describe("overprint notices", () => {
     expect(visiblePrepressNotices({ prepress: { overprint: blocking } }).map((note) => note.key)).toEqual(["overprint", "overprint_technical"]);
   });
 
-  it("renders the blocking overprint once, in a red prepress block, without a fix button", async () => {
+  it("renders the blocking overprint once, in a yellow prepress block, without a fix button", async () => {
     prepressDisplay.showInfoNotes = false;
-    const host = card({ status: "error", pdf_path: "/p.pdf", prepress: { overprint: blocking }, issue_groups: groups });
+    const host = card({ status: "warning", pdf_path: "/p.pdf", prepress: { overprint: blocking }, issue_groups: groups });
     await nextTick();
     const notes = host.querySelector(".prepress-notes");
-    expect(notes?.classList.contains("errors")).toBe(true);
-    expect(notes?.querySelector("[data-note='overprint']")?.classList.contains("note-error")).toBe(true);
+    expect(notes?.classList.contains("warnings")).toBe(true);
+    expect(notes?.querySelector("[data-note='overprint']")?.classList.contains("note-warning")).toBe(true);
     expect(notes?.querySelector("[data-note='overprint']")?.textContent).toContain("Уберите overprint в макете");
     expect(host.textContent.split("Overprint: 2 объекта").length - 1).toBe(1);
     expect(host.querySelector("[class*='callas-fix-overprint']")).toBeNull();

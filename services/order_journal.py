@@ -421,7 +421,7 @@ def _prepress_entries(state: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def _overprint_entries(prepress: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Overprint (services/overprint.py): ``error`` — не только технические краски (заказ красный),
+    """Overprint (services/overprint.py): ``warning`` — не только технические краски (заказ жёлтый),
     ``info`` — только технические; сбой проверки — ``prepress:overprint:failed`` (warning)."""
     block = _mapping(prepress.get("overprint"))
     status = block.get("status")
@@ -450,7 +450,7 @@ def _overprint_entries(prepress: Mapping[str, Any]) -> list[dict[str, Any]]:
     if blocking:
         return [_entry(
             KIND_ISSUE, "prepress:overprint", "callas", str(block.get("message") or f"Overprint: {blocking}"),
-            severity="error", pages=block.get("blocking_pages"), count=blocking, data=data,
+            severity="warning", pages=block.get("blocking_pages"), count=blocking, data=data,
         )]
     return [_entry(
         KIND_ISSUE, "prepress:overprint", "callas", str(block.get("technical_message") or f"Overprint: {technical}"),

@@ -90,8 +90,7 @@ def completed_status(
 
     ``prepress`` — допечатные проверки callas этого же PDF (``order["prepress"]``). На статус
     влияет только overprint (``services.overprint.overprint_status_effect``): overprint не
-    только на технических красках — ``error`` в любой политике проверки и независимо от
-    PitStop; сбой проверки overprint — не выше ``warning``. Остальные блоки статус не меняют.
+    только на технических красках и сбой проверки — ``warning`` (никогда не ``error``). Остальные блоки статус не меняют.
     """
     overprint = overprint_status_effect(prepress)
     if local_errors or overprint == "error":
